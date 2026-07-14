@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice control
+voice-tts = ["edge-tts"]                             # optional: text-to-speech output
 deck = ["pyserial"]                                  # optional: CyclUno control deck
 dev = ["pytest"]
 

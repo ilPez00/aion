@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .core import (
-    Bus, Intent, IntentType, TaskRegistry, SessionStore, Task, TaskState, load_config,
+    Bus, Intent, IntentType, TaskRegistry, SessionStore,
+    Task, TaskState, TOPIC_VOICE, load_config,
 )
 from .memory import MemoryStore
+from .voice.persona import Persona
 
 
 @dataclass
@@ -47,6 +49,7 @@ class Store:
         # harnesses: id -> Harness. Provided by caller (app wires real ones,
         # tests can pass fakes). Falls back to empty.
         self.harnesses: dict = harnesses or {}
+        self._prev_task_states: dict[str, TaskState] = {}
         self.memory = MemoryStore()
         self.state = ViewState(active_harness=self._first_harness())
         # subscribe to bus topics so the store stays the source of truth
@@ -216,6 +219,17 @@ class Store:
     # ---- bus subscriptions: keep state + persist in sync ----------------
     async def _on_task_event(self, msg: dict) -> None:
         self.store.save(self.registry.tasks)
+        if msg.get("task") is None:
+            return
+        task = msg["task"]
+        tid = task.id
+        cur = task.state
+        prev = self._prev_task_states.get(tid)
+        if prev is not None and cur != prev:
+            persona = Persona()
+            resp = persona.respond(cur.value, task_id=tid, label=task.label)
+            await self.bus.publish(TOPIC_VOICE, {"text": resp, "event": cur.value})
+        self._prev_task_states[tid] = cur
 
     async def _on_stats(self, msg: dict) -> None:
         self.state.stats[msg["harness"]] = msg["metrics"]

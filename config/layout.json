@@ -7,6 +7,34 @@
     "err": "#FF6B6B",
     "dim": "#5a6b7b"
   },
+  "themes": {
+    "jarvis": {
+      "accent": "#5ad1ff",
+      "ok": "#7CFFB2",
+      "warn": "#FFD479",
+      "err": "#FF6B6B",
+      "dim": "#5a6b7b"
+    },
+    "matrix": {
+      "accent": "#00ff41",
+      "ok": "#00ff41",
+      "warn": "#ffff00",
+      "err": "#ff0000",
+      "dim": "#003300"
+    },
+    "amber": {
+      "accent": "#ffb000",
+      "ok": "#00ff88",
+      "warn": "#ff8800",
+      "err": "#ff4444",
+      "dim": "#664400"
+    }
+  },
+  "persona": {
+    "verbosity": "normal",
+    "formality": "casual",
+    "voice_enabled": true
+  },
   "workspaces": [
     {"id": "models",  "title": "Models",   "icon": "◈"},
     {"id": "tasks",   "title": "Tasks",    "icon": "▤"},

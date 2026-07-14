@@ -84,6 +84,7 @@ TOPIC_TASK = "task"      # payload: {"action": str, "task": Task}
 TOPIC_STATS = "stats"    # payload: {"harness": str, "metrics": dict}
 TOPIC_LOG = "log"        # payload: {"task_id": str, "line": str}
 TOPIC_MODE = "mode"      # payload: {"mode": str, "active": bool}
+TOPIC_VOICE = "voice"    # payload: {"text": str, "event": str}
 
 
 class Bus:
@@ -96,7 +97,9 @@ class Bus:
 
     async def publish(self, topic: str, msg: Any) -> None:
         for cb in list(self._subs.get(topic, ())):
-            asyncio.create_task(cb(msg))
+            result = cb(msg)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
 
 
 # --------------------------------------------------------------------------

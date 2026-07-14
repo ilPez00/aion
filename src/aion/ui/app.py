@@ -220,9 +220,11 @@ class AiOSApp(App):
         if self.deck.link.available:
             vmode += " [PAD]" if s.deck_app else " [DECK]"
         clock = __import__("time").strftime("%H:%M:%S")
+        status = f"running: {running}" if running else "standing by"
         self.query_one("#header", expect_type=Header).text = (
-            f"[{theme['accent']}]{self.cfg['app_name']}[/]  harness: [{theme['ok']}]{name}[/]  "
-            f"running: {running}  [{theme['dim']}]{clock}{vmode}[/]"
+            f"[{theme['accent']}]{self.persona.name}[/]  "
+            f"harness: [{theme['ok']}]{name}[/]  "
+            f"{status}  [{theme['dim']}]{clock}{vmode}[/]"
         )
 
     def _render_rail(self) -> None:
@@ -319,8 +321,17 @@ class AiOSApp(App):
 
     def _render_bottom(self) -> None:
         theme = self.cfg["theme"]
-        h = self.store.state.history[-1] if self.store.state.history else \
-            "(1/2/3 switch · ↑↓ select · Enter run/pause · p pause · x cancel · r rerun · ? help · v voice · Ctrl-K command)"
+        if not self._greeted:
+            self._greeted = True
+            greeting = self.persona.greeting()
+            self.query_one("#bottom", expect_type=Static).update(
+                f"[{theme['accent']}]{greeting}[/]"
+            )
+            return
+        running = any(t.state.value == "running"
+                      for t in self.store.registry.tasks.values())
+        hint = "tasks in progress" if running else "awaiting your command"
+        h = self.store.state.history[-1] if self.store.state.history else hint
         self.query_one("#bottom", expect_type=Static).update(f"[{theme['dim']}]{h}[/]")
 
     def _help_text(self) -> str:
