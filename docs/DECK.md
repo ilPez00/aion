@@ -5,19 +5,12 @@ Uno, two thumb joysticks, a clickable rotary wheel, four face buttons, a mode
 switch, three LEDs and an OLED — wired over USB serial, speaking the same v2
 frame protocol as the Cyclops wearable.
 
-```
-┌────────────────────────── CyclUno deck ──────────────────────────┐
-│   ┌───────OLED───────┐                                           │
-│   │ demo  45% r2     │        (mirrors aion: harness · progress) │
-│   └──────────────────┘                                           │
-│                                                                  │
-│   ( JOY1 )      (WHEEL)      ( JOY2 )        [X] [Y]             │
-│    local HUD    scroll+click  navigate        pause cancel       │
-│    nav stick    = run         workspaces                         │
-│                                                                  │
-│      [B back]   [MODE]    ●REC ●LINK ●APP                        │
-└──────────────────────────────────────────────────────────────────┘
-```
+![console layout](https://raw.githubusercontent.com/ilPez00/CyclUno/main/docs/img/deck-layout.svg)
+
+![deck wiring](https://raw.githubusercontent.com/ilPez00/CyclUno/main/docs/img/deck-wiring.svg)
+
+Assembly guide (BOM, build order, troubleshooting):
+[CyclUno/docs/WIRING.md](https://github.com/ilPez00/CyclUno/blob/main/docs/WIRING.md).
 
 ## Why two sticks and a wheel
 
