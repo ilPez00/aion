@@ -5,3 +5,5 @@ build*.aux
 build*.fls
 build*.log
 build*.fdb_latexmk
+
+.venv/

@@ -311,6 +311,8 @@ class VoiceInput(InputDevice):
         for name, idx in self.ws_map.items():
             if f"go to {name}" in t or f"show {name}" in t:
                 return Intent.switch_workspace(index=idx)
+        if t.startswith("search ") or t.startswith("web "):
+            return Intent.command(text=t)          # -> DeepSearch harness
         if " " in t and (t.startswith("run ") or t.startswith("start ")):
             return Intent.command(text=t.split(" ", 1)[1])
         if t in ("stop", "cancel", "back"):
