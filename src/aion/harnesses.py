@@ -346,6 +346,61 @@ class StatsHarness(Harness):
             await asyncio.sleep(self.interval)
 
 
+class ProjectsHarness(Harness):
+    """Projects workspace poller: live git + PR + session status per repo.
+
+    Reads ground-truth git status for a configured repo list and joins in
+    Hermes session activity, publishing a list of project cards on
+    TOPIC_STATS under harness id "projects". No task needed — call .start()
+    once at boot. All git/gh calls run off the event loop with timeouts.
+
+    Config extras:
+      repos:     list of repo paths      (default cyclops/aion/praxis_webapp)
+      interval:  seconds between reads    (default 8.0; git is heavier)
+      check_prs: bool, run `gh pr list`   (default False — CGNAT-safe)
+      db_path:   override state.db path
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.repos = extra.get("repos")
+        self.interval = float(extra.get("interval", 8.0))
+        self.check_prs = bool(extra.get("check_prs", False))
+        self._db_path = extra.get("db_path")
+        self._task: asyncio.Task | None = None
+        self._reader = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    def _ensure_reader(self):
+        if self._reader is None:
+            from .projects import ProjectsReader
+            self._reader = ProjectsReader(
+                repos=self.repos, db_path=self._db_path,
+                check_prs=self.check_prs)
+        return self._reader
+
+    async def poll_once(self) -> dict:
+        reader = self._ensure_reader()
+        items = await asyncio.to_thread(reader.as_items)
+        metrics = {"ok": True, "projects": items}
+        await self._stat(**metrics)
+        return metrics
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
 # registry of built-in harness types -> class
 class AppHarness(Harness):
     """Spawns a real program as a task (lesson: Jarvis spawns tools).
@@ -488,6 +543,7 @@ HARNESS_TYPES = {
     "cyclops": CyclopsHarness,
     "telemetry": TelemetryHarness,
     "stats": StatsHarness,
+    "projects": ProjectsHarness,
     "app": AppHarness,
     "hermes": HermesHarness,
     "skill": SkillHarness,

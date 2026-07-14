@@ -41,12 +41,13 @@
     {"id": "agent",   "title": "Agent",    "icon": "✦"},
     {"id": "memory",  "title": "Memory",   "icon": "◎"},
     {"id": "hermes",  "title": "Hermes",   "icon": "⚡"},
-    {"id": "skills",  "title": "Skills",   "icon": "📚"}
+    {"id": "skills",  "title": "Skills",   "icon": "📚"},
+    {"id": "projects","title": "Projects", "icon": "⬢"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {
     "workspace_1": "1", "workspace_2": "2", "workspace_3": "3", "workspace_4": "4",
-    "workspace_5": "5", "workspace_6": "6",
+    "workspace_5": "5", "workspace_6": "6", "workspace_7": "7",
     "nav_up": ["up", "k"], "nav_down": ["down", "j"],
     "nav_left": ["left", "h"], "nav_right": ["right", "l"],
     "activate": ["enter", "space"], "back": ["escape", "b"],
@@ -61,6 +62,7 @@
     {"id": "stats",     "type": "stats",     "name": "Jarvis HUD",   "enabled": true, "vram_mb": 0,   "tier": "standard", "window": "today", "interval": 3.0},
     {"id": "app",     "type": "app",     "name": "App Launcher",   "enabled": true, "vram_mb": 0,   "tier": "cheap",    "command": "{p}"},
     {"id": "hermes",  "type": "hermes",  "name": "Hermes Agent",   "enabled": true, "vram_mb": 0,   "tier": "premium"},
-    {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"}
+    {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"},
+    {"id": "projects","type": "projects","name": "Projects",       "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false}
   ]
 }

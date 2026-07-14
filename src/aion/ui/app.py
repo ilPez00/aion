@@ -24,7 +24,7 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
 
@@ -110,7 +110,7 @@ class AiOSApp(App):
         self.set_interval(1.0, self._tick)
         # telemetry + stats (Jarvis HUD) pollers
         for h in self.harnesses.values():
-            if isinstance(h, (TelemetryHarness, StatsHarness)):
+            if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         self.router.register(JoystickInput())
@@ -126,6 +126,9 @@ class AiOSApp(App):
     def _tick(self) -> None:
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
+        # projects workspace polls on a timer, not on input -> refresh it live
+        if self.cfg["workspaces"][self.store.state.active_ws]["id"] == "projects":
+            self._render_center()
         self._push_deck_hud()
 
     def _push_deck_hud(self) -> None:
@@ -330,9 +333,52 @@ class AiOSApp(App):
             desc = it.get("description", "")[:60]
             return (f"[{col}]{f}{it.get('name','?')}[/]  "
                     f"[{theme['dim']}]{desc}[/]")
+        if ws == "projects":
+            return self._project_card(it, focused, theme)
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
+
+    def _project_card(self, it: dict, focused: bool, theme: dict) -> str:
+        f = "▌" if focused else " "
+        col = theme["accent"] if focused else theme["dim"]
+        name = it.get("name", "?")
+        if not it.get("exists"):
+            return f"[{col}]{f}{name}[/]  [{theme['err']}]missing[/]"
+        if not it.get("is_git"):
+            return f"[{col}]{f}{name}[/]  [{theme['warn']}]{it.get('error','not git')}[/]"
+        branch = it.get("branch", "?")
+        dirty = it.get("dirty", 0)
+        ahead, behind = it.get("ahead", 0), it.get("behind", 0)
+        # status glyphs: clean vs dirty, ahead/behind arrows
+        dcol = theme["warn"] if dirty else theme["ok"]
+        dtxt = f"±{dirty}" if dirty else "clean"
+        sync = ""
+        if ahead:
+            sync += f" [{theme['accent']}]↑{ahead}[/]"
+        if behind:
+            sync += f" [{theme['err']}]↓{behind}[/]"
+        prs = it.get("open_prs")
+        prtxt = f" [{theme['accent']}]PR:{prs}[/]" if prs else ""
+        # session activity
+        act = ""
+        if it.get("sessions_today"):
+            from ..stats import human_tokens
+            act = (f" [{theme['dim']}]· {it['sessions_today']} sess "
+                   f"{human_tokens(it.get('tokens_today',0))} tok today[/]")
+        elif it.get("last_session_age_s") is not None:
+            mins = int(it["last_session_age_s"] // 60)
+            act = f" [{theme['dim']}]· last active {mins}′ ago[/]"
+        # last commit + age
+        lc = it.get("last_commit", "")
+        cage = ""
+        if it.get("last_commit_age_s") is not None:
+            h = it["last_commit_age_s"] / 3600
+            cage = f"{int(h)}h" if h < 48 else f"{int(h/24)}d"
+        return (f"[{col}]{f}⬢ {name}[/] [{theme['dim']}]{branch}[/] "
+                f"[{dcol}]{dtxt}[/]{sync}{prtxt}{act}\n"
+                f"  [{theme['dim']}]{lc[:56]}[/] "
+                f"[{theme['dim']}]{cage}[/]")
 
     def _render_right(self) -> None:
         theme = self.cfg["theme"]

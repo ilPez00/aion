@@ -114,6 +114,11 @@ class Store:
             return [{"id": s.get("name", s.get("id", "")), "name": s.get("name", ""),
                      "description": s.get("description", ""), "source": s.get("source", "")}
                     for s in self.state.skills]
+        if ws == "projects":
+            pj = self.state.stats.get("projects")
+            if pj and pj.get("projects"):
+                return list(pj["projects"])
+            return []
         return []
 
     def _running_for(self, hid: str) -> int:
