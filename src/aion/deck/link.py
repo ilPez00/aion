@@ -117,12 +117,13 @@ class DeckLink:
 
     def send_note(self, text: str, min_interval: float = 0.5) -> None:
         """Push one OLED line (NOTE frame). Rate-limited: the Uno redraws over
-        I2C and floods would starve its input polling."""
+        I2C and floods would starve its input polling. 16 chars = one row of
+        the 128x128 panel's 16-col text grid."""
         now = time.monotonic()
         if now - self._last_note < min_interval:
             return
         self._last_note = now
-        payload = ('{"text":"%s"}' % text[:21].replace('"', "'")).encode()
+        payload = ('{"text":"%s"}' % text[:16].replace('"', "'")).encode()
         self._write(encode_frame(MSG_NOTE, payload))
 
     def send_status(self, json_text: str) -> None:
