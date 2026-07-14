@@ -1,0 +1,23 @@
+[project]
+name = "aion"
+version = "0.1.0"
+description = "Customizable multi-harness AI cockpit & stats visualizer (TUI)"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.80",
+    "evdev>=1.7",   # optional: real joystick/gamepad input (graceful if absent)
+]
+
+[project.optional-dependencies]
+voice = ["faster-whisper", "sounddevice"]   # optional: offline voice control
+dev = ["pytest"]
+
+[project.scripts]
+aion = "aion.ui.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
