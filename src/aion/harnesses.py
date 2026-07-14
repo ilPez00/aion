@@ -294,12 +294,83 @@ class TelemetryHarness(Harness):
 
 
 # registry of built-in harness types -> class
+class AppHarness(Harness):
+    """Spawns a real program as a task (lesson: Jarvis spawns tools).
+
+    The task is RUNNING while the process lives. pause/resume map to
+    SIGSTOP/SIGCONT (the process genuinely freezes), cancel to SIGTERM with a
+    SIGKILL fallback. `command` is the program line; "{p}" splices the prompt
+    so `run mpv <file>` style invocations work. While the deck is in APP mode
+    its virtual gamepad drives whatever this spawned.
+    """
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        import signal
+
+        self._running.add(task.id)
+        cmd = (self.cfg.command or "{p}").replace("{p}", prompt).strip()
+        if not cmd:
+            self.registry.log(task, "app: empty command")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True)   # own pgid: signal the whole tree
+        except Exception as e:  # noqa: BLE001
+            self.registry.log(task, f"app spawn failed: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        self.registry.set_state(task, TaskState.RUNNING)
+        self.registry.log(task, f"[app] pid {proc.pid}: {cmd[:80]}")
+        await self._stat(pid=proc.pid, cmd=cmd[:40])
+
+        import os
+        pgid = proc.pid  # start_new_session -> pgid == pid
+        stopped = False
+        while proc.returncode is None:
+            if self._killed(task):
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(pgid, sig)
+                    except ProcessLookupError:
+                        break
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        break
+                    except asyncio.TimeoutError:
+                        continue
+                self.registry.set_state(task, TaskState.CANCELLED)
+                self._finish(task)
+                return
+            want_stop = task.id in self._paused
+            if want_stop != stopped:
+                try:
+                    os.killpg(pgid, signal.SIGSTOP if want_stop else signal.SIGCONT)
+                    stopped = want_stop
+                except ProcessLookupError:
+                    pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=0.2)
+            except asyncio.TimeoutError:
+                pass
+        self.registry.set_progress(task, 1.0)
+        self.registry.set_state(
+            task, TaskState.DONE if proc.returncode == 0 else TaskState.FAILED)
+        self.registry.log(task, f"[app] exit {proc.returncode}")
+        self._finish(task)
+
+
 HARNESS_TYPES = {
     "demo": DemoHarness,
     "shell": ShellHarness,
     "remote": RemoteHarness,
     "cyclops": CyclopsHarness,
     "telemetry": TelemetryHarness,
+    "app": AppHarness,
 }
 
 

@@ -1,7 +1,10 @@
 # aion
 
 A customizable **multi-harness AI cockpit** and **stats visualizer**, driven by
-a TUI you control with keyboard, trackpad, a joystick/gamepad, and voice.
+a TUI you control with keyboard, trackpad, a joystick/gamepad, voice — and the
+**CyclUno deck**, a physical console (2 sticks + clickable wheel + buttons +
+OLED on an Arduino Uno) that navigates the cockpit one-handed and doubles as
+a Linux gamepad for programs aion spawns. See `docs/DECK.md`.
 
 The core idea: every input device emits the *same* `Intent` objects, and every
 AI backend is a swappable `Harness`. The UI only renders; harnesses push live
@@ -52,6 +55,10 @@ python tests/test_smoke.py
 run <harness> <prompt>      spawn a task on a specific backend
 <prompt>                    spawn on the active harness
 tier <cheap|standard|premium>   switch active harness by tier (lesson #3)
+app <program>               spawn a real program (pause=SIGSTOP, cancel=kill)
+note <fact>                 remember something (persistent memory)
+mem <query>                 recall — opens the Memory workspace filtered
+forget <n>                  drop fact #n from the current memory view
 ```
 
 ### Crash-safe & per-task control (lessons from RESEARCH.md)

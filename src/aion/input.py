@@ -88,12 +88,9 @@ class KeyboardMap:
             return Intent.back()
         if key in k["context"]:
             return Intent.context()
-        if key == k["workspace_1"]:
-            return Intent.switch_workspace(index=0)
-        if key == k["workspace_2"]:
-            return Intent.switch_workspace(index=1)
-        if key == k["workspace_3"]:
-            return Intent.switch_workspace(index=2)
+        for n in range(1, 10):
+            if key == k.get(f"workspace_{n}"):
+                return Intent.switch_workspace(index=n - 1)
         return None
 
 
@@ -214,7 +211,7 @@ class VoiceInput(InputDevice):
         self._vad_thresh = 0.012    # RMS energy gate
         self._silence_chunks = 0
         self._max_silence = 18      # ~0.3s @ 16k/512 — end of utterance
-        self.ws_map = {"models": 0, "tasks": 1, "agent": 2}
+        self.ws_map = {"models": 0, "tasks": 1, "agent": 2, "memory": 3}
 
     async def start(self) -> None:
         self.available = True   # enabled on demand via toggle
@@ -319,3 +316,79 @@ class VoiceInput(InputDevice):
         if t in ("stop", "cancel", "back"):
             return Intent.back()
         return Intent.command(text=t)
+
+
+# --------------------------------------------------------------------------
+# CyclUno deck — physical console over USB serial (see aion.deck).
+# AION mode: wheel + joy2 + buttons become Intents (this class).
+# APP mode: the same events are injected into a uinput gamepad instead
+# (deck.gamepad.VirtualPad) so a spawned program can be driven directly.
+# deck_intent() is pure so the mapping is unit-testable with no hardware.
+# --------------------------------------------------------------------------
+from .deck.protocol import (  # noqa: E402
+    InputEvent as DeckEvent,
+    SRC_JOY2, SRC_WHEEL, SRC_BTN, SRC_MODE,
+    CODE_STEP_X, CODE_STEP_Y, CODE_WHEEL_STEP,
+    BTN_A, BTN_B, BTN_J2, BTN_WHEEL, BTN_X, BTN_Y,
+)
+
+
+def deck_intent(ev: DeckEvent) -> Intent | None:
+    """AION-mode mapping: one deck event -> one Intent (None = ignore)."""
+    if ev.src == SRC_WHEEL and ev.code == CODE_WHEEL_STEP:
+        return Intent.navigate("down" if ev.val > 0 else "up")
+    if ev.src == SRC_JOY2:
+        if ev.code == CODE_STEP_Y and ev.val:
+            return Intent.navigate("down" if ev.val > 0 else "up")
+        if ev.code == CODE_STEP_X and ev.val:
+            return Intent.navigate("right" if ev.val > 0 else "left")
+        return None
+    if ev.src == SRC_BTN and ev.val:  # press edges only
+        return {
+            BTN_A: Intent.activate(),
+            BTN_J2: Intent.activate(),
+            BTN_WHEEL: Intent.activate(),
+            BTN_B: Intent.back(),
+            BTN_X: Intent(IntentType.PAUSE),
+            BTN_Y: Intent(IntentType.CANCEL),
+        }.get(ev.code)
+    return None
+
+
+class DeckInput(InputDevice):
+    """Routes CyclUno events: AION mode -> Intents, APP mode -> uinput pad."""
+
+    def __init__(self, link=None, pad=None, port: str | None = None) -> None:
+        super().__init__()
+        from .deck.link import DeckLink
+        from .deck.gamepad import VirtualPad
+        self.link = link or DeckLink(port=port, on_event=self.on_deck_event)
+        self.link.on_event = self.on_deck_event
+        self.pad = pad or VirtualPad()
+        self.app_mode = False
+
+    async def start(self) -> None:
+        self.available = self.link.start()
+
+    def stop(self) -> None:
+        self.link.stop()
+        self.pad.stop()
+
+    def on_deck_event(self, ev: DeckEvent) -> None:
+        if ev.src == SRC_MODE:
+            self._set_mode(bool(ev.val))
+            return
+        if self.app_mode:
+            self.pad.inject(ev)
+            return
+        intent = deck_intent(ev)
+        if intent is not None and self.router is not None:
+            asyncio.create_task(self.router.emit(intent))
+
+    def _set_mode(self, app: bool) -> None:
+        self.app_mode = app
+        if app:
+            self.pad.start()
+        if self.router is not None:
+            asyncio.create_task(self.router.bus.publish(
+                TOPIC_MODE, {"mode": "deck_app", "active": app}))

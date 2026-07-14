@@ -18,6 +18,7 @@ from typing import Any
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore, Task, TaskState, load_config,
 )
+from .memory import MemoryStore
 
 
 @dataclass
@@ -27,6 +28,7 @@ class ViewState:
     focus: int = 0
     active_harness: str = ""
     voice_active: bool = False
+    deck_app: bool = False        # CyclUno deck routed to the virtual gamepad
     tasks: list[Task] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
     stats: dict[str, dict] = field(default_factory=dict)
@@ -45,6 +47,7 @@ class Store:
         # harnesses: id -> Harness. Provided by caller (app wires real ones,
         # tests can pass fakes). Falls back to empty.
         self.harnesses: dict = harnesses or {}
+        self.memory = MemoryStore()
         self.state = ViewState(active_harness=self._first_harness())
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
@@ -68,6 +71,8 @@ class Store:
                      "running": self._running_for(h)} for h in self.harnesses]
         if ws == "tasks":
             return [t.as_dict() for t in self.registry.tasks.values()]
+        if ws == "memory":
+            return self.memory.items()
         return []
 
     def _running_for(self, hid: str) -> int:
@@ -184,6 +189,19 @@ class Store:
     async def _run_command(self, text: str) -> None:
         self.state.history.append(text)
         parts = text.split(" ", 1)
+        if parts[0] == "note" and len(parts) == 2:
+            self.memory.add(parts[1])
+            return
+        if parts[0] == "mem":
+            self.memory.query = parts[1] if len(parts) == 2 else ""
+            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+            if "memory" in ws_ids:
+                self.state.active_ws = ws_ids.index("memory")
+                self.state.focus = 0
+            return
+        if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
+            self.memory.forget(int(parts[1]))
+            return
         if parts[0] == "tier" and len(parts) == 2:
             tier = parts[1].strip().lower()
             hid = next((hid for hid, h in self.harnesses.items() if h.tier == tier), None)
@@ -209,3 +227,5 @@ class Store:
     async def _on_mode(self, msg: dict) -> None:
         if msg.get("mode") == "voice":
             self.state.voice_active = msg["active"]
+        elif msg.get("mode") == "deck_app":
+            self.state.deck_app = msg["active"]

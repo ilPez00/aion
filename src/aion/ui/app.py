@@ -23,7 +23,7 @@ from textual import events
 
 from ..core import Bus, Intent, IntentType, TOPIC_INTENT, load_config
 from ..harnesses import build_harnesses, TelemetryHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
-from ..input import Router, KeyboardMap, JoystickInput, VoiceInput
+from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
 
 
@@ -78,6 +78,10 @@ class AiOSApp(App):
         self.keymap = KeyboardMap(self.cfg["keybindings"])
         self.voice = VoiceInput(model_size="tiny")
         self.router.register(self.voice)
+        deck_cfg = self.cfg.get("deck", {})
+        self.deck = DeckInput(port=deck_cfg.get("port"))
+        if deck_cfg.get("enabled", True):
+            self.router.register(self.deck)
         self._rail: list[Cell] = []
         self._center: list[Cell] = []
         self._right: list[Cell] = []
@@ -111,6 +115,23 @@ class AiOSApp(App):
 
     def _tick(self) -> None:
         self._render_header()
+        self._push_deck_hud()
+
+    def _push_deck_hud(self) -> None:
+        """Mirror aion status onto the CyclUno OLED (1 Hz, rate-limited)."""
+        if not self.deck.link.available:
+            return
+        s = self.store.state
+        running = [t for t in self.store.registry.tasks.values()
+                   if t.state.value == "running"]
+        if self.deck.app_mode:
+            line = "APP PAD active"
+        elif running:
+            t = running[0]
+            line = f"{t.harness[:6]} {int(t.progress * 100):3d}% r{len(running)}"
+        else:
+            line = f"{s.active_harness[:10]} idle"
+        self.deck.link.send_note(line)
 
     # ===== INPUT =========================================================
     async def _on_intent(self, intent: Intent) -> None:
@@ -196,6 +217,8 @@ class AiOSApp(App):
         name = h.name if h else s.active_harness
         running = sum(1 for t in self.store.registry.tasks.values() if t.state.value == "running")
         vmode = " [VOICE ON]" if s.voice_active else ""
+        if self.deck.link.available:
+            vmode += " [PAD]" if s.deck_app else " [DECK]"
         clock = __import__("time").strftime("%H:%M:%S")
         self.query_one("#header", expect_type=Header).text = (
             f"[{theme['accent']}]{self.cfg['app_name']}[/]  harness: [{theme['ok']}]{name}[/]  "
@@ -252,6 +275,11 @@ class AiOSApp(App):
             return (f"[{col}]{f}{it['id']} {it['label']}[/]\n"
                     f"  [{scol}]{st}{' (paused)' if it.get('paused') else ''}[/] "
                     f"{bar(it['progress'])} [{theme['dim']}]{eta}{note}[/]")
+        if ws == "memory":
+            q = self.store.memory.query
+            head = f" [filter: {q}]" if q else ""
+            return (f"[{col}]{f}#{it['n']} {it['text']}[/]  "
+                    f"[{theme['dim']}]{it['when']}{head}[/]")
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -309,7 +337,9 @@ class AiOSApp(App):
                 "v              toggle offline voice control\n"
                 "? / /          this help\n"
                 "joystick: axis=navigate A=activate B=back C=context\n"
-                "voice: 'go to models' · 'run demo hello' · 'stop'")
+                "voice: 'go to models' · 'run demo hello' · 'stop'\n"
+                "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
+                "deck: wheel=scroll click=run · joy2=navigate · MODE=gamepad")
 
 
 def main() -> None:
