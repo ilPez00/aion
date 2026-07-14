@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-voice = ["faster-whisper", "sounddevice"]   # optional: offline voice control
+voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice control
 dev = ["pytest"]
 
 [project.scripts]

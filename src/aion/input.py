@@ -19,7 +19,10 @@ import time
 import threading
 from typing import Callable
 
-import numpy as np
+try:
+    import numpy as np          # voice extra; VoiceInput disables itself if absent
+except ImportError:
+    np = None
 
 from .core import Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_MODE
 
@@ -207,7 +210,7 @@ class VoiceInput(InputDevice):
         self._thread: threading.Thread | None = None
         self._model = None          # lazy faster-whisper model
         self._stream = None
-        self._buf: list[np.ndarray] = []
+        self._buf: "list[np.ndarray]" = []
         self._vad_thresh = 0.012    # RMS energy gate
         self._silence_chunks = 0
         self._max_silence = 18      # ~0.3s @ 16k/512 — end of utterance
@@ -221,6 +224,8 @@ class VoiceInput(InputDevice):
         if self._model is not None:
             return True
         try:
+            if np is None:
+                raise ImportError("numpy not installed (pip install 'aion[voice]')")
             import sounddevice as sd  # noqa: F401
             from faster_whisper import WhisperModel
             self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")

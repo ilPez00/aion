@@ -1,1 +1,1 @@
-"""ai-os Textual UI package."""
+"""aion Textual UI package."""

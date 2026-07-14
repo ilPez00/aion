@@ -18,7 +18,7 @@ from aion.harnesses import build_harnesses
 from aion.core import Bus, SessionStore, TaskRegistry
 
 
-def _make_store(tmp_path):
+def _make_store(tmp_path, clean=True):
     cfg = {
         "app_name": "aion",
         "workspaces": [
@@ -32,6 +32,10 @@ def _make_store(tmp_path):
              "command": "echo step {n} && sleep 0.05"},
         ],
     }
+    # start from a clean slate by default — a leftover session.json (from a
+    # previous test or run) would ingest stale tasks and shift focus indices
+    if clean:
+        (tmp_path / "session.json").unlink(missing_ok=True)
     fs = SessionStore(tmp_path / "session.json")
     bus = Bus()
     registry = TaskRegistry(bus)
@@ -105,7 +109,7 @@ def test_crash_restore_as_interrupted():
         assert await _run_until(lambda: s.registry.tasks.values(), TaskState.RUNNING)
         s.store.save(s.registry.tasks)
     asyncio.run(go())
-    s2 = _make_store(tmp)
+    s2 = _make_store(tmp, clean=False)
     assert any(t.state == TaskState.INTERRUPTED for t in s2.registry.tasks.values())
 
 

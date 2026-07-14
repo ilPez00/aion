@@ -35,8 +35,8 @@ async def test_pipeline():
         # --- performance: 10 progress updates should NOT remount widgets ---
         before = len(app._center)
         for _ in range(10):
-            await app.store.registry.set_progress(task, min(1.0, task.progress + 0.01))
-            await app._render_all()
+            app.store.registry.set_progress(task, min(1.0, task.progress + 0.01))
+            app._render_all()
         after = len(app._center)
         assert before == after, f"widget tree remounted: {before} -> {after}"
 

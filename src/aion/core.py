@@ -1,5 +1,5 @@
 """
-core.py — the spine of ai-os.
+core.py — the spine of aion.
 
 Everything else talks through three things defined here:
 
@@ -180,13 +180,13 @@ class SessionStore:
     """Crash-safe persistence for the task registry (lesson #1).
 
     The TaskRegistry keeps tasks in memory; this dumps them to
-    ~/.ai-os/session.json on every change and reloads on launch. Tasks that
+    ~/.aion/session.json on every change and reloads on launch. Tasks that
     were still RUNNING/PENDING when we died are marked INTERRUPTED (we can't
     resurrect the coroutine) so the user can re-run them.
     """
 
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or (Path.home() / ".ai-os" / "session.json"))
+        self.path = Path(path or (Path.home() / ".aion" / "session.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def save(self, tasks: dict[str, Task]) -> None:
@@ -223,7 +223,7 @@ class SessionStore:
 # Config — loads config/layout.json, falls back to sane defaults
 # --------------------------------------------------------------------------
 DEFAULT_LAYOUT = {
-    "app_name": "ai-os",
+    "app_name": "aion",
     "theme": {
         "accent": "#5ad1ff",
         "ok": "#7CFFB2",
@@ -253,7 +253,7 @@ DEFAULT_LAYOUT = {
 
 def load_config(path: str | Path | None = None) -> dict:
     if path is None:
-        # repo layout: .../ai-os/src/ai_os/core.py  ->  config at repo root /config
+        # repo layout: .../aion/src/aion/core.py  ->  config at repo root /config
         path = Path(__file__).resolve().parents[2] / "config" / "layout.json"
     p = Path(path)
     if p.exists():

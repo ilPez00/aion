@@ -1,5 +1,5 @@
 """
-harnesses.py — the "multi-harness" half of ai-os.
+harnesses.py — the "multi-harness" half of aion.
 
 A Harness is anything that can take a Task, do work, and push progress +
 stats through the bus. The UI never knows what backend is running; it only

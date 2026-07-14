@@ -159,6 +159,9 @@ class AiOSApp(App):
     def action_pause(self) -> None:
         self.store.handle(Intent(IntentType.PAUSE))
 
+    def action_resume(self) -> None:
+        self.store.handle(Intent(IntentType.RESUME))
+
     def action_cancel(self) -> None:
         self.store.handle(Intent(IntentType.CANCEL))
 

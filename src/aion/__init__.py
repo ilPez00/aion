@@ -1,1 +1,1 @@
-"""ai-os — customizable multi-harness AI cockpit & stats visualizer."""
+"""aion — customizable multi-harness AI cockpit & stats visualizer."""
