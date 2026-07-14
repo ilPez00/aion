@@ -7,10 +7,9 @@ Kept byte-compatible with the C++ side; test_deck.py pins known vectors.
 
 INPUT_EVENT payload (deck -> host), 4 bytes: src(1) code(1) val(int16 LE).
 
-  src 0 JOY1 | 1 JOY2 | 2 WHEEL | 3 BTN | 4 MODE
+  src 0 JOY1 | 1 JOY2 | 2 (was WHEEL) | 3 BTN | 4 MODE
   joy codes:   0 step-x (±1) · 1 step-y (±1) · 2 raw-x · 3 raw-y (centered)
-  wheel codes: 0 step (±n)
-  btn codes:   0 A · 1 B · 2 J2-SW · 3 WHEEL-SW · 4 MODE · 5 X · 6 Y
+  btn codes:   0 A · 1 B · 2 J2-SW · 3 (was WHEEL-SW) · 4 MODE · 5 X · 6 Y
                val 1=down 0=up
   mode codes:  0 (val 0=AION 1=APP), sent on every toggle
 """
@@ -31,7 +30,8 @@ MSG_CMD = 9
 # ---- InputEvent enums
 SRC_JOY1, SRC_JOY2, SRC_WHEEL, SRC_BTN, SRC_MODE = 0, 1, 2, 3, 4
 CODE_STEP_X, CODE_STEP_Y, CODE_RAW_X, CODE_RAW_Y = 0, 1, 2, 3
-CODE_WHEEL_STEP = 0
+# NOTE: CODE_WHEEL_STEP and BTN_WHEEL were removed with the KY-040 wheel;
+# their numeric ids (2/3) are kept unused so old firmware stays compatible.
 BTN_A, BTN_B, BTN_J2, BTN_WHEEL, BTN_MODE, BTN_X, BTN_Y = 0, 1, 2, 3, 4, 5, 6
 MODE_AION, MODE_APP = 0, 1
 

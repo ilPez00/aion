@@ -17,11 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from aion.deck.protocol import (
     crc16_ccitt_false, encode_frame, FrameDecoder, InputEvent,
     MSG_INPUT_EVENT, MSG_NOTE,
-    SRC_JOY2, SRC_WHEEL, SRC_BTN, SRC_MODE,
-    CODE_STEP_X, CODE_STEP_Y, CODE_RAW_X, CODE_WHEEL_STEP,
-    BTN_A, BTN_B, BTN_WHEEL, BTN_X, BTN_Y, MODE_APP, MODE_AION,
+    SRC_JOY2, SRC_BTN, SRC_MODE,
+    CODE_STEP_X, CODE_STEP_Y, CODE_RAW_X,
+    BTN_A, BTN_B, BTN_X, BTN_Y, MODE_APP, MODE_AION,
 )
-from aion.deck.gamepad import map_event, EV_ABS, EV_REL, EV_KEY, ABS_X, REL_WHEEL, BTN_SOUTH
+from aion.deck.gamepad import map_event, EV_ABS, EV_KEY, ABS_X, BTN_SOUTH
 from aion.input import deck_intent, DeckInput
 from aion.core import IntentType, Bus, TaskRegistry, TaskState
 from aion.memory import MemoryStore
@@ -38,7 +38,7 @@ def test_crc_reference_vector():
 def test_frame_roundtrip_with_garbage_and_splits():
     got = []
     dec = FrameDecoder(lambda t, p: got.append((t, p)))
-    ev = InputEvent(SRC_WHEEL, CODE_WHEEL_STEP, -3)
+    ev = InputEvent(SRC_JOY2, CODE_RAW_X, -3)
     frame = encode_frame(MSG_INPUT_EVENT, ev.pack())
     # garbage before, frame split into single bytes, garbage after
     stream = b"\x00\xaa\x99" + frame + b"\xff" + encode_frame(MSG_NOTE, b'{"text":"hi"}')
@@ -65,15 +65,11 @@ def test_input_event_negative_val():
 # ---- AION-mode intent mapping --------------------------------------------
 
 def test_deck_intent_mapping():
-    i = deck_intent(InputEvent(SRC_WHEEL, CODE_WHEEL_STEP, 1))
-    assert i.type == IntentType.NAVIGATE and i.payload["dir"] == "down"
-    i = deck_intent(InputEvent(SRC_WHEEL, CODE_WHEEL_STEP, -1))
-    assert i.payload["dir"] == "up"
+    # joystick nav (wheel removed — was down/up, now only joy2)
     i = deck_intent(InputEvent(SRC_JOY2, CODE_STEP_X, 1))
-    assert i.payload["dir"] == "right"
+    assert i.type == IntentType.NAVIGATE and i.payload["dir"] == "right"
     i = deck_intent(InputEvent(SRC_JOY2, CODE_STEP_Y, -1))
     assert i.payload["dir"] == "up"
-    assert deck_intent(InputEvent(SRC_BTN, BTN_WHEEL, 1)).type == IntentType.ACTIVATE
     assert deck_intent(InputEvent(SRC_BTN, BTN_B, 1)).type == IntentType.BACK
     assert deck_intent(InputEvent(SRC_BTN, BTN_X, 1)).type == IntentType.PAUSE
     assert deck_intent(InputEvent(SRC_BTN, BTN_Y, 1)).type == IntentType.CANCEL
@@ -86,7 +82,6 @@ def test_deck_intent_mapping():
 def test_gamepad_mapping():
     assert map_event(InputEvent(SRC_JOY2, CODE_RAW_X, 300)) == (EV_ABS, ABS_X, 300)
     assert map_event(InputEvent(SRC_JOY2, CODE_RAW_X, 9999)) == (EV_ABS, ABS_X, 512)
-    assert map_event(InputEvent(SRC_WHEEL, CODE_WHEEL_STEP, -1)) == (EV_REL, REL_WHEEL, -1)
     assert map_event(InputEvent(SRC_BTN, BTN_A, 1)) == (EV_KEY, BTN_SOUTH, 1)
     assert map_event(InputEvent(SRC_BTN, BTN_A, 0)) == (EV_KEY, BTN_SOUTH, 0)
     # nav-step events never leak into the gamepad
@@ -139,9 +134,9 @@ def test_deckinput_mode_routing():
             modes.append(m)
         r.bus.subscribe("mode", on_mode)
 
-        d.on_deck_event(InputEvent(SRC_BTN, BTN_WHEEL, 1))   # AION: -> intent
+        d.on_deck_event(InputEvent(SRC_BTN, BTN_X, 1))   # AION: -> intent
         await asyncio.sleep(0.05)
-        assert len(r.emitted) == 1 and r.emitted[0].type == IntentType.ACTIVATE
+        assert len(r.emitted) == 1 and r.emitted[0].type == IntentType.PAUSE
 
         d.on_deck_event(InputEvent(SRC_MODE, 0, MODE_APP))   # switch to APP
         await asyncio.sleep(0.05)

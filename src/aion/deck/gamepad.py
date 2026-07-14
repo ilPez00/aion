@@ -1,7 +1,7 @@
 """
 gamepad.py — expose the deck as a virtual Linux gamepad (APP mode).
 
-While the deck is in APP mode, raw joystick 2 axes, the wheel and the face
+While the deck is in APP mode, raw joystick 2 axes and the face
 buttons are injected into a uinput device named "CyclUno Pad". Any program
 that reads a gamepad (games, mpv, RetroArch, browsers) sees a real controller
 — aion spawns the program (AppHarness) and the deck plays it.
@@ -14,15 +14,14 @@ from __future__ import annotations
 
 from .protocol import (
     InputEvent,
-    SRC_JOY2, SRC_WHEEL, SRC_BTN,
-    CODE_RAW_X, CODE_RAW_Y, CODE_WHEEL_STEP,
-    BTN_A, BTN_B, BTN_J2, BTN_WHEEL, BTN_X, BTN_Y,
+    SRC_JOY2, SRC_BTN,
+    CODE_RAW_X, CODE_RAW_Y,
+    BTN_A, BTN_B, BTN_J2, BTN_X, BTN_Y,
 )
 
 # evdev event type/code numbers (hardcoded so mapping tests need no evdev)
 EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
 ABS_X, ABS_Y = 0x00, 0x01
-REL_WHEEL = 0x08
 BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST = 0x130, 0x131, 0x133, 0x134
 BTN_THUMBL, BTN_SELECT = 0x13D, 0x13A
 
@@ -34,7 +33,6 @@ _BTN_MAP = {
     BTN_X: BTN_WEST,       # X       -> X
     BTN_Y: BTN_NORTH,      # Y       -> Y
     BTN_J2: BTN_THUMBL,    # J2 stick click
-    BTN_WHEEL: BTN_SELECT, # wheel click
 }
 
 
@@ -46,8 +44,6 @@ def map_event(ev: InputEvent) -> tuple[int, int, int] | None:
         if ev.code == CODE_RAW_Y:
             return (EV_ABS, ABS_Y, max(-AXIS_RANGE, min(AXIS_RANGE, ev.val)))
         return None
-    if ev.src == SRC_WHEEL and ev.code == CODE_WHEEL_STEP:
-        return (EV_REL, REL_WHEEL, ev.val)
     if ev.src == SRC_BTN:
         code = _BTN_MAP.get(ev.code)
         if code is None:
@@ -70,7 +66,6 @@ class VirtualPad:
             from evdev import UInput, AbsInfo, ecodes as e
             caps = {
                 e.EV_KEY: sorted(_BTN_MAP.values()),
-                e.EV_REL: [REL_WHEEL],
                 e.EV_ABS: [
                     (ABS_X, AbsInfo(0, -AXIS_RANGE, AXIS_RANGE, 8, 16, 0)),
                     (ABS_Y, AbsInfo(0, -AXIS_RANGE, AXIS_RANGE, 8, 16, 0)),

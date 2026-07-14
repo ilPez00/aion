@@ -320,23 +320,21 @@ class VoiceInput(InputDevice):
 
 # --------------------------------------------------------------------------
 # CyclUno deck — physical console over USB serial (see aion.deck).
-# AION mode: wheel + joy2 + buttons become Intents (this class).
+# AION mode: joy2 + buttons become Intents (this class).
 # APP mode: the same events are injected into a uinput gamepad instead
 # (deck.gamepad.VirtualPad) so a spawned program can be driven directly.
 # deck_intent() is pure so the mapping is unit-testable with no hardware.
 # --------------------------------------------------------------------------
 from .deck.protocol import (  # noqa: E402
     InputEvent as DeckEvent,
-    SRC_JOY2, SRC_WHEEL, SRC_BTN, SRC_MODE,
-    CODE_STEP_X, CODE_STEP_Y, CODE_WHEEL_STEP,
-    BTN_A, BTN_B, BTN_J2, BTN_WHEEL, BTN_X, BTN_Y,
+    SRC_JOY2, SRC_BTN, SRC_MODE,
+    CODE_STEP_X, CODE_STEP_Y,
+    BTN_A, BTN_B, BTN_J2, BTN_X, BTN_Y,
 )
 
 
 def deck_intent(ev: DeckEvent) -> Intent | None:
     """AION-mode mapping: one deck event -> one Intent (None = ignore)."""
-    if ev.src == SRC_WHEEL and ev.code == CODE_WHEEL_STEP:
-        return Intent.navigate("down" if ev.val > 0 else "up")
     if ev.src == SRC_JOY2:
         if ev.code == CODE_STEP_Y and ev.val:
             return Intent.navigate("down" if ev.val > 0 else "up")
@@ -347,7 +345,6 @@ def deck_intent(ev: DeckEvent) -> Intent | None:
         return {
             BTN_A: Intent.activate(),
             BTN_J2: Intent.activate(),
-            BTN_WHEEL: Intent.activate(),
             BTN_B: Intent.back(),
             BTN_X: Intent(IntentType.PAUSE),
             BTN_Y: Intent(IntentType.CANCEL),

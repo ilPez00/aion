@@ -339,7 +339,7 @@ class AiOSApp(App):
                 "joystick: axis=navigate A=activate B=back C=context\n"
                 "voice: 'go to models' · 'run demo hello' · 'stop'\n"
                 "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
-                "deck: wheel=scroll click=run · joy2=navigate · MODE=gamepad")
+                "deck: joy2=navigate · MODE=gamepad")
 
 
 def main() -> None:
