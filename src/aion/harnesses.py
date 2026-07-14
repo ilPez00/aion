@@ -231,6 +231,46 @@ class CyclopsHarness(Harness):
         self._finish(task)
 
 
+class WebHarness(Harness):
+    """DeepSearch harness: answers a query using the live web via DuckDuckGo,
+    then asks the LLM (Groq) to synthesize a cited answer. Streams progress +
+    the final answer into the task's log so it shows natively in the Tasks view.
+
+    Respects pause/kill (lesson #2). Network failures degrade to a routed reply
+    rather than crashing the task.
+    """
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        try:
+            from .web import deepsearch_answer
+        except Exception:  # pragma: no cover
+            deepsearch_answer = None
+        self.registry.set_progress(task, 0.15, 6)
+        self.registry.log(task, f"[web] searching: {prompt[:60]}")
+        self._checkpoint()
+        if deepsearch_answer is None:
+            self.registry.log(task, "[web] web module unavailable")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        try:
+            res = deepsearch_answer(prompt)
+        except Exception as e:  # noqa: BLE001
+            self.registry.log(task, f"[web] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        self.registry.set_progress(task, 0.7, 2)
+        self.registry.log(task, f"[web] answer: {res['answer'][:200]}")
+        for i, s in enumerate(res.get("sources", [])[:4]):
+            self.registry.log(task, f"  src[{i}] {s.get('title','?')} — {s.get('url','')[:60]}")
+        self.registry.set_progress(task, 1.0)
+        self.registry.set_state(task, TaskState.DONE)
+        self._finish(task)
+
+
 class TelemetryHarness(Harness):
     """Lesson #5: real per-harness stats from the host.
 
@@ -547,6 +587,7 @@ HARNESS_TYPES = {
     "app": AppHarness,
     "hermes": HermesHarness,
     "skill": SkillHarness,
+    "web": WebHarness,
 }
 
 

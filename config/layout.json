@@ -63,6 +63,7 @@
     {"id": "app",     "type": "app",     "name": "App Launcher",   "enabled": true, "vram_mb": 0,   "tier": "cheap",    "command": "{p}"},
     {"id": "hermes",  "type": "hermes",  "name": "Hermes Agent",   "enabled": true, "vram_mb": 0,   "tier": "premium"},
     {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"},
-    {"id": "projects","type": "projects","name": "Projects",       "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false}
+    {"id": "projects","type": "projects","name": "Projects",       "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false},
+    {"id": "web",     "type": "web",     "name": "DeepSearch",     "enabled": true, "vram_mb": 0,   "tier": "cheap"}
   ]
 }

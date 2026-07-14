@@ -248,6 +248,10 @@ class Store:
         if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
             self.memory.forget(int(parts[1]))
             return
+        if parts[0] in ("search", "web") and len(parts) == 2:
+            # DeepSearch: run the web harness with the query as the prompt
+            await self._spawn("web", parts[1])
+            return
         if parts[0] == "tier" and len(parts) == 2:
             tier = parts[1].strip().lower()
             hid = next((hid for hid, h in self.harnesses.items() if h.tier == tier), None)
