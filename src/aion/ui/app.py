@@ -22,7 +22,7 @@ from textual.widgets import Header, Static, Input, Label, Footer
 from textual import events
 
 from ..core import Bus, Intent, IntentType, TOPIC_INTENT, load_config
-from ..harnesses import build_harnesses, TelemetryHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
 
@@ -101,9 +101,9 @@ class AiOSApp(App):
         self.query_one("#palette").display = False
         self.query_one("#help").display = False
         self.set_interval(1.0, self._tick)
-        # telemetry pollers
+        # telemetry + stats (Jarvis HUD) pollers
         for h in self.harnesses.values():
-            if isinstance(h, TelemetryHarness):
+            if isinstance(h, (TelemetryHarness, StatsHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         self.router.register(JoystickInput())
@@ -115,6 +115,7 @@ class AiOSApp(App):
 
     def _tick(self) -> None:
         self._render_header()
+        self._render_right()   # live HUD (tokens/agents) refresh without input
         self._push_deck_hud()
 
     def _push_deck_hud(self) -> None:
@@ -221,10 +222,23 @@ class AiOSApp(App):
             vmode += " [PAD]" if s.deck_app else " [DECK]"
         clock = __import__("time").strftime("%H:%M:%S")
         status = f"running: {running}" if running else "standing by"
+        # Jarvis HUD: real token burn + spend + live agents from Hermes state.db
+        hud = ""
+        st = self.store.state.stats.get("stats")
+        if st and st.get("ok"):
+            from ..stats import human_tokens
+            tot = st.get("in", 0) + st.get("out", 0) + st.get("reasoning", 0)
+            cost = st.get("cost_usd", 0.0)
+            live = st.get("live", 0)
+            costs = f" ${cost:.2f}" if cost else ""
+            hud = (f"  [{theme['accent']}]Σ{human_tokens(tot)}[/]"
+                   f"[{theme['dim']}]/{st.get('window','today')}[/]"
+                   f"[{theme['ok']}]{costs}[/]"
+                   f"  [{theme['warn']}]◆{live} live[/]")
         self.query_one("#header", expect_type=Header).text = (
             f"[{theme['accent']}]{self.persona.name}[/]  "
             f"harness: [{theme['ok']}]{name}[/]  "
-            f"{status}  [{theme['dim']}]{clock}{vmode}[/]"
+            f"{status}{hud}  [{theme['dim']}]{clock}{vmode}[/]"
         )
 
     def _render_rail(self) -> None:
@@ -310,6 +324,34 @@ class AiOSApp(App):
                 bits.append(f"gmem {tel['gpu_mem_mb']}MB")
             if bits:
                 lines.append(f"[{theme['dim']}]{' · '.join(bits)}[/]")
+        # ---- Jarvis HUD: per-model token burn + live agent census --------
+        st = self.store.state.stats.get("stats")
+        if st and st.get("ok"):
+            from ..stats import human_tokens
+            models = st.get("models", [])
+            if models:
+                lines.append("")
+                lines.append(f"[{theme['accent']}]TOKENS · {st.get('window','today')}[/]")
+                top = models[:5]
+                maxtot = max((m["tot"] for m in top), default=1) or 1
+                for m in top:
+                    nm = m["model"].split("/")[-1][:16]
+                    meter = bar(m["tot"] / maxtot, width=10, color=theme["accent"])
+                    lines.append(f"[{theme['dim']}]{nm}[/]")
+                    lines.append(f"  {meter} [{theme['dim']}]{human_tokens(m['tot'])}[/]")
+            agents = st.get("agents", [])
+            lines.append("")
+            lines.append(f"[{theme['accent']}]LIVE AGENTS[/] [{theme['warn']}]◆{st.get('live',0)}[/]")
+            if not agents:
+                lines.append(f"[{theme['dim']}](none active)[/]")
+            for a in agents[:6]:
+                where = a.get("branch") or a.get("repo") or a["model"].split("/")[-1][:12]
+                mins = a.get("age_s", 0) // 60
+                lines.append(f"[{theme['ok']}]●[/] [{theme['dim']}]{where[:16]} "
+                             f"{a.get('msgs',0)}m {mins}′[/]")
+        elif st is not None and not st.get("ok"):
+            lines.append("")
+            lines.append(f"[{theme['dim']}](state.db unavailable)[/]")
         # rebuild right rail only when line count changes (rare)
         if len(self._right) != len(lines):
             for c in self._right:

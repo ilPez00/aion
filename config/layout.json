@@ -39,11 +39,14 @@
     {"id": "models",  "title": "Models",   "icon": "◈"},
     {"id": "tasks",   "title": "Tasks",    "icon": "▤"},
     {"id": "agent",   "title": "Agent",    "icon": "✦"},
-    {"id": "memory",  "title": "Memory",   "icon": "◎"}
+    {"id": "memory",  "title": "Memory",   "icon": "◎"},
+    {"id": "hermes",  "title": "Hermes",   "icon": "⚡"},
+    {"id": "skills",  "title": "Skills",   "icon": "📚"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {
     "workspace_1": "1", "workspace_2": "2", "workspace_3": "3", "workspace_4": "4",
+    "workspace_5": "5", "workspace_6": "6",
     "nav_up": ["up", "k"], "nav_down": ["down", "j"],
     "nav_left": ["left", "h"], "nav_right": ["right", "l"],
     "activate": ["enter", "space"], "back": ["escape", "b"],
@@ -55,6 +58,7 @@
     {"id": "cyclops", "type": "cyclops", "name": "Cyclops Agent",  "enabled": true, "vram_mb": 1200,"tier": "premium"},
     {"id": "remote",  "type": "remote",  "name": "Remote Kernel",  "enabled": true, "vram_mb": 0,   "tier": "standard", "remote": "localhost:8765"},
     {"id": "telemetry", "type": "telemetry", "name": "Telemetry",   "enabled": true, "vram_mb": 0,   "tier": "standard", "source": "none", "interval": 2.0},
+    {"id": "stats",     "type": "stats",     "name": "Jarvis HUD",   "enabled": true, "vram_mb": 0,   "tier": "standard", "window": "today", "interval": 3.0},
     {"id": "app",     "type": "app",     "name": "App Launcher",   "enabled": true, "vram_mb": 0,   "tier": "cheap",    "command": "{p}"}
   ]
 }

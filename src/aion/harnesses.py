@@ -293,6 +293,59 @@ class TelemetryHarness(Harness):
                 await self._stat(gpu_util_pct=int(parts[0]), gpu_mem_mb=int(parts[1]))
 
 
+class StatsHarness(Harness):
+    """Jarvis HUD poller: republishes REAL token/cost/live-agent numbers.
+
+    Reads Hermes' own ~/.hermes/state.db (read-only) via StatsReader and
+    publishes a StatsSnapshot dict on TOPIC_STATS under harness id "stats".
+    The header + right rail render from it. No task needed — call .start()
+    once at boot, like TelemetryHarness.
+
+    Config extras:
+      window:   "today" | "24h" | "7d" | "all"   (default "today")
+      interval: seconds between reads             (default 3.0)
+      db_path:  override the state.db location     (default ~/.hermes/state.db)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.window = extra.get("window", "today")
+        self.interval = float(extra.get("interval", 3.0))
+        self._db_path = extra.get("db_path")
+        self._task: asyncio.Task | None = None
+        self._reader = None  # lazy: import inside to keep harnesses import-light
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    def _ensure_reader(self):
+        if self._reader is None:
+            from .stats import StatsReader
+            self._reader = StatsReader(db_path=self._db_path, window=self.window)
+        return self._reader
+
+    async def poll_once(self) -> dict:
+        """Read one snapshot and publish it. Returns the metrics dict."""
+        reader = self._ensure_reader()
+        # sqlite read is blocking; keep it off the event loop
+        snap = await asyncio.to_thread(reader.snapshot)
+        metrics = snap.as_metrics()
+        await self._stat(**metrics)
+        return metrics
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
 # registry of built-in harness types -> class
 class AppHarness(Harness):
     """Spawns a real program as a task (lesson: Jarvis spawns tools).
@@ -370,6 +423,7 @@ HARNESS_TYPES = {
     "remote": RemoteHarness,
     "cyclops": CyclopsHarness,
     "telemetry": TelemetryHarness,
+    "stats": StatsHarness,
     "app": AppHarness,
 }
 
