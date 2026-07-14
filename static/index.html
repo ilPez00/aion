@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AION · AI-OS</title>
+<style>
+  :root{
+    --bg:#04100e; --bg2:#061a16; --cyan:#16f0c8; --green:#7dff9b;
+    --mag:#ff5ad8; --ink:#cfeede; --dim:#5c8a7e; --glass:rgba(12,40,34,.55);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:radial-gradient(120% 120% at 50% 0%,var(--bg2),var(--bg));
+    color:var(--ink);font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+  /* organic breathing border via SVG turbulence */
+  .hud{position:fixed;inset:0;display:grid;grid-template-rows:42px 1fr 132px;
+    grid-template-columns:184px 1fr;gap:8px;padding:10px}
+  .glass{background:var(--glass);border:1px solid rgba(22,240,200,.18);
+    border-radius:14px;backdrop-filter:blur(6px);box-shadow:0 0 24px rgba(22,240,200,.08) inset}
+  /* TOP STATUS BAR */
+  #top{grid-column:1/3;display:flex;align-items:center;gap:18px;padding:0 16px;overflow:hidden}
+  #top .clock{font-size:15px;color:var(--cyan);letter-spacing:1px}
+  #top .date{color:var(--dim);font-size:12px}
+  .meter{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
+  .bar{width:74px;height:7px;border-radius:6px;background:rgba(255,255,255,.06);overflow:hidden}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--cyan));
+    box-shadow:0 0 8px var(--cyan);transition:width .4s}
+  .bar.gpu>i{background:linear-gradient(90deg,var(--mag),#ff9ad8)}
+  /* LEFT RAIL */
+  #rail{display:flex;flex-direction:column;gap:8px;padding:12px 10px;overflow:auto}
+  #rail .title{color:var(--dim);font-size:10px;letter-spacing:2px;margin:2px 4px 6px}
+  .app{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:11px;
+    cursor:pointer;color:var(--ink);border:1px solid transparent;transition:.2s;font-size:13px}
+  .app:hover{border-color:rgba(22,240,200,.4);background:rgba(22,240,200,.06);transform:translateX(3px)}
+  .app.on{border-color:var(--cyan);background:rgba(22,240,200,.12);box-shadow:0 0 16px rgba(22,240,200,.18)}
+  .app .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+  /* STAGE */
+  #stage{position:relative;padding:8px;overflow:hidden}
+  .mod{position:absolute;inset:8px;display:none;flex-direction:column}
+  .mod.on{display:flex}
+  #term pre{margin:0;flex:1;overflow:auto;font-size:13px;line-height:1.15;white-space:pre;
+    color:var(--green);text-shadow:0 0 6px rgba(125,255,155,.4);padding:8px}
+  canvas{width:100%;height:100%;display:block}
+  .row{display:flex;gap:8px;align-items:center;padding:6px}
+  input,textarea,button,select{font-family:inherit}
+  input[type=text],textarea{background:rgba(0,0,0,.3);border:1px solid rgba(22,240,200,.25);
+    color:var(--ink);border-radius:8px;padding:8px}
+  button{background:rgba(22,240,200,.12);border:1px solid var(--cyan);color:var(--cyan);
+    border-radius:8px;padding:8px 12px;cursor:pointer}
+  button:hover{background:rgba(22,240,200,.22)}
+  textarea{flex:1;resize:none;font-size:13px}
+  iframe{flex:1;border:0;background:#fff;border-radius:10px}
+  .hint{color:var(--dim);font-size:11px;padding:4px 8px}
+  /* BOTTOM AI STRIP */
+  #ai{padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+  #transcript{flex:1;overflow:auto;font-size:12px;color:var(--ink)}
+  #transcript .u{color:var(--dim)} #transcript .a{color:var(--cyan)}
+  #aibar{display:flex;gap:8px}
+  #aibar input{flex:1}
+  .pulse{animation:breathe 3.4s ease-in-out infinite}
+  @keyframes breathe{0%,100%{filter:drop-shadow(0 0 6px rgba(22,240,200,.2))}
+    50%{filter:drop-shadow(0 0 16px rgba(22,240,200,.5))}}
+  /* agent-thinking hue shift */
+  body.thinking{animation:hue 1.6s ease-in-out infinite}
+  @keyframes hue{0%,100%{filter:hue-rotate(0deg) saturate(1)}
+    50%{filter:hue-rotate(18deg) saturate(1.25)}}
+  /* organic svg overlay */
+  #organic{position:fixed;inset:0;pointer-events:none;z-index:50;opacity:.06}
+</style>
+</head>
+<body>
+<svg id="organic"><defs>
+  <filter id="goo"><feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" result="n">
+    </feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="14"/></filter>
+</defs><rect width="100%" height="100%" filter="url(#goo)" fill="none" stroke="#16f0c8" stroke-width="2"/></svg>
+
+<div class="hud pulse">
+  <!-- TOP BAR -->
+  <div id="top" class="glass">
+    <div><div class="clock" id="clk">--:--:--</div><div class="date" id="dt">—</div></div>
+    <div class="meter">CPU<div class="bar"><i id="m-cpu"></i></div></div>
+    <div class="meter">GPU<div class="bar gpu"><i id="m-gpu"></i></div></div>
+    <div class="meter">RAM<div class="bar"><i id="m-mem"></i></div></div>
+    <div class="meter">DSK<div class="bar"><i id="m-disk"></i></div></div>
+    <div class="meter">NET↑<span id="m-up">0</span></div>
+    <div class="meter">NET↓<span id="m-down">0</span></div>
+  </div>
+
+  <!-- LEFT RAIL -->
+  <div id="rail" class="glass">
+    <div class="title">AION · MODULES</div>
+    <div class="app on" data-mod="term"><span class="dot"></span>Terminal</div>
+    <div class="app" data-mod="files"><span class="dot"></span>Files</div>
+    <div class="app" data-mod="browser"><span class="dot"></span>Browser</div>
+    <div class="app" data-mod="editor"><span class="dot"></span>Editor</div>
+    <div class="app" data-mod="latex"><span class="dot"></span>LaTeX</div>
+    <div class="app" data-mod="notes"><span class="dot"></span>Notes</div>
+    <div class="app" data-mod="agent"><span class="dot"></span>Agent</div>
+  </div>
+
+  <!-- STAGE -->
+  <div id="stage" class="glass">
+    <div class="mod on" id="mod-term"><pre id="term"></pre></div>
+
+    <div class="mod" id="mod-files">
+      <div class="row"><span class="hint">ORGANIC FILE VISUALIZER</span>
+        <input type="text" id="fpath" value="/home/gio" style="flex:1">
+        <button id="fgo">map</button></div>
+      <canvas id="fcan"></canvas>
+    </div>
+
+    <div class="mod" id="mod-browser">
+      <div class="row"><span class="hint">SPEAK or TYPE → search</span>
+        <input type="text" id="burl" placeholder="https://… or ddg 'query'" style="flex:1">
+        <button id="bgo">open</button>
+        <button id="bmic">🎙 voice</button></div>
+      <iframe id="bwin" src="about:blank"></iframe>
+    </div>
+
+    <div class="mod" id="mod-editor">
+      <div class="row"><span class="hint">EDITOR · live micro TUI</span>
+        <input type="text" id="efile" value="/home/gio/aion/notes/welcome.md" style="flex:1">
+        <button id="ego">open in micro</button><button id="ecl">close</button></div>
+      <pre id="eterm" style="flex:1;color:var(--green);font-size:13px;line-height:1.15;padding:8px;background:rgba(0,0,0,.3)"></pre>
+    </div>
+
+    <div class="mod" id="mod-latex">
+      <div class="row"><span class="hint">LATEX</span><button id="lgo">compile</button>
+        <a id="lpdf" href="#" style="color:var(--cyan)"></a></div>
+      <textarea id="ltex">\documentclass{article}\begin{document}
+\section*{Aion}\textbf{Hello} from the AI-OS.
+\end{document}</textarea>
+      <pre id="llog" class="hint" style="height:60px;overflow:auto"></pre>
+    </div>
+
+    <div class="mod" id="mod-notes">
+      <div class="row"><span class="hint">VAULT GRAPH (Obsidian-style, organic)</span>
+        <select id="nlist"></select><button id="nload">load</button></div>
+      <div style="display:flex;flex:1;min-height:0">
+        <canvas id="ncan" style="flex:1"></canvas>
+        <textarea id="ntext" style="flex:1" placeholder="edit note…"></textarea>
+      </div>
+      <div class="row"><button id="nsave">save note</button></div>
+    </div>
+
+    <div class="mod" id="mod-agent">
+      <div class="row"><span class="hint">AGENT LAYER — type a command, or use the strip below</span></div>
+      <pre id="agentview" style="flex:1;color:var(--cyan);font-size:13px;padding:8px"></pre>
+    </div>
+  </div>
+
+  <!-- BOTTOM AI STRIP -->
+  <div id="ai" class="glass">
+    <div id="transcript"></div>
+    <div id="aibar"><input type="text" id="cmd" placeholder="talk to Aion… (open files / new note / search web)">
+      <button id="csend">send</button><button id="cmic">🎙</button></div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+// ── module switching
+document.querySelectorAll('.app').forEach(a=>a.onclick=()=>{
+  document.querySelectorAll('.app').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.mod').forEach(x=>x.classList.remove('on'));
+  a.classList.add('on'); $('#mod-'+a.dataset.mod).classList.add('on');
+  if(a.dataset.mod==='files') drawGraph('fcan','/api/files?path='+encodeURIComponent($('#fpath').value));
+  if(a.dataset.mod==='notes') loadNotes();
+});
+// ── top bar live stats
+let ws=new WebSocket(`ws://${location.host}/ws/events`);
+ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type!=='stats')return;
+  $('#clk').textContent=d.time; $('#dt').textContent=d.date;
+  $('#m-cpu').style.width=d.cpu+'%'; $('#m-mem').style.width=d.mem+'%';
+  $('#m-disk').style.width=d.disk+'%';
+  $('#m-gpu').style.width=(d.gpu==null?0:d.gpu)+'%';
+  $('#m-up').textContent=(d.net_up/1e6).toFixed(1)+'M';
+  $('#m-down').textContent=(d.net_down/1e6).toFixed(1)+'M';};
+// ── terminal PTY
+let tws=new WebSocket(`ws://${location.host}/ws/term`);
+let tbuf=[];
+tws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='screen'){
+  $('#term').textContent=d.lines.join('\n');
+  $('#term').scrollTop=$('#term').scrollHeight;}};
+$('#term').onclick=()=>{};
+document.addEventListener('keydown',ev=>{
+  if($('#mod-term').classList.contains('on') && document.activeElement.tagName!=='INPUT'
+     && document.activeElement.tagName!=='TEXTAREA'){
+    ev.preventDefault();
+    let k=ev.key;
+    if(k==='Enter')k='\r'; else if(k==='Backspace')k='\b';
+    else if(k.length>1) return;
+    tws.send(JSON.stringify({type:'input',data:k}));
+  }
+});
+// ── editor: live micro TUI via dedicated PTY
+let ews=null;
+function eOpen(){
+  if(ews) return;
+  ews=new WebSocket(`ws://${location.host}/ws/editor`);
+  ews.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='screen'){
+    $('#eterm').textContent=d.lines.join('\n');$('#eterm').scrollTop=$('#eterm').scrollHeight;}};
+  ews.onopen=()=>ews.send(JSON.stringify({type:'open',file:$('#efile').value}));
+}
+function eClose(){if(ews){ews.send(JSON.stringify({type:'close'}));ews.close();ews=null;$('#eterm').textContent='';}}
+$('#ego').onclick=eOpen; $('#ecl').onclick=eClose;
+document.addEventListener('keydown',ev=>{
+  if($('#mod-editor').classList.contains('on') && ews && document.activeElement.tagName!=='INPUT'){
+    ev.preventDefault();let k=ev.key;
+    if(k==='Enter')k='\r';else if(k==='Backspace')k='\b';else if(k.length>1)return;
+    ews.send(JSON.stringify({type:'input',data:k}));}});
+// ── files organic graph
+async function drawGraph(cid,url){
+  const c=$('#'+cid); const ctx=c.getContext('2d');
+  const r=await fetch(url); const g=await r.json();
+  layout(g); render();
+  function layout(g){const W=c.width=c.clientWidth,H=c.clientHeight=c.clientHeight;
+    g.nodes.forEach((n,i)=>{const a=i/g.nodes.length*6.28;n.x=W/2+Math.cos(a)*Math.min(W,H)*0.3;
+      n.y=H/2+Math.sin(a)*Math.min(W,H)*0.3;n.vx=0;n.vy=0;});
+    for(let k=0;k<120;k++){g.edges.forEach(e=>{const s=g.nodes.find(n=>n.id==e.s),
+      t=g.nodes.find(n=>n.id==e.t);if(!s||!t)return;const dx=t.x-s.x,dy=t.y-s.y,
+      d=Math.hypot(dx,dy)||1;const f=(d-90)/d*0.04;
+      s.vx+=dx*f;s.vy+=dy*f;t.vx-=dx*f;t.vy-=dy*f;});
+      g.nodes.forEach(n=>{n.x+=n.vx;n.y+=n.vy;n.vx*=0.85;n.vy*=0.85;});}}
+  function render(){
+    const t=performance.now()/2600;
+    g.nodes.forEach((n,i)=>{n._ox=n._ox??n.x;n._oy=n._oy??n.y;
+      n.x=n._ox+Math.sin(t+i)*4; n.y=n._oy+Math.cos(t*0.9+i)*4;});
+    ctx.clearRect(0,0,c.width,c.height);
+    ctx.strokeStyle='rgba(22,240,200,.25)';ctx.lineWidth=1;
+    g.edges.forEach(e=>{const s=g.nodes.find(n=>n.id==e.s),t=g.nodes.find(n=>n.id==e.t);
+      if(!s||!t)return;ctx.beginPath();ctx.moveTo(s.x,s.y);ctx.lineTo(t.x,t.y);ctx.stroke();});
+    g.nodes.forEach(n=>{
+      const pulse=1+0.12*Math.sin(performance.now()/600+n.x);
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r*pulse,0,6.28);
+      ctx.fillStyle=n.kind==='dir'?'#16f0c8':(n.kind==='note'?'#ff5ad8':'#7dff9b');
+      ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=14;ctx.fill();ctx.shadowBlur=0;
+      ctx.fillStyle='#cfeede';ctx.font='10px monospace';ctx.fillText(n.label,n.x+10,n.y+3);});}
+  setInterval(render,40); // gentle living drift
+}
+$('#fgo').onclick=()=>drawGraph('fcan','/api/files?path='+encodeURIComponent($('#fpath').value));
+// ── browser + voice-to-search
+$('#bgo').onclick=async()=>{let u=$('#burl').value;
+  if(/^https?:\/\//.test(u)){ $('#bwin').src=u; return; }
+  // natural-language / search query -> real deepsearch backend
+  const r=await fetch('/api/search',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({query:u})}); const d=await r.json();
+  let h='<div style="padding:10px;font-family:monospace">';
+  (d.results||[]).forEach(res=>{h+=`<p><a href="${res.url}" target="_blank" style="color:#16f0c8">${res.title}</a><br><span style="color:#5c8a7e;font-size:11px">${res.snippet.slice(0,140)}</span></p>`;});
+  h+='</div>';
+  $('#bwin').srcdoc=h;};
+async function speech(){ // stub: real path = getUserMedia -> WS -> faster-whisper
+  $('#burl').value='[voice: STT stub — wire getUserMedia→/ws/voice→faster-whisper]';
+}
+$('#bmic').onclick=speech;
+// ── latex
+$('#lgo').onclick=async()=>{const r=await fetch('/api/latex',{method:'POST',
+  headers:{'content-type':'application/json'},body:JSON.stringify({src:$('#ltex').value})});
+  const d=await r.json();$('#llog').textContent=d.log;$('#lpdf').textContent=d.ok?'open PDF':'';
+  if(d.ok)$('#lpdf').href=d.pdf;};
+// ── notes
+async function loadNotes(){const r=await fetch('/api/notes');const g=await r.json();
+  $('#nlist').innerHTML=g.nodes.map(n=>`<option>${n.id}</option>`).join('');
+  drawGraph('ncan','/api/notes');
+  $('#nload').onclick=async()=>{const nm=$('#nlist').value;const rr=await fetch('/api/notes/content?name='+nm);
+    const d=await rr.json();$('#ntext').value=d.text;};}
+$('#nsave').onclick=async()=>{const nm=$('#nlist').value;await fetch('/api/notes/save',{method:'POST',
+  headers:{'content-type':'application/json'},body:JSON.stringify({name:nm,text:$('#ntext').value})});
+  loadNotes();};
+// ── agent strip
+async function send(text){text=text.trim();if(!text)return;
+  $('#transcript').insertAdjacentHTML('beforeend',`<div class="u">› ${text}</div>`);
+  document.body.classList.add('thinking');
+  const r=await fetch('/api/agent',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({text})});const d=await r.json();
+  document.body.classList.remove('thinking');
+  let html=`<div class="a">◦ ${d.reply}</div>`;
+  if(d.searched && d.sources && d.sources.length){
+    html+=`<div class="src">⌖ sources:`;
+    d.sources.slice(0,4).forEach(s=>{html+=` <a href="${s.url}" target="_blank" style="color:var(--dim)">${s.title.slice(0,40)}</a>`;});
+    html+=`</div>`;
+  }
+  $('#transcript').insertAdjacentHTML('beforeend',html);
+  $('#agentview').textContent=d.reply;
+  $('#transcript').scrollTop=$('#transcript').scrollHeight;}
+$('#csend').onclick=()=>{send($('#cmd').value);$('#cmd').value='';};
+$('#cmd').onkeydown=e=>{if(e.key==='Enter'){$('#csend').click();}};
+$('#cmic').onclick=speech;
+</script>
+</body>
+</html>

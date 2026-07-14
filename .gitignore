@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
-.venv/
-*.egg-info/
-.aion/
-.venv
+build*.pdf
+build*.aux
+build*.fls
+build*.log
+build*.fdb_latexmk
