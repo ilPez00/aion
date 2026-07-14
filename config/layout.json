@@ -59,6 +59,8 @@
     {"id": "remote",  "type": "remote",  "name": "Remote Kernel",  "enabled": true, "vram_mb": 0,   "tier": "standard", "remote": "localhost:8765"},
     {"id": "telemetry", "type": "telemetry", "name": "Telemetry",   "enabled": true, "vram_mb": 0,   "tier": "standard", "source": "none", "interval": 2.0},
     {"id": "stats",     "type": "stats",     "name": "Jarvis HUD",   "enabled": true, "vram_mb": 0,   "tier": "standard", "window": "today", "interval": 3.0},
-    {"id": "app",     "type": "app",     "name": "App Launcher",   "enabled": true, "vram_mb": 0,   "tier": "cheap",    "command": "{p}"}
+    {"id": "app",     "type": "app",     "name": "App Launcher",   "enabled": true, "vram_mb": 0,   "tier": "cheap",    "command": "{p}"},
+    {"id": "hermes",  "type": "hermes",  "name": "Hermes Agent",   "enabled": true, "vram_mb": 0,   "tier": "premium"},
+    {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"}
   ]
 }

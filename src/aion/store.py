@@ -17,7 +17,7 @@ from typing import Any
 
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore,
-    Task, TaskState, TOPIC_VOICE, load_config,
+    Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
 )
 from .memory import MemoryStore
 from .voice.persona import Persona
@@ -35,6 +35,10 @@ class ViewState:
     history: list[str] = field(default_factory=list)
     stats: dict[str, dict] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
+    hermes_kanban: list[dict] = field(default_factory=list)
+    hermes_memory: list[dict] = field(default_factory=list)
+    hermes_gateway: dict = field(default_factory=dict)
+    skills: list[dict] = field(default_factory=list)
 
 
 class Store:
@@ -57,6 +61,8 @@ class Store:
         self.bus.subscribe("stats", self._on_stats)
         self.bus.subscribe("log", self._on_log)
         self.bus.subscribe("mode", self._on_mode)
+        self.bus.subscribe(TOPIC_HERMES, self._on_hermes)
+        self.bus.subscribe(TOPIC_SKILL, self._on_skill)
         # restore interrupted tasks from a previous crash
         for t in self.store.load():
             self.registry.ingest(t)
@@ -64,6 +70,28 @@ class Store:
     # ---- helpers --------------------------------------------------------
     def _first_harness(self) -> str:
         return next(iter(self.harnesses), next(iter(self.cfg.get("harnesses", [{}])), {}).get("id", ""))
+
+    async def _load_hermes_data(self) -> None:
+        try:
+            from .hermes import KanbanReader, HermesMemoryReader
+            tasks = KanbanReader().tasks(limit=20)
+            kanban = [{"id": t.id, "title": t.title, "status": t.status,
+                       "assignee": t.assignee} for t in tasks]
+            await self.bus.publish(TOPIC_HERMES, {"action": "kanban", "data": {"tasks": kanban}})
+            sections = HermesMemoryReader().sections()
+            await self.bus.publish(TOPIC_HERMES, {"action": "memory", "data": {"sections": sections}})
+        except Exception:
+            pass
+
+    async def _load_skills_data(self) -> None:
+        try:
+            from .hermes import SkillLoader
+            skills = SkillLoader().list_all()
+            data = [{"name": s.name, "description": s.description, "source": s.source}
+                    for s in skills]
+            await self.bus.publish(TOPIC_SKILL, {"action": "list", "data": data})
+        except Exception:
+            pass
 
     def _current_items(self) -> list[dict]:
         ws = self.cfg["workspaces"][self.state.active_ws]["id"]
@@ -76,6 +104,16 @@ class Store:
             return [t.as_dict() for t in self.registry.tasks.values()]
         if ws == "memory":
             return self.memory.items()
+        if ws == "hermes":
+            asyncio.create_task(self._load_hermes_data())
+            return [{"id": t["id"], "title": t["title"], "status": t["status"],
+                     "assignee": t.get("assignee", "")}
+                    for t in self.state.hermes_kanban]
+        if ws == "skills":
+            asyncio.create_task(self._load_skills_data())
+            return [{"id": s.get("name", s.get("id", "")), "name": s.get("name", ""),
+                     "description": s.get("description", ""), "source": s.get("source", "")}
+                    for s in self.state.skills]
         return []
 
     def _running_for(self, hid: str) -> int:
@@ -243,3 +281,17 @@ class Store:
             self.state.voice_active = msg["active"]
         elif msg.get("mode") == "deck_app":
             self.state.deck_app = msg["active"]
+
+    async def _on_hermes(self, msg: dict) -> None:
+        action = msg.get("action", "")
+        data = msg.get("data", {})
+        if action == "kanban":
+            self.state.hermes_kanban = data.get("tasks", [])
+        elif action == "memory":
+            self.state.hermes_memory = data.get("sections", [])
+        elif action == "gateway":
+            self.state.hermes_gateway = data
+
+    async def _on_skill(self, msg: dict) -> None:
+        if msg.get("action") == "list":
+            self.state.skills = msg.get("data", [])

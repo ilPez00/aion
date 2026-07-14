@@ -73,8 +73,8 @@ def test_missing_db_degrades():
     print("ok: missing db degrades to empty snapshot")
 
 
-def test_aggregation(tmp: Path):
-    db = tmp / "state.db"
+def test_aggregation(tmp_path: Path):
+    db = tmp_path / "state.db"
     _make_db(db)
     r = StatsReader(db_path=db, window="all")
     snap = r.snapshot()
@@ -101,8 +101,8 @@ def test_aggregation(tmp: Path):
     print("ok: aggregation + live-agent census correct")
 
 
-def test_window_today(tmp: Path):
-    db = tmp / "state2.db"
+def test_window_today(tmp_path: Path):
+    db = tmp_path / "state2.db"
     _make_db(db)
     r = StatsReader(db_path=db, window="today")
     snap = r.snapshot()
@@ -111,8 +111,8 @@ def test_window_today(tmp: Path):
     print("ok: today window works")
 
 
-def test_harness_poll_publishes(tmp: Path):
-    db = tmp / "state3.db"
+def test_harness_poll_publishes(tmp_path: Path):
+    db = tmp_path / "state3.db"
     _make_db(db)
     bus = Bus()
     got = {}

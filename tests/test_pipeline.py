@@ -9,12 +9,15 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion.ui.app import AiOSApp
 from aion.core import TOPIC_INTENT, Intent, IntentType, TaskState
 
 
+@pytest.mark.asyncio
 async def test_pipeline():
     Path.home().joinpath(".aion", "session.json").unlink(missing_ok=True)
     app = AiOSApp()

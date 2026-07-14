@@ -21,7 +21,9 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Header, Static, Input, Label, Footer
 from textual import events
 
-from ..core import Bus, Intent, IntentType, TOPIC_INTENT, load_config
+from ..core import (
+    Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
+)
 from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
@@ -85,6 +87,11 @@ class AiOSApp(App):
         self._rail: list[Cell] = []
         self._center: list[Cell] = []
         self._right: list[Cell] = []
+        from ..voice.persona import Persona
+        from ..voice.output import VoiceOutput
+        self.persona = Persona()
+        self.voice_output = VoiceOutput()
+        self._greeted = False
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -112,6 +119,9 @@ class AiOSApp(App):
         self.sub_title = "multi-harness · stats visualizer"
         # route bus -> store (store is the brain, app just re-renders)
         self.bus.subscribe(TOPIC_INTENT, self._on_intent)
+        self.bus.subscribe(TOPIC_VOICE, self._on_voice)
+        self.bus.subscribe(TOPIC_HERMES, self._on_hermes_event)
+        self.bus.subscribe(TOPIC_SKILL, self._on_skill_event)
 
     def _tick(self) -> None:
         self._render_header()
@@ -136,8 +146,19 @@ class AiOSApp(App):
 
     # ===== INPUT =========================================================
     async def _on_intent(self, intent: Intent) -> None:
-        # let the store own all state mutation
         self.store.handle(intent)
+        self._render_all()
+
+    async def _on_voice(self, msg: dict) -> None:
+        try:
+            await self.voice_output.say(msg.get("text", ""))
+        except Exception:
+            pass
+
+    async def _on_hermes_event(self, msg: dict) -> None:
+        self._render_all()
+
+    async def _on_skill_event(self, msg: dict) -> None:
         self._render_all()
 
     def on_key(self, event: events.Key) -> None:
@@ -296,6 +317,19 @@ class AiOSApp(App):
             head = f" [filter: {q}]" if q else ""
             return (f"[{col}]{f}#{it['n']} {it['text']}[/]  "
                     f"[{theme['dim']}]{it['when']}{head}[/]")
+        if ws == "hermes":
+            status = it.get("status", "?")
+            scol = {"done": theme["ok"], "ready": theme["warn"],
+                    "blocked": theme["err"]}.get(status, theme["dim"])
+            emoji = {"done": "✓", "ready": "▶", "blocked": "⊘",
+                     "in_progress": "●"}.get(status, "○")
+            return (f"[{col}]{f}{emoji} {it['title'][:50]}[/]\n"
+                    f"  [{scol}]{status}[/] "
+                    f"[{theme['dim']}]assignee: {it.get('assignee','-')}[/]")
+        if ws == "skills":
+            desc = it.get("description", "")[:60]
+            return (f"[{col}]{f}{it.get('name','?')}[/]  "
+                    f"[{theme['dim']}]{desc}[/]")
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -378,8 +412,10 @@ class AiOSApp(App):
 
     def _help_text(self) -> str:
         theme = self.cfg["theme"]
+        ws_count = len(self.cfg["workspaces"])
+        ws_keys = "/".join(str(i) for i in range(1, ws_count + 1))
         return (f"[{theme['accent']}]aion — shortcuts[/]\n"
-                "1/2/3          switch workspace (Models/Tasks/Agent)\n"
+                f"{ws_keys}         switch workspace\n"
                 "↑↓ j/k         move selection\n"
                 "←→ h/l         switch workspace\n"
                 "Enter / Space  run harness / pause-resume task\n"
@@ -392,6 +428,8 @@ class AiOSApp(App):
                 "joystick: axis=navigate A=activate B=back C=context\n"
                 "voice: 'go to models' · 'run demo hello' · 'stop'\n"
                 "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
+                "hermes: 'kanban' · 'mem' · 'gateway'\n"
+                "skills: 'skill <name> <prompt>'\n"
                 "deck: joy2=navigate · MODE=gamepad")
 
 

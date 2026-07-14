@@ -417,6 +417,70 @@ class AppHarness(Harness):
         self._finish(task)
 
 
+class HermesHarness(Harness):
+    """Runs a prompt through the Hermes agent CLI."""
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        self.registry.log(task, f"[hermes] dispatching: {prompt[:60]}")
+        try:
+            from .hermes.client import HermesClient
+            client = HermesClient()
+            lines: list[str] = []
+            async for line in client.chat(prompt):
+                lines.append(line)
+                self.registry.log(task, line[:120])
+            self.registry.set_progress(task, 1.0)
+            self.registry.set_state(task, TaskState.DONE)
+            self.registry.log(task, f"[hermes] done ({len(lines)} lines)")
+        except Exception as e:
+            self.registry.log(task, f"[hermes] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+        self._finish(task)
+
+
+class SkillHarness(Harness):
+    """Loads and runs a skill's workflow from a skill directory."""
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        skill_name = task.label.split(":", 1)[0].strip() if ":" in task.label else task.label
+        self.registry.log(task, f"[skill] loading: {skill_name}")
+        from .hermes.skills import SkillLoader
+        info = SkillLoader().load(skill_name)
+        if info is None:
+            self.registry.log(task, f"[skill] '{skill_name}' not found")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        sk_path = info.path / "SKILL.md"
+        if not sk_path.exists():
+            self.registry.log(task, f"[skill] no SKILL.md in {info.path}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+        body = sk_path.read_text()
+        self.registry.log(task, f"[skill] {info.name}: {body[:80]}...")
+        steps = body.strip().split("\n\n")
+        for i, chunk in enumerate(steps):
+            if self._killed(task):
+                self.registry.set_state(task, TaskState.CANCELLED)
+                self._finish(task)
+                return
+            if not await self._wait_if_paused(task):
+                self.registry.set_state(task, TaskState.CANCELLED)
+                self._finish(task)
+                return
+            self.registry.log(task, f"[skill] step {i+1}/{len(steps)}: {chunk[:100]}")
+            self.registry.set_progress(task, (i + 1) / len(steps))
+            await asyncio.sleep(0.1)
+        self.registry.set_state(task, TaskState.DONE)
+        self.registry.log(task, f"[skill] {info.name} complete")
+        self._finish(task)
+
+
 HARNESS_TYPES = {
     "demo": DemoHarness,
     "shell": ShellHarness,
@@ -425,6 +489,8 @@ HARNESS_TYPES = {
     "telemetry": TelemetryHarness,
     "stats": StatsHarness,
     "app": AppHarness,
+    "hermes": HermesHarness,
+    "skill": SkillHarness,
 }
 
 

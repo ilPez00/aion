@@ -85,6 +85,8 @@ TOPIC_STATS = "stats"    # payload: {"harness": str, "metrics": dict}
 TOPIC_LOG = "log"        # payload: {"task_id": str, "line": str}
 TOPIC_MODE = "mode"      # payload: {"mode": str, "active": bool}
 TOPIC_VOICE = "voice"    # payload: {"text": str, "event": str}
+TOPIC_HERMES = "hermes"  # payload: {"action": str, "data": dict}
+TOPIC_SKILL = "skill"    # payload: {"action": str, "name": str, "data": dict}
 
 
 class Bus:
