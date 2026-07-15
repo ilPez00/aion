@@ -129,6 +129,7 @@ class AiOSApp(App):
         self._greeted = False
         self._term_pane = None          # mounted TermPane widget (lazy)
         self._term_active = False       # whether the term workspace is active
+        self._boot_tick = 0             # cinematic boot progress
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -169,6 +170,10 @@ class AiOSApp(App):
     def _tick(self) -> None:
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
+        # Cinematic boot: progress through boot lines, then release
+        if self._boot_tick < 99:
+            self._boot_tick += 1
+            self._render_center()
         # projects + vault + sys workspaces poll on a timer, not on input
         wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         if wid in ("projects", "vault", "sys"):
@@ -378,6 +383,12 @@ class AiOSApp(App):
         theme = self.cfg["theme"]
         ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         center = self.query_one("#center", expect_type=VerticalScroll)
+
+        # Cinematic boot sequence — renders boot lines the first few seconds
+        if self._boot_tick < 99 and ws == "desktop":
+            self._render_boot_sequence(center, theme)
+            return
+
         items = self.store._current_items()
         # rebuild only if the item count changed (structural); else mutate text
         if len(self._center) != len(items):
@@ -389,6 +400,34 @@ class AiOSApp(App):
             focused = i == self.store.state.focus
             cell.set_class(focused, "focus")
             cell.update(self._center_line(ws, it, focused, theme))
+
+    def _render_boot_sequence(self, center: VerticalScroll, theme: dict) -> None:
+        """Cinematic Jarvis-style boot: reveal lines one-by-one, then hand over."""
+        a, ok_, di = theme["accent"], theme["ok"], theme["dim"]
+        lines = [
+            "INITIALIZING NEURAL INTERFACE",
+            "LOADING HUD MODULES",
+            "CONNECTING AION CORE",
+            "VOICE LINK ESTABLISHED",
+            "MEMORY SYSTEMS SYNCHRONIZED",
+            "ALL SYSTEMS NOMINAL",
+        ]
+        reveal = int(self._boot_tick / 99 * len(lines)) + 1
+        out = [f"[{a}]▸ AION BOOT SEQUENCE[/]"]
+        for i, line in enumerate(lines[:reveal]):
+            out.append(f" [{ok_}]▸ {line}  OK[/]")
+        if reveal < len(lines):
+            out.append(f" [{di}]▸ {lines[reveal]} ...[/]")
+        self._set_center_text("\n".join(out), center)
+
+    def _set_center_text(self, text: str, center: VerticalScroll) -> None:
+        """Render a single string into the center (used for boot + transient views)."""
+        if len(self._center) != 1:
+            for c in self._center:
+                c.remove()
+            self._center = [Cell()]
+            center.mount(*self._center)
+        self._center[0].update(text)
 
     def _center_line(self, ws: str, it: dict, focused: bool, theme: dict) -> str:
         f = "▌" if focused else " "
@@ -680,75 +719,99 @@ class AiOSApp(App):
         return "\n".join(lines)
 
     def _desktop_panel(self, theme: dict) -> str:
-        """Agentic OS desktop — compact (~50 cols), 4 sections, no wrap."""
-        from .gauges import hbar
+        """Agentic OS desktop — jarvis_ai-inspired numbered panels, KV rows."""
+        from .gauges import hbar, core_grid
         items = self.store._current_items()
         data = items[0].get("data", {}) if items else {}
-        a, ok_c, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        sep = f"[{a}]╌" + "╌" * 48 + "[/]"
         p = []
 
-        # ─── STATUS ────────────────────────────────────────────────────────
+        # ─── 01 STATUS ────────────────────────────────────────────────────
         cpu = data.get("cpu_pct", 0); ram = data.get("ram_pct", 0)
         disk = data.get("disk_pct", 0)
-        nd = (data.get("net_down") or "0 B")[:5]
-        nu = (data.get("net_up") or "0 B")[:5]
+        nd = (data.get("net_down") or "0")[:6]
+        nu = (data.get("net_up") or "0")[:6]
         tr = data.get("tasks_running", 0); td = data.get("tasks_done", 0)
         tf = data.get("tasks_failed", 0)
-        cc = er if cpu > 80 else wa if cpu > 50 else ok_c
-        rc = er if ram > 80 else wa if ram > 50 else ok_c
-        dc = er if disk > 80 else wa if disk > 50 else ok_c
-        p.append(f"[{a}]─ STATUS ─[/]")
-        p.append(f" [{di}]CPU[/][{cc}]{cpu:2.0f}%[/] [{di}]RAM[/][{rc}]{ram:2.0f}%[/] [{di}]DSK[/][{dc}]{disk:2.0f}%[/] [{di}]▼[/]{nd} [{di}]▲[/]{nu} [{ok_c}]●{tr}[/] [{ok_c}]✓{td}[/] [{er}]✗{tf}[/]")
+        sw = data.get("swarm_working", 0)
+        cc = er if cpu > 80 else wa if cpu > 50 else ok_
+        rc = er if ram > 80 else wa if ram > 50 else ok_
+        dc = er if disk > 80 else wa if disk > 50 else ok_
+        p.append(f" {sep}")
+        p.append(f" [{a}]01 STATUS[/]")
+        p.append(f" [{di}]CPU[/][{cc}] {cpu:2.0f}%[/]  [{di}]RAM[/][{rc}] {ram:2.0f}%[/]  [{di}]DSK[/][{dc}] {disk:2.0f}%[/]")
+        p.append(f" [{di}]NET[/] ▼{nd} ▲{nu}")
+        p.append(f" [{ok_}]●[/]{tr} running  [{ok_}]✓[/]{td} done  [{er}]✗[/]{tf} failed" + (f"  [{wa}]⚇[/]{sw} working" if sw else ""))
 
-        # ─── SYSTEM ────────────────────────────────────────────────────────
-        p.append(f"[{a}]─ SYSTEM ─[/]")
+        # ─── 02 SYSTEM ────────────────────────────────────────────────────
+        p.append(f" [{a}]02 SYSTEM[/]")
         ru = data.get("ram_used_gb", 0); rt = data.get("ram_total_gb", 16)
-        p.append(f" [{di}]CPU[/] {data.get('cpu_pct',0):.0f}%  [{di}]RAM[/] {hbar(ram/100,8,rc)} {ru:.0f}/{rt:.0f}")
-        p.append(f" [{di}]DSK[/] {hbar(disk/100,8,dc)}  [{di}]NET[/] ▼{nd} ▲{nu}")
+        per_core = data.get("cpu_per_core", [])
+        if per_core:
+            cg = core_grid(per_core, group=4, color=ok_)
+            p.append(f" [{di}]CPU[/] {cg}")
+        p.append(f" [{di}]RAM[/] {hbar(ram/100, 10, rc)} {ru:.1f}/{rt:.0f}GB")
+        p.append(f" [{di}]DSK[/] {hbar(disk/100, 10, dc)}")
+        gpu = data.get("gpu_util", -1)
+        if gpu >= 0:
+            gc = er if gpu > 80 else wa if gpu > 50 else ok_
+            p.append(f" [{di}]GPU[/] [{gc}]{gpu:.0f}%[/] {data.get('gpu_mem_mb',0):.0f}MB")
         vn = data.get("vault_notes", 0); mn = data.get("mem_count", 0)
-        xs = []
-        if vn: xs.append(f"[{di}]📓{vn}[/]")
-        if mn: xs.append(f"[{di}]◎{mn}[/]")
-        if xs: p.append(f" {' '.join(xs)}")
+        extra = [f"📓{vn}" for vn in [vn] if vn] + [f"◎{mn}" for mn in [mn] if mn]
+        if extra: p.append(f" {' '.join(extra)}")
 
-        # ─── TASKS ─────────────────────────────────────────────────────────
-        p.append(f"[{a}]─ TASKS ─[/]")
+        # ─── 03 TASKS ─────────────────────────────────────────────────────
+        p.append(f" [{a}]03 TASKS[/]")
         active = data.get("active_tasks", [])
         if active:
             for t in active[:4]:
-                tc = ok_c if t["state"] == "done" else wa
+                tc = ok_ if t["state"] == "done" else wa
                 ic = "⏸" if t.get("paused") else "●" if t["state"] == "running" else "◆"
-                pt = int(t["progress"] * 100)
-                p.append(f" [{tc}]{ic}[/] [{di}]{t['label'][:20]}[/] {hbar(t['progress'],6,tc)} {pt}%")
+                lines = []
+                lines.append(f" [{tc}]{ic}[/] [{di}]{t['label'][:20]}[/]")
+                lines.append(f"  {hbar(t['progress'], 8, tc)} {int(t['progress']*100)}%")
+                p.append("".join(lines))
         else:
-            p.append(f" [{di}]idle — run demo hello or swarm create[/]")
+            p.append(f" [{di}](idle · Ctrl-K: run demo hello)[/]")
         hist = data.get("task_history", [])
         if hist:
             for h in hist[:2]:
                 ic = "✓" if h["result"] == "done" else "✗"
-                cl = ok_c if h["result"] == "done" else er
+                cl = ok_ if h["result"] == "done" else er
                 p.append(f" [{cl}]{ic}[/] [{di}]{h['label'][:28]}[/]")
 
-        # ─── AGENTS ────────────────────────────────────────────────────────
-        p.append(f"[{a}]─ AGENTS ─[/]")
+        # ─── 04 AGENTS ────────────────────────────────────────────────────
+        p.append(f" [{a}]04 AGENTS[/]")
         m = data.get("token_models", [])
         if m:
             for x in m[:2]:
                 nm = x["model"].split("/")[-1][:12]
                 t = x.get("tot", 0)
-                p.append(f" [{di}]{nm}[/] {hbar(min(t/1e5,1),6,ok_c)} {t/1000:.0f}k")
-        sw = data.get("swarm_agents", [])
-        if sw:
-            for x in sw[:2]:
+                p.append(f" [{di}]{nm}[/] {hbar(min(t/1e5,1), 8, ok_)} {t/1000:.0f}k")
+        sw_ag = data.get("swarm_agents", [])
+        if sw_ag:
+            for x in sw_ag[:2]:
                 ic = {"idle":"○","working":"●","done":"✓","failed":"✗","blocked":"⊘"}.get(x.get("status","idle"),"?")
-                cl = ok_c if x["status"]=="done" else wa if x["status"]=="working" else di
-                p.append(f" [{cl}]{ic}[/] [{di}]{x['name'][:12]} {x.get('goal','')[:16]}[/]")
-        if not m and not sw:
-            p.append(f" [{di}]no data yet — stats harness populates[/]")
+                cl = ok_ if x["status"]=="done" else wa if x["status"]=="working" else di
+                p.append(f" [{cl}]{ic}[/] [{di}]{x['name'][:12]} {x.get('goal','')[:20]}[/]")
+        if not m and not sw_ag:
+            p.append(f" [{di}]no agent data yet[/]")
 
-        # ─── QUICK ─────────────────────────────────────────────────────────
-        p.append(f"[{a}]─ QUICK ─[/]")
-        p.append(f" [{di}]Ctrl-K: run demo|swarm|mode|theme|note|mem|tier[/]")
+        # ─── 05 ACTIVITY ─────────────────────────────────────────────────
+        p.append(f" [{a}]05 ACTIVITY[/]")
+        feed = data.get("agent_feed", [])
+        if feed:
+            for line in feed[-4:]:
+                p.append(f" [{di}]{line[:46]}[/]")
+        else:
+            p.append(f" [{di}](idle)[/]")
+
+        # ─── 06 COMMANDS ─────────────────────────────────────────────────
+        p.append(f" [{a}]06 QUICK[/]")
+        p.append(f" [{di}]Ctrl-K: run demo|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
+
+        p.append(f" {sep}")
         return "\n".join(p)
 
     def _render_right(self) -> None:

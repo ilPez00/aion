@@ -62,6 +62,9 @@ class DashboardData:
     steps: int = 0
     heart_rate: float = 0.0
 
+    # — activity feed —
+    agent_feed: list[str] = field(default_factory=list)
+
     # — mode —
     active_mode: str = "default"
     mode_icon: str = "◉"
@@ -150,12 +153,17 @@ def collect_dashboard(state, cfg: dict) -> DashboardData:
     # Active model
     d.active_model = state.active_harness
 
+    # Agent activity feed (last 6 log lines)
+    d.agent_feed = list(state.logs)[-6:]
+
     return d
 
 
 def _safe_get(key: str, default: Any = "") -> Any:
     try:
-        import platform
-        return getattr(platform, key, default)()
+        import socket
+        if key == "hostname":
+            return socket.gethostname()
+        return default
     except Exception:
         return default
