@@ -130,6 +130,7 @@ class AiOSApp(App):
         self._term_pane = None          # mounted TermPane widget (lazy)
         self._term_active = False       # whether the term workspace is active
         self._boot_tick = 0             # cinematic boot progress
+        self._jarvis_tick = 0           # proactive jarvis poll counter
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -174,6 +175,11 @@ class AiOSApp(App):
         if self._boot_tick < 99:
             self._boot_tick += 1
             self._render_center()
+        # Proactive Jarvis: every ~10 ticks, scan state for suggestions
+        self._jarvis_tick += 1
+        if self._jarvis_tick >= 10:
+            self._jarvis_tick = 0
+            self._poll_jarvis()
         # projects + vault + sys workspaces poll on a timer, not on input
         wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         if wid in ("projects", "vault", "sys"):
@@ -212,6 +218,26 @@ class AiOSApp(App):
                 self._term_pane.remove()
                 self._term_pane = None
             self._center = []
+
+    def _poll_jarvis(self) -> None:
+        """Proactive Jarvis: scan state, surface suggestions in activity feed.
+
+        Calls the pure `suggest()` engine and, if it produces new alerts,
+        prepends the top one to the activity log + stores the list on state.
+        """
+        from ..jarvis import suggest
+        try:
+            sugg = suggest(self.store.state, self.cfg)
+        except Exception:
+            sugg = []
+        self.store.state.suggestions = sugg
+        if sugg:
+            top = sugg[0]
+            # avoid spamming the log with the same line every poll
+            if not self.store.state.logs or self.store.state.logs[-1] != top:
+                self.store.state.logs.append(top)
+                # keep logs bounded
+                self.store.state.logs = self.store.state.logs[-50:]
 
     def _push_deck_hud(self) -> None:
         """Mirror aion status onto the CyclUno OLED (1 Hz, rate-limited)."""
