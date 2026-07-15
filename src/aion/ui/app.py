@@ -90,6 +90,7 @@ class AiOSApp(App):
     BINDINGS = [
         ("enter", "activate", "Activate"),
         ("?, slash", "help", "Help"),
+        ("w", "tour", "Tour"),
         ("escape", "back", "Back"),
         ("space", "activate", "Activate"),
         ("p", "pause", "Pause/Resume"),
@@ -131,6 +132,8 @@ class AiOSApp(App):
         self._term_active = False       # whether the term workspace is active
         self._boot_tick = 0             # cinematic boot progress
         self._jarvis_tick = 0           # proactive jarvis poll counter
+        self._tour_active = False       # walkthrough mode
+        self._tour_step = 0
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -299,6 +302,8 @@ class AiOSApp(App):
                     # compare command: "compare <prompt>" -> multi-model side-by-side
                     if text.lower().startswith("compare "):
                         asyncio.create_task(self.router.emit(Intent.compare(text[8:].strip())))
+                    elif text.lower().startswith("tour"):
+                        self.action_tour()
                     else:
                         asyncio.create_task(self.router.emit(Intent.command(text)))
                 event.prevent_default()
@@ -306,6 +311,12 @@ class AiOSApp(App):
             # All other keys go through to Input widget
             return
         if self.query_one("#help").display:
+            if self._tour_active:
+                if event.key == "escape":
+                    self._tour_close()
+                elif event.key in ("enter", "space"):
+                    self._tour_next()
+                return
             if event.key == "escape" or event.key in ("?", "/"):
                 self.query_one("#help").display = False
             return
@@ -950,6 +961,48 @@ class AiOSApp(App):
         hint = "tasks in progress" if running else "awaiting your command"
         h = self.store.state.history[-1] if self.store.state.history else hint
         self.query_one("#bottom", expect_type=Static).update(f"[{theme['dim']}]{h}[/]")
+
+    WALKTHROUGH = [
+        ("Welcome to aion", "This is your AI cockpit. Navigate with ↑↓ (or j/k), switch panels with ←→ (or h/l)."),
+        ("Workspaces", "The left rail lists workspaces: Models, Tasks, Agent, Memory, Vault, System, Hermes, Skills, Projects, Term, Swarm. Press 1-9 or ←→ to move."),
+        ("Run a harness", "Press Ctrl-K and type 'run demo hello' — a harness executes and shows live progress in the right rail."),
+        ("Agent chat", "Go to the Agent workspace (✦) and type a message in Ctrl-K to talk to the inline LLM. 'compare <q>' shows two models side-by-side."),
+        ("Voice & deck", "Press 'v' for offline voice (faster-whisper). If you have the CyclUno deck, it drives the cockpit one-handed."),
+        ("Proactive Jarvis", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
+    ]
+
+    def action_tour(self) -> None:
+        """Launch the interactive walkthrough (talon_hud-style step-by-step)."""
+        self._tour_active = True
+        self._tour_step = 0
+        h = self.query_one("#help")
+        h.display = True
+        self._tour_render()
+
+    def _tour_render(self) -> None:
+        theme = self.cfg["theme"]
+        title, body = self.WALKTHROUGH[self._tour_step]
+        n = len(self.WALKTHROUGH)
+        h = self.query_one("#help")
+        h.update(
+            f"[{theme['accent']}]◆ TOUR {self._tour_step+1}/{n}: {title}[/]\n\n"
+            f"[{theme['dim']}]{body}[/]\n\n"
+            f"[{theme['dim']}]Enter: next · Esc: skip[/]"
+        )
+
+    def _tour_next(self) -> None:
+        if not self._tour_active:
+            return
+        self._tour_step += 1
+        if self._tour_step >= len(self.WALKTHROUGH):
+            self._tour_close()
+        else:
+            self._tour_render()
+
+    def _tour_close(self) -> None:
+        self._tour_active = False
+        self._tour_step = 0
+        self.query_one("#help").display = False
 
     def _help_text(self) -> str:
         theme = self.cfg["theme"]
