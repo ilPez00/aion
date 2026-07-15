@@ -17,7 +17,7 @@ def test_jarvis_poller_updates_state_and_feed():
     # force a poll
     app._poll_jarvis()
     assert app.store.state.suggestions, "expected at least one suggestion"
-    assert any("failed" in s.lower() for s in app.store.state.suggestions)
+    assert any("failed" in s.text.lower() for s in app.store.state.suggestions)
     # top suggestion lands in the activity feed (logs)
     assert app.store.state.logs and "failed" in app.store.state.logs[-1].lower()
 

@@ -96,6 +96,7 @@ class AiOSApp(App):
         ("p", "pause", "Pause/Resume"),
         ("x", "cancel", "Cancel"),
         ("r", "rerun", "Re-run"),
+        ("a", "act", "Act on Jarvis"),
     ]
 
     def __init__(self) -> None:
@@ -223,10 +224,10 @@ class AiOSApp(App):
             self._center = []
 
     def _poll_jarvis(self) -> None:
-        """Proactive Jarvis: scan state, surface suggestions in activity feed.
+        """Proactive Jarvis: scan state, surface actionable suggestions.
 
-        Calls the pure `suggest()` engine and, if it produces new alerts,
-        prepends the top one to the activity log + stores the list on state.
+        Calls the pure `suggest()` engine and stores the Suggestion list on
+        state. If new, prepends the top suggestion to the activity log.
         """
         from ..jarvis import suggest
         try:
@@ -235,7 +236,7 @@ class AiOSApp(App):
             sugg = []
         self.store.state.suggestions = sugg
         if sugg:
-            top = sugg[0]
+            top = sugg[0].text
             # avoid spamming the log with the same line every poll
             if not self.store.state.logs or self.store.state.logs[-1] != top:
                 self.store.state.logs.append(top)
@@ -870,8 +871,10 @@ class AiOSApp(App):
         p.append(f" [{a}]05 ACTIVITY[/]")
         sugg = self.store.state.suggestions
         if sugg:
-            # show top Jarvis suggestion with icon
-            p.append(f" [{wa}]⚡{sugg[0][:50]}[/]")
+            top = sugg[0]
+            # show top Jarvis suggestion; if actionable, reveal the 'a' key
+            hint = f" [a]a→{top.action}[/]" if top.action else ""
+            p.append(f" [{wa}]⚡{top.text[:44]}{hint}[/]")
         feed = data.get("agent_feed", [])
         if feed:
             for line in feed[-3:]:
@@ -970,6 +973,24 @@ class AiOSApp(App):
         ("Voice & deck", "Press 'v' for offline voice (faster-whisper). If you have the CyclUno deck, it drives the cockpit one-handed."),
         ("Proactive Jarvis", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
     ]
+
+    def action_act(self) -> None:
+        """Act on the top Jarvis suggestion (Cycle 6 — actionable Jarvis).
+
+        The top suggestion carries an optional `action` command string (e.g.
+        'rerun', 'run demo hello', 'mem'). If present, emit it as an intent so
+        the cockpit actually does something instead of just displaying it.
+        """
+        sugg = self.store.state.suggestions
+        if not sugg:
+            return
+        top = sugg[0]
+        if top.action:
+            self.store.state.logs.append(f"▶ Jarvis: {top.action}")
+            self.store.state.logs = self.store.state.logs[-50:]
+            # running the action clears that suggestion so it won't repeat
+            self.store.state.suggestions = sugg[1:]
+            asyncio.ensure_future(self.router.emit(Intent.command(top.action)))
 
     def action_tour(self) -> None:
         """Launch the interactive walkthrough (talon_hud-style step-by-step)."""
