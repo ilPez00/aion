@@ -40,6 +40,7 @@ class IntentType(Enum):
     CANCEL = auto()            # cancel focused task
     RERUN = auto()          # re-run focused interrupted/cancelled/failed task
     COMPARE = auto()         # side-by-side model comparison, payload: {"text": str}
+    ACT = auto()             # act on the top Jarvis suggestion (no payload)
 
 
 @dataclass

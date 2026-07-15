@@ -313,6 +313,15 @@ class VoiceInput(InputDevice):
                 return Intent.switch_workspace(index=idx)
         if t.startswith("search ") or t.startswith("web "):
             return Intent.command(text=t)          # -> DeepSearch harness
+        if t in ("rerun", "retry"):
+            return Intent(IntentType.RERUN)
+        if t in ("act", "do it", "jarvis do it"):
+            return Intent(IntentType.ACT)
+        if t in ("tour", "guide", "walk me through"):
+            return Intent.command("tour")
+        if t.startswith("compare ") or t.startswith("versus ") or t.startswith("vs "):
+            q = t.split(" ", 1)[1] if " " in t else t
+            return Intent.compare(q)
         if " " in t and (t.startswith("run ") or t.startswith("start ")):
             return Intent.command(text=t.split(" ", 1)[1])
         if t in ("stop", "cancel", "back"):

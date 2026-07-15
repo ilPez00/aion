@@ -212,6 +212,15 @@ class Store:
             self._control("rerun")
         elif t == IntentType.COMPARE:
             asyncio.create_task(self._run_compare(p.get("text", "")))
+        elif t == IntentType.ACT:
+            # Act on the top Jarvis suggestion: run its action command.
+            sugg = self.state.suggestions
+            if sugg and sugg[0].action:
+                action = sugg[0].action
+                self.state.logs.append(f"▶ Jarvis: {action}")
+                self.state.logs = self.state.logs[-50:]
+                self.state.suggestions = sugg[1:]
+                asyncio.create_task(self._run_command(action))
         # MODE_TOGGLE/SELECT handled by app/voice layer if needed
 
     def _navigate(self, direction: str) -> None:
