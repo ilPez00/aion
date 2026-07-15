@@ -24,7 +24,8 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
 
@@ -39,6 +40,37 @@ def bar(pct: float, width: int = 18, color: str = "#7CFFB2") -> str:
 class Cell(Static):
     """A single updatable text cell. Mutating .update() is cheap (no remount)."""
     DEFAULT_CSS = "Cell { height: auto; }"
+
+
+class TermPane(Static):
+    """Live embedded terminal pane — re-renders the pty/pyte screen fast.
+
+    Keystrokes are forwarded to the pty by the app's on_key (when the Term
+    workspace is active), not here, so there's a single clear passthrough path.
+    """
+    DEFAULT_CSS = "TermPane { height: 1fr; background: #0a0e14; }"
+
+    def __init__(self, harness: TermHarness, **kwargs):
+        super().__init__("", **kwargs)
+        self._h = harness
+        self.set_interval(0.08, self._redraw)
+
+    def _redraw(self) -> None:
+        try:
+            self.update(self._h.render())
+        except Exception:
+            pass
+
+
+def _key_bytes(key: str) -> bytes:
+    # map Textual key names to terminal byte sequences
+    table = {
+        "enter": b"\r", "escape": b"\x1b", "tab": b"\t",
+        "up": b"\x1b[A", "down": b"\x1b[B", "right": b"\x1b[C", "left": b"\x1b[D",
+        "backspace": b"\x7f", "space": b" ", "ctrl+c": b"\x03", "ctrl+d": b"\x04",
+        "pageup": b"\x1b[5~", "pagedown": b"\x1b[6~",
+    }
+    return table.get(key, b"")
 
 
 class AiOSApp(App):
@@ -92,6 +124,8 @@ class AiOSApp(App):
         self.persona = Persona()
         self.voice_output = VoiceOutput()
         self._greeted = False
+        self._term_pane = None          # mounted TermPane widget (lazy)
+        self._term_active = False       # whether the term workspace is active
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -129,7 +163,40 @@ class AiOSApp(App):
         # projects workspace polls on a timer, not on input -> refresh it live
         if self.cfg["workspaces"][self.store.state.active_ws]["id"] == "projects":
             self._render_center()
+        self._sync_term_pane()
         self._push_deck_hud()
+
+    def _sync_term_pane(self) -> None:
+        """Lazily mount/unmount the embedded terminal when entering/leaving
+        the Term workspace. Considers last-render so we only act on change."""
+        ws_id = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+        want = (ws_id == "term")
+        if want == self._term_active:
+            return
+        self._term_active = want
+        center = self.query_one("#center", expect_type=VerticalScroll)
+        if want:
+            # clear the normal cell list, mount the live pane
+            for c in self._center:
+                c.remove()
+            self._center = []
+            term_h = self.harnesses.get("term")
+            if term_h is None:
+                term_h = TermHarness(
+                    HarnessConfig.from_dict({"id": "term", "type": "term",
+                                             "command": "btop"}),
+                    self.bus, self.store.registry)
+            term_h.ensure_running()
+            self._term_pane = TermPane(term_h, id="termpane")
+            center.mount(self._term_pane)
+        else:
+            # tear down: kill pty, restore empty cell list (rebuilt on next render)
+            if self._term_pane is not None:
+                term_h = self._term_pane._h
+                term_h.stop()
+                self._term_pane.remove()
+                self._term_pane = None
+            self._center = []
 
     def _push_deck_hud(self) -> None:
         """Mirror aion status onto the CyclUno OLED (1 Hz, rate-limited)."""
@@ -165,6 +232,16 @@ class AiOSApp(App):
         self._render_all()
 
     def on_key(self, event: events.Key) -> None:
+        # embedded terminal passthrough (Term workspace)
+        if self._term_active and self._term_pane is not None:
+            if event.key == "ctrl+t":
+                # reserved: leave the terminal pane back to normal navigation
+                return
+            self._term_pane._h.send(
+                event.character.encode("utf-8", "replace")
+                if event.character else _key_bytes(event.key))
+            event.prevent_default()
+            return
         if self.query_one("#palette").display:
             if event.key == "escape":
                 self.query_one("#palette").display = False
