@@ -598,6 +598,11 @@ def build_harnesses(cfgs: list[dict], bus: Bus, registry: TaskRegistry,
         cfg = HarnessConfig.from_dict(c)
         if not cfg.enabled:
             continue
-        cls = HARNESS_TYPES.get(cfg.type, DemoHarness)
+        if cfg.type == "term":
+            # lazy import to avoid a circular import (term <-> harnesses)
+            from .term import TermHarness
+            cls = TermHarness
+        else:
+            cls = HARNESS_TYPES.get(cfg.type, DemoHarness)
         out[cfg.id] = cls(cfg, bus, registry, store)
     return out

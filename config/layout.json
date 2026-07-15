@@ -42,12 +42,13 @@
     {"id": "memory",  "title": "Memory",   "icon": "◎"},
     {"id": "hermes",  "title": "Hermes",   "icon": "⚡"},
     {"id": "skills",  "title": "Skills",   "icon": "📚"},
-    {"id": "projects","title": "Projects", "icon": "⬢"}
+    {"id": "projects","title": "Projects", "icon": "⬢"},
+    {"id": "term",    "title": "Term",     "icon": "▣"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {
     "workspace_1": "1", "workspace_2": "2", "workspace_3": "3", "workspace_4": "4",
-    "workspace_5": "5", "workspace_6": "6", "workspace_7": "7",
+    "workspace_5": "5", "workspace_6": "6", "workspace_7": "7", "workspace_8": "8",
     "nav_up": ["up", "k"], "nav_down": ["down", "j"],
     "nav_left": ["left", "h"], "nav_right": ["right", "l"],
     "activate": ["enter", "space"], "back": ["escape", "b"],
@@ -64,6 +65,7 @@
     {"id": "hermes",  "type": "hermes",  "name": "Hermes Agent",   "enabled": true, "vram_mb": 0,   "tier": "premium"},
     {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"},
     {"id": "projects","type": "projects","name": "Projects",       "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false},
-    {"id": "web",     "type": "web",     "name": "DeepSearch",     "enabled": true, "vram_mb": 0,   "tier": "cheap"}
+    {"id": "term",    "type": "term",    "name": "Term",          "enabled": true, "vram_mb": 0,   "tier": "cheap", "command": "btop", "cols": 110, "rows": 32},
+    {"id": "web",     "type": "web",     "name": "DeepSearch",    "enabled": true, "vram_mb": 0,   "tier": "cheap"}
   ]
 }
