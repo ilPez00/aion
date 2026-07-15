@@ -67,6 +67,24 @@ Wire a real health source in `config/layout.json`:
 (Takeout CSV), `"apple"` (Health `export.xml`). The JSON shape is
 `{"records": [{"date","steps","heart_rate","sleep_hours","active_calories","screen_time"}]}`.
 
+## Web HUD
+
+The same HUD is also served as a browser UI (`static/index.html`):
+
+```bash
+./aion.sh web          # or: python aion_web.py  → http://127.0.0.1:8742
+```
+
+Modules: Terminal (PTY), Files (organic graph), Browser (voice → DeepSearch),
+Editor (live micro), LaTeX, **Notes** (Obsidian-style canvas graph of your
+vault, node size = link degree), **Life** (real-life stats from the health
+source), and Agent. The top bar shows live CPU/GPU/RAM/DSK/NET.
+
+Point the web HUD at a health export with env vars:
+`AION_HEALTH_SOURCE=google AION_HEALTH_PATH=~/takeout/fit.csv ./aion.sh web`.
+
+Web deps: `pip install -e ".[web]"` (websockets, pyte, requests, python-dotenv).
+
 ## Controls
 
 | Input        | Action                                              |

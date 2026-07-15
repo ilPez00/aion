@@ -14,6 +14,7 @@ voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice c
 voice-tts = ["edge-tts"]                             # optional: text-to-speech output
 deck = ["pyserial"]                                  # optional: CyclUno control deck
 dev = ["pytest", "pytest-asyncio"]
+web = ["websockets", "pyte", "requests", "python-dotenv"]  # optional: web HUD server
 
 [project.scripts]
 aion = "aion.ui.app:main"

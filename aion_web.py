@@ -193,22 +193,85 @@ def agent_reply(text):
         return llm(text)
     except Exception as e:
         return f"[LLM error: {e}] " + _router(text)
-
 # ───────────────────────── LAYER 2: SYSTEM MONITOR ─────────────────────────
 def gpu_load():
-    return None  # no nvidia-smi here; graceful N/A
+    """Best-effort GPU probe (mirrors the TUI's SystemReader)."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total "
+            "--format=csv,noheader,nounits",
+            shell=True, capture_output=True, text=True, timeout=2)
+        lines = (proc.stdout or "").strip().splitlines()[:1]
+        if lines:
+            parts = [p.strip() for p in lines[0].split(",")]
+            if len(parts) == 3:
+                return {"util": int(parts[0]), "mem_mb": int(parts[1]),
+                        "mem_total_mb": int(parts[2])}
+    except Exception:
+        pass
+    return None  # graceful N/A (e.g. no nvidia GPU)
+
 
 def system_stats():
     net = psutil.net_io_counters()
+    # per-core CPU + disk list (richer than the original single numbers)
+    per_core = psutil.cpu_percent(interval=None, percpu=True)
+    disks = []
+    for mp in ("/",):  # keep the top bar simple; full list via /api/system
+        try:
+            du = psutil.disk_usage(mp)
+            disks.append({"mount": mp, "pct": round(du.used / du.total * 100, 1)})
+        except Exception:
+            pass
     return {
         "time": time.strftime("%H:%M:%S"),
         "date": time.strftime("%a %d %b %Y"),
         "cpu": psutil.cpu_percent(interval=None),
+        "per_core": [round(x, 1) for x in per_core],
         "mem": psutil.virtual_memory().percent,
         "disk": psutil.disk_usage("/").percent,
+        "disks": disks,
         "net_up": net.bytes_sent,
         "net_down": net.bytes_recv,
         "gpu": gpu_load(),
+    }
+
+
+def health_summary():
+    """Real-life stats for the web HUD (pluggable Google/Apple/JSON)."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(ROOT, "src"))
+        from aion.health import HealthReader
+    except Exception:
+        return {"ok": False, "error": "health module unavailable"}
+    src = os.environ.get("AION_HEALTH_SOURCE", "json")
+    path = os.environ.get("AION_HEALTH_PATH",
+                          os.path.expanduser("~/.aion/health.json"))
+    try:
+        return HealthReader(source=src, path=path).summary()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:80]}
+
+
+def vault_graph():
+    """Obsidian-style graph for the web HUD (backlinks + degree + tags)."""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(ROOT, "src"))
+        from aion.vault import VaultReader
+    except Exception:
+        return {"nodes": [], "edges": []}
+    g = VaultReader(NOTES_DIR).graph()
+    return {
+        "nodes": [{"id": n["name"], "label": n["title"],
+                   "r": 8 + min(14, n.get("degree", 0) * 2),
+                   "kind": "note", "degree": n.get("degree", 0),
+                   "backlinks": len(n.get("backlinks", [])),
+                   "tags": n.get("tags", [])} for n in g["nodes"]],
+        "edges": [{"s": e["from"], "t": e["to"]} for e in g["edges"]
+                  if not e.get("dangling")],
     }
 
 # ───────────────────────── LAYER 3: PTY HOST (Terminal module) ─────────────
@@ -325,22 +388,18 @@ class H(BaseHTTPRequestHandler):
                 nodes.append({"id": e, "label": e, "r": 9 if isdir else 6, "kind": "dir" if isdir else "file"})
                 edges.append({"s": root, "t": e})
             return self._sendj({"nodes": nodes, "edges": edges, "path": path})
-        if p == "/api/notes":
-            nodes, edges, links = [], {}, set()
-            for f in [x for x in os.listdir(NOTES_DIR) if x.endswith(".md")]:
-                base = f[:-3]
-                nodes.append({"id": base, "label": base, "r": 12, "kind": "note"})
-                for m in re.findall(r"\[\[([^\]]+)\]\]", open(os.path.join(NOTES_DIR, f)).read()):
-                    links.add((base, m))
-            for s, t in links:
-                if any(n["id"] == t for n in nodes):
-                    edges.append({"s": s, "t": t})
-            return self._sendj({"nodes": nodes, "edges": edges})
+        if p == "/api/notes" or p == "/api/vault":
+            g = vault_graph()
+            return self._sendj(g)
         if p == "/api/notes/content":
             name = q.get("name", ["welcome"])[0]
             pp = os.path.join(NOTES_DIR, name + ".md")
             txt = open(pp).read() if os.path.exists(pp) else "# not found"
             return self._sendj({"name": name, "text": txt})
+        if p == "/api/health":
+            return self._sendj(health_summary())
+        if p == "/api/system":
+            return self._sendj(system_stats())
         if p == "/build.pdf":
             pp = os.path.join(ROOT, "build.pdf")
             if os.path.exists(pp):
@@ -424,6 +483,8 @@ async def hub(ws):
         await events_ws(ws)
     elif path == "/ws/editor":
         await editor_ws(ws)
+    elif path == "/ws/files":
+        await files_ws(ws)
     else:
         await ws.close()
 
@@ -448,6 +509,33 @@ async def editor_ws(ws):
                     host.write(d.get("data", ""))
                 elif d.get("type") == "resize" and host:
                     host.resize(d.get("cols", 100), d.get("rows", 30))
+                elif d.get("type") == "close" and host:
+                    host.close(); HOSTS.pop(id(ws), None); host = None
+        await asyncio.gather(sender(), receiver())
+    finally:
+        if host:
+            host.close(); HOSTS.pop(id(ws), None)
+
+async def files_ws(ws):
+    """Live PTY hosting the minimal TUI file manager (filetui.py)."""
+    host = None
+    try:
+        async def sender():
+            while True:
+                if host:
+                    await ws.send(json.dumps({"type": "screen", **host.snapshot()}))
+                await asyncio.sleep(0.08)
+        async def receiver():
+            nonlocal host
+            async for msg in ws:
+                d = json.loads(msg)
+                if d.get("type") == "open":
+                    fn = d.get("path", "/home/gio")
+                    host = PTYHost(cols=100, rows=30,
+                                   cmd=f"python3 {shlex.quote(os.path.join(ROOT, 'filetui.py'))} {shlex.quote(fn)}")
+                    HOSTS[id(ws)] = host
+                elif d.get("type") == "input" and host:
+                    host.write(d.get("data", ""))
                 elif d.get("type") == "close" and host:
                     host.close(); HOSTS.pop(id(ws), None); host = None
         await asyncio.gather(sender(), receiver())

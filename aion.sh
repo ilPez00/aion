@@ -63,6 +63,11 @@ case "${1:-run}" in
     ensure_venv
     exec "$PY" -m aion.ui.app
     ;;
+  web)
+    ensure_venv
+    shift || true
+    exec "$PY" aion_web.py "$@"
+    ;;
   *)
     echo "usage: ./aion.sh [run|install|web|test|shell]" >&2
     exit 1

@@ -95,6 +95,7 @@
     <div class="app" data-mod="editor"><span class="dot"></span>Editor</div>
     <div class="app" data-mod="latex"><span class="dot"></span>LaTeX</div>
     <div class="app" data-mod="notes"><span class="dot"></span>Notes</div>
+    <div class="app" data-mod="life"><span class="dot"></span>Life</div>
     <div class="app" data-mod="agent"><span class="dot"></span>Agent</div>
   </div>
 
@@ -143,6 +144,12 @@
       <div class="row"><button id="nsave">save note</button></div>
     </div>
 
+    <div class="mod" id="mod-life">
+      <div class="row"><span class="hint">REAL LIFE — steps · heart-rate · sleep · calories</span>
+        <button id="lrefresh">refresh</button></div>
+      <div id="lifeview" style="flex:1;display:flex;flex-direction:column;gap:10px;padding:8px;overflow:auto"></div>
+    </div>
+
     <div class="mod" id="mod-agent">
       <div class="row"><span class="hint">AGENT LAYER — type a command, or use the strip below</span></div>
       <pre id="agentview" style="flex:1;color:var(--cyan);font-size:13px;padding:8px"></pre>
@@ -166,6 +173,7 @@ document.querySelectorAll('.app').forEach(a=>a.onclick=()=>{
   a.classList.add('on'); $('#mod-'+a.dataset.mod).classList.add('on');
   if(a.dataset.mod==='files') drawGraph('fcan','/api/files?path='+encodeURIComponent($('#fpath').value));
   if(a.dataset.mod==='notes') loadNotes();
+  if(a.dataset.mod==='life') loadLife();
 });
 // ── top bar live stats
 let ws=new WebSocket(`ws://${location.host}/ws/events`);
@@ -293,6 +301,24 @@ async function loadNotes(){const r=await fetch('/api/notes');const g=await r.jso
 $('#nsave').onclick=async()=>{const nm=$('#nlist').value;await fetch('/api/notes/save',{method:'POST',
   headers:{'content-type':'application/json'},body:JSON.stringify({name:nm,text:$('#ntext').value})});
   loadNotes();};
+// ── life (real-life stats)
+async function loadLife(){const r=await fetch('/api/health');const d=await r.json();
+  const el=$('#lifeview');
+  if(!d.ok){el.innerHTML=`<div class="hint">no health data — set AION_HEALTH_SOURCE (google/apple/json) + AION_HEALTH_PATH</div>`;return;}
+  const L=d.latest||{};
+  const card=(label,val,unit,col)=>`<div style="display:flex;justify-content:space-between;align-items:center;
+    padding:10px 12px;border:1px solid rgba(22,240,200,.2);border-radius:10px;background:rgba(22,240,200,.05)">
+    <span style="color:var(--dim);font-size:11px;letter-spacing:1px">${label}</span>
+    <span style="color:${col};font-size:20px;font-weight:bold">${val}<span style="font-size:11px;color:var(--dim)"> ${unit}</span></span></div>`;
+  const sp=(s)=>s&&s.length?`<div style="color:var(--green);font-size:18px;letter-spacing:2px;text-shadow:0 0 6px var(--green)">${s}</div>`:'';
+  el.innerHTML=
+    card('STEPS',L.steps||0,'', 'var(--green)')+
+    card('HEART RATE',L.heart_rate||0,'bpm','var(--mag)')+
+    card('SLEEP',L.sleep_hours||0,'h','var(--cyan)')+
+    card('ACTIVE',L.active_calories||0,'kcal','var(--green)')+
+    (d.series&&d.series.steps?`<div style="padding:6px 12px;color:var(--dim);font-size:11px">7-day steps trend</div>${sp(d.series.steps.map(v=>'▁▂▃▄▅▆▇█'[Math.min(7,Math.round(v/Math.max(1,...d.series.steps)*7))]).join(''))}`:'')+
+    `<div class="hint">source: ${d.source||'?'}</div>`;}
+$('#lrefresh').onclick=loadLife;
 // ── agent strip
 async function send(text){text=text.trim();if(!text)return;
   $('#transcript').insertAdjacentHTML('beforeend',`<div class="u">› ${text}</div>`);
