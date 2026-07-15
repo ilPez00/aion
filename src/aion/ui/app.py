@@ -14,6 +14,7 @@ The command palette is optional, searchable, and shows completions.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -157,6 +158,20 @@ class AiOSApp(App):
                               SystemHarness, HealthHarness, VaultHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
+        # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
+        # only shows once; clear by deleting the flag file to see it again.
+        flag = Path(self.cfg.get("_data_dir", Path.home() / ".aion")) / ".seen_tour"
+        try:
+            seen = flag.exists()
+        except Exception:
+            seen = True
+        if not seen:
+            self.action_tour()
+            try:
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.write_text("1")
+            except Exception:
+                pass
         self.router.register(JoystickInput())
         asyncio.create_task(self.router.start_all())
         self.title = self.cfg["app_name"]
@@ -175,8 +190,8 @@ class AiOSApp(App):
     def _tick(self) -> None:
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
-        # Cinematic boot: progress through boot lines, then release
-        if self._boot_tick < 99:
+        # Cinematic boot: progress through boot lines (capped), then release
+        if self._boot_tick < self.BOOT_TICKS:
             self._boot_tick += 1
             self._render_center()
         # Proactive Jarvis: every ~10 ticks, scan state for suggestions
@@ -277,6 +292,12 @@ class AiOSApp(App):
         self._render_all()
 
     def on_key(self, event: events.Key) -> None:
+        # boot skip: any key (except palette/help toggles) ends the intro fast
+        if self._boot_tick < self.BOOT_TICKS and event.key not in ("ctrl+k", "?", "/"):
+            self.action_skip_boot()
+            if event.key == "escape":
+                event.prevent_default()
+            return
         # embedded terminal passthrough (Term workspace)
         if self._term_active and self._term_pane is not None:
             if event.key == "ctrl+t":
@@ -424,13 +445,19 @@ class AiOSApp(App):
             cell.set_class(i == self.store.state.active_ws, "focus")
             cell.update(f"[{col}]{mark} {w['icon']} {w['title']}[/]")
 
+    # Cinematic boot sequence — reveals boot lines, then hands over. Capped at
+    # BOOT_SECONDS so it never traps the user (Cycle 7). Any key skips via
+    # action_skip_boot().
+    BOOT_SECONDS = 6
+    BOOT_TICKS = int(BOOT_SECONDS / 1.0)  # _tick runs at 1 Hz
+
     def _render_center(self) -> None:
         theme = self.cfg["theme"]
         ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         center = self.query_one("#center", expect_type=VerticalScroll)
 
         # Cinematic boot sequence — renders boot lines the first few seconds
-        if self._boot_tick < 99 and ws == "desktop":
+        if self._boot_tick < self.BOOT_TICKS and ws == "desktop":
             self._render_boot_sequence(center, theme)
             return
 
@@ -457,12 +484,13 @@ class AiOSApp(App):
             "MEMORY SYSTEMS SYNCHRONIZED",
             "ALL SYSTEMS NOMINAL",
         ]
-        reveal = int(self._boot_tick / 99 * len(lines)) + 1
+        reveal = int(self._boot_tick / self.BOOT_TICKS * len(lines)) + 1
         out = [f"[{a}]▸ AION BOOT SEQUENCE[/]"]
         for i, line in enumerate(lines[:reveal]):
             out.append(f" [{ok_}]▸ {line}  OK[/]")
         if reveal < len(lines):
             out.append(f" [{di}]▸ {lines[reveal]} ...[/]")
+        out.append(f" [{di}](any key to skip)[/]")
         self._set_center_text("\n".join(out), center)
 
     def _set_center_text(self, text: str, center: VerticalScroll) -> None:
@@ -973,6 +1001,12 @@ class AiOSApp(App):
         ("Voice & deck", "Press 'v' for offline voice (faster-whisper). If you have the CyclUno deck, it drives the cockpit one-handed."),
         ("Proactive Jarvis", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
     ]
+
+    def action_skip_boot(self) -> None:
+        """Skip the cinematic boot sequence (any key during boot)."""
+        if self._boot_tick < self.BOOT_TICKS:
+            self._boot_tick = self.BOOT_TICKS
+            self._render_center()
 
     def action_act(self) -> None:
         """Act on the top Jarvis suggestion (Cycle 6 — actionable Jarvis).
