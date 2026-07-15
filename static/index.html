@@ -237,6 +237,18 @@ async function drawGraph(cid,url){
       ctx.shadowColor=ctx.fillStyle;ctx.shadowBlur=14;ctx.fill();ctx.shadowBlur=0;
       ctx.fillStyle='#cfeede';ctx.font='10px monospace';ctx.fillText(n.label,n.x+10,n.y+3);});}
   setInterval(render,40); // gentle living drift
+  // navigate: click a dir node -> descend; click root -> ascend
+  c.onclick=(ev)=>{const rect=c.getBoundingClientRect();const mx=ev.clientX-rect.left,
+    my=ev.clientY-rect.top;let hit=null,hd=1e9;
+    g.nodes.forEach(n=>{const d=Math.hypot(n.x-mx,n.y-my);if(d<hd){hd=d;hit=n;}});
+    if(hit && hd<24 && hit.kind==='dir'){
+      const cur=$('#fpath').value.trim()||'/';
+      const base=g.path.split('/').filter(Boolean).pop()||g.path;
+      const next = hit.id===base
+        ? (cur.replace(/\/[^/]+$/,'')||'/')
+        : (cur.replace(/\/$/,'')+'/'+hit.id);
+      $('#fpath').value=next; drawGraph('fcan','/api/files?path='+encodeURIComponent(next));
+    }};
 }
 $('#fgo').onclick=()=>drawGraph('fcan','/api/files?path='+encodeURIComponent($('#fpath').value));
 // ── browser + voice-to-search
