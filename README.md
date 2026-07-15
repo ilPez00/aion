@@ -109,6 +109,11 @@ app <program>               spawn a real program (pause=SIGSTOP, cancel=kill)
 note <fact>                 remember something (persistent memory)
 mem <query>                 recall — opens the Memory workspace filtered
 forget <n>                  drop fact #n from the current memory view
+mode <default|focus|deep|monitor|stealth|demo>   switch operational mode
+theme <jarvis|matrix|amber>  switch color theme
+swarm create <goal>         start a multi-agent swarm
+swarm add <name> <goal> [<< dep1,dep2]   add an agent to the swarm
+swarm run | status | stop   control the swarm
 ```
 
 ### Crash-safe & per-task control (lessons from RESEARCH.md)
@@ -142,8 +147,56 @@ forget <n>                  drop fact #n from the current memory view
   the bus so work never blocks the UI.
 - `ui/gauges.py` — reusable HUD widgets (sparklines, bars, gauges).
 - `vault.py`   — Obsidian-style notes reader (`[[wikilinks]]` + backlinks → graph).
-- `health.py`  — pluggable real-life stats (Google Fit / Apple Health / JSON).
-- `sysinfo.py` — computer stats reader (CPU/RAM/disk/net/GPU via psutil).
+- `memory.py`  — persistent fact store (`note`/`mem`/`forget`).
+- `llm.py`     — inline LLM chat (FCM proxy + Groq fallback).
+- `swarm.py`   — multi-agent swarm orchestration (deps, status, progress).
+- `modes.py`   — operational modes (default/focus/deep/monitor/stealth/demo).
+- `voice/persona.py` — Jarvis/Odysseus-style proactive voice persona.
+
+## Agent Swarm Orchestration (Odysseus-style)
+
+aion can coordinate multiple sub-agents on a shared goal, with dependency
+tracking and a live dashboard:
+
+```
+swarm create <goal>                    start a swarm for a high-level goal
+swarm add <name> <goal>                add an agent (no deps)
+swarm add <name> <goal> << dep1,dep2   add an agent that waits on others
+swarm run                              start all ready agents
+swarm status                           print the swarm dashboard
+swarm stop                             cancel all running agents
+```
+
+The **Swarm** workspace (`⚇`) shows a live grid: each agent with status icon
+(○ idle · ● working · ⌛ waiting · ✓ done · ✗ failed · ⊘ blocked), a progress
+bar, and its goal. Dependencies auto-block/auto-unblock agents.
+
+## Operational Modes (Iron Man suit modes)
+
+Press `Ctrl-K` → `mode <name>` to switch the cockpit's behaviour live:
+
+| Mode     | Effect                                                        |
+|----------|---------------------------------------------------------------|
+| default  | balanced HUD, all workspaces, normal polling                  |
+| focus    | minimal UI, fewer panels, reduced polling (save CPU)          |
+| deep     | deep-research mode: Web + LLM agents prioritized             |
+| monitor  | fast polling, system/stats panels front                      |
+| stealth  | dimmed UI, hides sensitive data, suppresses voice            |
+| demo     | showcase mode: cycles workspaces, chatty persona             |
+
+## Inline LLM Agent Chat
+
+The **Agent** workspace (`💬`) is a real chat. Type a message and it routes to
+a local LLM (FCM proxy at `localhost:19280`, or Groq if `GROQ_API_KEY` is set).
+Persona-aware system prompt keeps replies concise and useful. If you type a
+command instead (`run demo hello`, `tier cheap`, `theme matrix`), it runs that.
+
+## Workspaces
+
+13 panels: Models · Tasks · Agent · Memory · Vault · System · Hermes · Skills ·
+Projects · Term · Swarm · Settings. The **Tasks** workspace (`✓`) shows a full
+progress dashboard: active tasks with bars (sorted by progress) + recent history
+(done/failed/cancelled).
 
 ## Customizing
 
