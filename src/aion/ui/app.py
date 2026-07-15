@@ -153,7 +153,7 @@ class AiOSApp(App):
         self.router.register(JoystickInput())
         asyncio.create_task(self.router.start_all())
         self.title = self.cfg["app_name"]
-        self.sub_title = "multi-harness · stats visualizer"
+        self.sub_title = f"multi-harness · stats visualizer · mode: {self.store.state.active_mode}"
         # route bus -> store (store is the brain, app just re-renders)
         self.bus.subscribe(TOPIC_INTENT, self._on_intent)
         self.bus.subscribe(TOPIC_VOICE, self._on_voice)
@@ -431,6 +431,8 @@ class AiOSApp(App):
             return self._vault_line(it, focused, theme)
         if ws == "sys":
             return self._sys_panel(theme)
+        if ws == "swarm":
+            return self._swarm_panel(theme)
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -569,6 +571,41 @@ class AiOSApp(App):
                          theme["ok"]))
 
         return "\n\n".join(blocks)
+
+    def _swarm_panel(self, theme: dict) -> str:
+        """Render the multi-agent swarm dashboard."""
+        from .gauges import hbar
+        items = self.store._current_items()
+        if not items or items[0].get("type") == "empty":
+            return (f"[{theme['dim']}]No active swarm.[/]\n"
+                    f"  [{theme['accent']}]swarm create <goal>[/] to start.\n"
+                    f"  [{theme['dim']}]e.g. swarm create research and prototype a dashboard[/]")
+        data = items[0].get("data", {})
+        lines = []
+        lines.append(f"[{theme['accent']}]╔══ SWARM ORCHESTRATOR ═══════════════════╗[/]")
+        s = data
+        counts = f"🧠 {s.get('working',0)}W · {s.get('waiting',0)}⏳ · {s.get('done',0)}✓ · {s.get('failed',0)}✗ · {s.get('blocked',0)}⊘"
+        lines.append(f"  {counts}")
+        lines.append(f"[{theme['dim']}]╠══ Agents ═══════════════════════════════╣[/]")
+        agents = s.get("agents", [])
+        if not agents:
+            lines.append(f"  [{theme['dim']}](no agents yet)[/]")
+        for a in agents[:10]:
+            icon = {"idle": "○", "working": "●", "waiting": "⌛", "done": "✓",
+                    "failed": "✗", "blocked": "⊘"}.get(a.get("status","idle"), "?")
+            col = theme["ok"] if a.get("status") == "done" else \
+                  theme["warn"] if a.get("status") == "working" else theme["dim"]
+            bar = hbar(a.get("progress", 0), width=8, color=col)
+            lines.append(f"  [{col}]{icon}[/] [{theme['accent']}]{a['name'][:16]:16s}[/]"
+                         f" {bar}  [{theme['dim']}]{a['goal'][:28]}[/]")
+        plan = s.get("active_plan")
+        if plan:
+            lines.append(f"[{theme['dim']}]╠══ Plan ════════════════════════════════╣[/]")
+            lines.append(f"  [{theme['accent']}]goal:[/] {plan.get('goal','')[:50]}")
+            lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
+        lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
+        lines.append(f"[{theme['dim']}]Commands: swarm create|add <name> <goal>|run|status|stop[/]")
+        return "\n".join(lines)
 
     def _render_right(self) -> None:
         theme = self.cfg["theme"]

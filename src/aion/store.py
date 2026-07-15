@@ -21,6 +21,9 @@ from .core import (
 )
 from .memory import MemoryStore
 from .voice.persona import Persona
+from .llm import ChatSession, format_conversation, chat_send
+from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
+from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
 
 
 @dataclass
@@ -40,6 +43,9 @@ class ViewState:
     hermes_gateway: dict = field(default_factory=dict)
     skills: list[dict] = field(default_factory=list)
     settings_providers: dict[str, dict] = field(default_factory=dict)
+    active_mode: str = "default"
+    swarm_dashboard: str = ""
+    task_history: list[dict] = field(default_factory=list)  # completed tasks
 
 
 class Store:
@@ -56,6 +62,9 @@ class Store:
         self.harnesses: dict = harnesses or {}
         self._prev_task_states: dict[str, TaskState] = {}
         self.memory = MemoryStore()
+        self.chat = ChatSession()
+        self.swarm = SwarmOrchestrator(bus=self.bus)
+        self.active_mode_cfg: ModeConfig = get_mode("default") or MODES["default"]
         self.state = ViewState(active_harness=self._first_harness())
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
@@ -145,6 +154,13 @@ class Store:
                      "preview": v.get("error", "") if v else ""}]
         if ws == "sys":
             return [{"kind": "live"}]  # rendered specially from stats
+        if ws == "agent":
+            return format_conversation(self.chat)
+        if ws == "swarm":
+            s = self.state.swarm_dashboard
+            if s:
+                return [{"type": "dashboard", "data": s}]
+            return [{"type": "empty", "label": "No active swarm. Use 'swarm create <goal>' to start."}]
         return []
 
     def _running_for(self, hid: str) -> int:
@@ -291,10 +307,86 @@ class Store:
                 self.cfg["theme"] = dict(themes[theme_name])
                 self.state.history.append(f"theme switched to {theme_name}")
             return
+        # Mode switching
+        mode_id = mode_command(text)
+        if mode_id:
+            self._set_mode(mode_id)
+            return
+        # Swarm orchestration
+        if parts[0] == "swarm" and len(parts) >= 2:
+            await self._swarm_command(text)
+            return
         if len(parts) == 2 and parts[0] in self.harnesses:
             await self._spawn(parts[0], parts[1])
+        elif self.cfg["workspaces"][self.state.active_ws]["id"] == "agent":
+            # Agent workspace: route unknown text to inline LLM chat
+            await self._chat(text)
         else:
             await self._spawn(self.state.active_harness, text)
+
+    def _set_mode(self, mode_id: str) -> None:
+        """Switch the operational mode."""
+        cfg = get_mode(mode_id)
+        if cfg is None:
+            return
+        self.active_mode_cfg = cfg
+        self.state.active_mode = mode_id
+        self.state.history.append(f"mode: {mode_id}")
+        # If stealth mode, auto-apply dim theme
+        if cfg.dim_theme:
+            dim = {"accent": "#3a5a6a", "ok": "#3a7a5a", "warn": "#5a5a3a",
+                   "err": "#5a3a3a", "dim": "#2a2a2a"}
+            self.cfg["theme"].update(dim)
+
+    async def _swarm_command(self, text: str) -> None:
+        """Handle 'swarm create|add|run|status|stop' commands."""
+        parts = text.split()
+        if len(parts) < 2:
+            self.state.history.append("usage: swarm create <goal> | add <name> <goal> [deps] | run | status | stop")
+            return
+        sub = parts[1]
+        rest = " ".join(parts[2:]) if len(parts) > 2 else ""
+        if sub == "create" and rest:
+            plan = self.swarm.decompose(rest)
+            # Create initial agents from the plan
+            a1 = self.swarm.add_agent("Agent-1", rest)
+            self.swarm.set_status(a1.id, SwarmAgentStatus.WORKING)
+            self.state.history.append(f"swarm created: {rest[:40]}")
+        elif sub == "add" and len(parts) >= 4:
+            name = parts[2]
+            goal = " ".join(parts[3:])
+            deps = []
+            if " << " in goal:
+                parts2 = goal.split(" << ", 1)
+                goal = parts2[0]
+                deps = [d.strip() for d in parts2[1].split(",")]
+            a = self.swarm.add_agent(name, goal, deps=deps)
+            self.state.history.append(f"swarm agent added: {name}")
+        elif sub == "run":
+            ready = self.swarm.agents_ready()
+            if ready:
+                for a in ready:
+                    self.swarm.set_status(a.id, SwarmAgentStatus.WORKING)
+                self.state.history.append(f"swarm: {len(ready)} agent(s) started")
+            else:
+                self.state.history.append("swarm: no agents ready (check deps)")
+        elif sub == "status":
+            self.state.swarm_dashboard = self.swarm.dashboard()
+        elif sub == "stop":
+            for a in self.swarm.agents.values():
+                if a.status == SwarmAgentStatus.WORKING:
+                    self.swarm.set_status(a.id, SwarmAgentStatus.CANCELLED)
+            self.state.history.append("swarm: all agents stopped")
+        else:
+            self.state.history.append(f"unknown swarm subcommand: {sub}")
+
+    async def _chat(self, message: str) -> None:
+        """Send a message to the inline LLM chat (runs in executor)."""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        reply = await loop.run_in_executor(None, chat_send, self.chat, message)
+        # Force re-render by publishing a stats-like event
+        await self.bus.publish("chat", {"role": "assistant", "content": reply})
 
     # ---- bus subscriptions: keep state + persist in sync ----------------
     async def _on_task_event(self, msg: dict) -> None:
@@ -309,10 +401,20 @@ class Store:
             persona = Persona()
             resp = persona.respond(cur.value, task_id=tid, label=task.label)
             await self.bus.publish(TOPIC_VOICE, {"text": resp, "event": cur.value})
+            # Track completed/failed tasks
+            if cur.value in ("done", "failed", "cancelled"):
+                self.state.task_history.append({
+                    "id": tid, "label": task.label, "harness": task.harness,
+                    "result": cur.value, "progress": task.progress,
+                })
+                self.state.task_history = self.state.task_history[-50:]
         self._prev_task_states[tid] = cur
 
     async def _on_stats(self, msg: dict) -> None:
         self.state.stats[msg["harness"]] = msg["metrics"]
+        if msg["harness"] == "swarm":
+            # Mark swarm as active so _current_items picks it up
+            self.state.swarm_dashboard = msg["metrics"]
 
     async def _on_log(self, msg: dict) -> None:
         self.state.logs.append(f"[{msg['task_id']}] {msg['line']}")
