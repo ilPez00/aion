@@ -249,10 +249,24 @@ $('#bgo').onclick=async()=>{let u=$('#burl').value;
   (d.results||[]).forEach(res=>{h+=`<p><a href="${res.url}" target="_blank" style="color:#16f0c8">${res.title}</a><br><span style="color:#5c8a7e;font-size:11px">${res.snippet.slice(0,140)}</span></p>`;});
   h+='</div>';
   $('#bwin').srcdoc=h;};
-async function speech(){ // stub: real path = getUserMedia -> WS -> faster-whisper
-  $('#burl').value='[voice: STT stub — wire getUserMedia→/ws/voice→faster-whisper]';
+async function speech(target, btn){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ $(target).value='[voice: Web Speech API unavailable in this browser]'; return; }
+  if(_rec && _rec._active){ _rec.stop(); return; }
+  const rec = new SR(); rec.lang='en-US'; rec.interimResults=true; rec.continuous=false;
+  rec._active=true; _rec=rec;
+  btn.textContent='● listening...'; btn.style.color='#ff5ad8';
+  rec.onresult=(e)=>{let t='';for(let i=e.resultIndex;i<e.results.length;i++)t+=e.results[i][0].transcript;
+    $(target).value=t;
+    if(e.results[e.results.length-1].isFinal){ rec.stop(); }};
+  rec.onend=()=>{rec._active=false; btn.textContent='🎙 voice'; btn.style.color='';
+    const v=$(target).value.trim(); if(v){ if(target==='#burl') $('#bgo').click(); else $('#csend').click(); }};
+  rec.onerror=()=>{rec._active=false; btn.textContent='🎙 voice'; btn.style.color=''; $(target).value+=' [voice error]';};
+  try{ rec.start(); }catch(e){ btn.textContent='🎙 voice'; }
 }
-$('#bmic').onclick=speech;
+let _rec=null;
+$('#bmic').onclick=()=>speech('#burl',$('#bmic')[0]);
+$('#cmic').onclick=()=>speech('#cmd',$('#cmic')[0]);
 // ── latex
 $('#lgo').onclick=async()=>{const r=await fetch('/api/latex',{method:'POST',
   headers:{'content-type':'application/json'},body:JSON.stringify({src:$('#ltex').value})});
