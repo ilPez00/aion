@@ -284,6 +284,13 @@ class Store:
             if hid:
                 self.state.active_harness = hid
             return
+        if parts[0] == "theme" and len(parts) == 2:
+            theme_name = parts[1].strip().lower()
+            themes = self.cfg.get("themes", {})
+            if theme_name in themes:
+                self.cfg["theme"] = dict(themes[theme_name])
+                self.state.history.append(f"theme switched to {theme_name}")
+            return
         if len(parts) == 2 and parts[0] in self.harnesses:
             await self._spawn(parts[0], parts[1])
         else:

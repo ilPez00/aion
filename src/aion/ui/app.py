@@ -108,6 +108,8 @@ class AiOSApp(App):
         self.harnesses = build_harnesses(self.cfg["harnesses"], self.bus,
                                          self.store.registry, self.store_fs)
         self.store.harnesses = self.harnesses
+        # share the config reference so theme changes in store reflect in app
+        self.cfg = self.store.cfg
         self.router = Router(self.bus, self.cfg["keybindings"])
         self.keymap = KeyboardMap(self.cfg["keybindings"])
         self.voice = VoiceInput(model_size="tiny")
@@ -157,6 +159,11 @@ class AiOSApp(App):
         self.bus.subscribe(TOPIC_VOICE, self._on_voice)
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes_event)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill_event)
+        # Proactive Jarvis-style greeting on first boot
+        greeting = self.persona.greeting()
+        self.query_one("#bottom", expect_type=Static).update(
+            f"[{self.cfg['theme']['accent']}]{greeting}[/]")
+        self._greeted = True
 
     def _tick(self) -> None:
         self._render_header()

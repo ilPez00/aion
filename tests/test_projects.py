@@ -67,15 +67,15 @@ def _make_sessions_db(path: Path, cwd_for: Path, sessions_today: int,
     conn.close()
 
 
-def test_missing_repo_degrades(tmp: Path):
-    r = ProjectsReader(repos=[str(tmp / "nope")])
+def test_missing_repo_degrades(tmp_path: Path):
+    r = ProjectsReader(repos=[str(tmp_path / "nope")])
     st = r.snapshot()
     assert len(st) == 1 and not st[0].exists, st
     print("ok: missing repo -> exists=False, no crash")
 
 
-def test_git_status(tmp: Path):
-    repo = tmp / "repo1"
+def test_git_status(tmp_path: Path):
+    repo = tmp_path / "repo1"
     _make_repo(repo, dirty=3, ahead=0)
     r = ProjectsReader(repos=[str(repo)])
     st = r.snapshot()
@@ -90,8 +90,8 @@ def test_git_status(tmp: Path):
     print("ok: git status (branch/dirty/last-commit) correct; no-upstream -> 0/0")
 
 
-def test_ahead_behind_with_upstream(tmp: Path):
-    repo = tmp / "repo2"
+def test_ahead_behind_with_upstream(tmp_path: Path):
+    repo = tmp_path / "repo2"
     _make_repo(repo, dirty=0, ahead=0)
     # fabricate an upstream: branch 'main' tracks 'base', add 2 commits ahead
     _git(repo, "branch", "base")
@@ -107,10 +107,10 @@ def test_ahead_behind_with_upstream(tmp: Path):
     print("ok: ahead/behind reads 2/0 with a real upstream set")
 
 
-def test_session_join_by_cwd(tmp: Path):
-    repo = tmp / "repo2"
+def test_session_join_by_cwd(tmp_path: Path):
+    repo = tmp_path / "repo2"
     _make_repo(repo, dirty=0)
-    db = tmp / "state.db"
+    db = tmp_path / "state.db"
     _make_sessions_db(db, repo, sessions_today=4, tokens=40_000)
     r = ProjectsReader(repos=[str(repo)], db_path=db)
     st = r.snapshot()
@@ -122,13 +122,13 @@ def test_session_join_by_cwd(tmp: Path):
     print("ok: session join by cwd (today count + tokens + last id)")
 
 
-def test_session_join_prefix(tmp: Path):
+def test_session_join_prefix(tmp_path: Path):
     # cwd is UNDER the repo, not equal -> should still match (subdir session)
-    repo = tmp / "repo3"
+    repo = tmp_path / "repo3"
     _make_repo(repo, dirty=1)
     sub = repo / "subdir"
     sub.mkdir()
-    db = tmp / "state2.db"
+    db = tmp_path / "state2.db"
     _make_sessions_db(db, sub, sessions_today=2, tokens=10_000)
     r = ProjectsReader(repos=[str(repo)], db_path=db)
     s = r.snapshot()[0]
@@ -136,19 +136,19 @@ def test_session_join_prefix(tmp: Path):
     print("ok: cwd-under-repo prefix match works")
 
 
-def test_no_state_db_no_crash(tmp: Path):
-    repo = tmp / "repo4"
+def test_no_state_db_no_crash(tmp_path: Path):
+    repo = tmp_path / "repo4"
     _make_repo(repo, dirty=0)
-    r = ProjectsReader(repos=[str(repo)], db_path=tmp / "absent.db")
+    r = ProjectsReader(repos=[str(repo)], db_path=tmp_path / "absent.db")
     s = r.snapshot()[0]
     assert s.sessions_today == 0 and s.tokens_today == 0
     print("ok: absent state.db -> zero activity, no crash")
 
 
-def test_harness_poll_publishes(tmp: Path):
-    repo = tmp / "repo5"
+def test_harness_poll_publishes(tmp_path: Path):
+    repo = tmp_path / "repo5"
     _make_repo(repo, dirty=2)
-    db = tmp / "state3.db"
+    db = tmp_path / "state3.db"
     _make_sessions_db(db, repo, sessions_today=1, tokens=500)
     bus = Bus()
     got = {}
