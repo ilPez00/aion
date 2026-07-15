@@ -854,11 +854,15 @@ class AiOSApp(App):
 
         # ─── 05 ACTIVITY ─────────────────────────────────────────────────
         p.append(f" [{a}]05 ACTIVITY[/]")
+        sugg = self.store.state.suggestions
+        if sugg:
+            # show top Jarvis suggestion with icon
+            p.append(f" [{wa}]⚡{sugg[0][:50]}[/]")
         feed = data.get("agent_feed", [])
         if feed:
-            for line in feed[-4:]:
+            for line in feed[-3:]:
                 p.append(f" [{di}]{line[:46]}[/]")
-        else:
+        elif not sugg:
             p.append(f" [{di}](idle)[/]")
 
         # ─── 06 COMMANDS ─────────────────────────────────────────────────
