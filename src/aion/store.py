@@ -344,6 +344,11 @@ class Store:
         if parts[0] == "swarm" and len(parts) >= 2:
             await self._swarm_command(text)
             return
+        # Explicit "run <harness> <prompt>" — used by the agent's tool calls
+        # and by users. 3+ parts: parts[0]=run, parts[1]=harness, rest=prompt.
+        if parts[0] == "run" and len(parts) >= 3 and parts[1] in self.harnesses:
+            await self._spawn(parts[1], parts[2])
+            return
         if len(parts) == 2 and parts[0] in self.harnesses:
             await self._spawn(parts[0], parts[1])
         elif self.cfg["workspaces"][self.state.active_ws]["id"] == "agent":
