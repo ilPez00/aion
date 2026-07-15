@@ -44,7 +44,7 @@ async def test_pipeline():
         assert before == after, f"widget tree remounted: {before} -> {after}"
 
         # --- pause/resume via bound keys (intuitive: just press p) ---
-        app.store.state.active_ws = 1
+        app.store.state.active_ws = 2  # tasks workspace (0=desktop,1=models,2=tasks)
         app.store.state.focus = 0
         app.action_pause()
         await pilot.pause(0.3)

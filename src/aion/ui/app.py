@@ -433,6 +433,8 @@ class AiOSApp(App):
             return self._sys_panel(theme)
         if ws == "swarm":
             return self._swarm_panel(theme)
+        if ws == "desktop":
+            return self._desktop_panel(theme)
         if ws == "tasks":
             return self._tasks_panel(theme)
         # agent log
@@ -645,6 +647,142 @@ class AiOSApp(App):
                 lines.append(f"  [{col}]{icon}[/] [{theme['dim']}]{h['label'][:32]:32s}[/] [{theme['dim']}]{h['harness']}[/]")
         lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
         lines.append(f"[{theme['dim']}]Commands: run <h> <prompt> · tier <cheap|standard|premium>[/]")
+        return "\n".join(lines)
+
+    def _desktop_panel(self, theme: dict) -> str:
+        """The agentic OS desktop — full multi-column landing dashboard."""
+        from .gauges import hbar, sparkline, mem_readable, core_grid
+        from ..dashboard import collect_dashboard
+        items = self.store._current_items()
+        data = items[0].get("data", {}) if items else {}
+        a, ok, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        lines = []
+        # ── TOP BAR: identity + mode + clock ──────────────────────────────
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        mode_icon = {"default": "◉", "focus": "◎", "deep": "⬡", "monitor": "◈", "stealth": "◌", "demo": "◆"}
+        mi = mode_icon.get(data.get("active_mode","default"), "◉")
+        host = data.get("hostname", "air")[:12]
+        lines.append(f"[{a}]╔══ {data.get('app_name','aion').upper()} AGENTIC OS ═══"
+                     f"  {host}  ═══  {mi}[{di}]mode:{data.get('active_mode','default')}[/]"
+                     f"  {now}  ═══════════════════════╗[/]")
+        # Quick status bar - each segment self-opens/closes its own color
+        cpu = data.get("cpu_pct", 0)
+        ram = data.get("ram_pct", 0)
+        disk = data.get("disk_pct", 0)
+        nd = data.get("net_down", "0 B/s")
+        nu = data.get("net_up", "0 B/s")
+        tr = data.get("tasks_running", 0)
+        td = data.get("tasks_done", 0)
+        tf = data.get("tasks_failed", 0)
+        mt = data.get("total_tasks", 0)
+        sw_w = data.get("swarm_working", 0)
+        sw_d = data.get("swarm_done", 0)
+        cpu_col = er if cpu > 80 else wa if cpu > 50 else ok
+        ram_col = er if ram > 80 else wa if ram > 50 else ok
+        disk_col = er if disk > 80 else wa if disk > 50 else ok
+        lines.append(f"  [{di}]CPU[/][{cpu_col}] {cpu:4.0f}%[/]  [{di}]RAM[/][{ram_col}] {ram:4.0f}%[/]  [{di}]DSK[/][{disk_col}] {disk:4.0f}%[/]"
+                     f"  [{di}]▼[/][{ok}]{nd}[/]  [{di}]▲[/][{ok}]{nu}[/]"
+                     f"  [{ok}]●{tr}[/]  [{di}]✓[/][{ok}]{td}[/]  [{di}]✗[/][{er}]{tf}[/]"
+                     + (f"  [{wa}]⚇{sw_w}W[/]" if sw_w else ""))
+        lines.append(f"[{a}]╠══ SYSTEM ══════════════════════════╗"
+                     f"  ╠══ TASKS ════════════════════════════════╗"
+                     f"  ╠══ AGENTS ════════════════════════╣[/]")
+
+        # ── COLUMNS: System | Tasks | Agents ──────────────────────────────
+        sys_lines = []
+        tasks_lines = []
+        agent_lines = []
+
+        # LEFT: System column
+        sys_lines.append(f"[{di}]▸ CPU  {cpu_col}│{core_grid(data.get('cpu_per_core',[]), group=4, color=ok)}[/]")
+        ru = data.get("ram_used_gb", 0)
+        rt = data.get("ram_total_gb", 16)
+        rbar = hbar(ram / 100, width=10, color=ram_col)
+        sys_lines.append(f"[{di}]▸ RAM  {rbar} {ru:.1f}/{rt:.0f}GB[/]")
+        dbar = hbar(disk / 100, width=10, color=disk_col)
+        sys_lines.append(f"[{di}]▸ DSK  {dbar}[/]")
+        sys_lines.append(f"[{di}]▸ NET  ▼{nd} ▲{nu}[/]")
+        gpu = data.get("gpu_util", -1)
+        if gpu >= 0:
+            gpu_col = er if gpu > 80 else wa if gpu > 50 else ok
+            sys_lines.append(f"[{di}]▸ GPU  [{gpu_col}]{gpu:.0f}%[/] {data.get('gpu_mem_mb',0):.0f}MB[/]")
+        uptime = data.get("uptime", "")
+        if uptime:
+            sys_lines.append(f"[{di}]▸ UP   {uptime}[/]")
+        vault_n = data.get("vault_notes", 0)
+        vault_l = data.get("vault_links", 0)
+        sys_lines.append(f"[{di}]▸ VLT  📓{vault_n} notes · {vault_l} links[/]")
+        mem_n = data.get("mem_count", 0)
+        sys_lines.append(f"[{di}]▸ MEM  ◎{mem_n} facts[/]")
+        sys_text = "\n".join(sys_lines)
+
+        # CENTER: Tasks column
+        active = data.get("active_tasks", [])
+        if active:
+            for t in active[:6]:
+                tcol = ok if t["state"] == "done" else wa if t["state"] in ("running","pending") else er
+                icon = "⏸" if t.get("paused") else "●" if t["state"] == "running" else "◆" if t["state"] == "pending" else "✓"
+                tasks_lines.append(f"  [{tcol}]{icon}[/] [{a}]{t['label'][:20]:20s}[/]")
+                tasks_lines.append(f"     {hbar(t['progress'], width=8, color=tcol)} [{di}]{t['harness']}[/]")
+        else:
+            tasks_lines.append(f"  [{di}](idle)[/]")
+        hist = data.get("task_history", [])
+        if hist:
+            tasks_lines.append(f"  [{di}]━━ history ━━[/]")
+            for h in hist[:4]:
+                icon = "✓" if h["result"] == "done" else "✗" if h["result"] == "failed" else "—"
+                col = ok if h["result"] == "done" else er
+                tasks_lines.append(f"  [{col}]{icon}[/] [{di}]{h['label'][:28]}[/]")
+        tasks_text = "\n".join(tasks_lines)
+
+        # RIGHT: Agents column
+        # Model info
+        tok_models = data.get("token_models", [])
+        if tok_models:
+            agent_lines.append(f"  [{a}]◈ MODELS[/]")
+            for m in tok_models[:3]:
+                nm = m["model"].split("/")[-1][:14]
+                mtok = m.get("tot", 0)
+                agent_lines.append(f"  [{di}]{nm}[/]  {hbar(min(mtok/1e6,1), width=8, color=ok)} {mtok/1000:.0f}k")
+        # Live agents
+        live = data.get("live_agents", 0)
+        if live:
+            agent_lines.append(f"  [{a}]◆ {live} LIVE AGENTS[/]")
+        # Swarm
+        agents = data.get("swarm_agents", [])
+        if agents:
+            agent_lines.append(f"  [{a}]⚇ SWARM ({data.get('swarm_total',0)} agents)[/]")
+            for ag in agents[:4]:
+                icon = {"idle": "○", "working": "●", "waiting": "⌛", "done": "✓",
+                        "failed": "✗", "blocked": "⊘"}.get(ag.get("status","idle"), "?")
+                col = ok if ag["status"] == "done" else wa if ag["status"] == "working" else di
+                agent_lines.append(f"  [{col}]{icon}[/] [{di}]{ag['name'][:16]:16s} {ag.get('goal','')[:20]}[/]")
+        else:
+            agent_lines.append(f"  [{di}](no running agents)[/]")
+        agent_lines.append(f"  [{a}]✦ Agent chat[/][{di}]  type in Agent workspace[/]")
+        agent_text = "\n".join(agent_lines)
+
+        # Render columns side by side with dividers
+        sys_rows = sys_text.split("\n")
+        tasks_rows = tasks_text.split("\n")
+        agent_rows = agent_text.split("\n")
+        max_rows = max(len(sys_rows), len(tasks_rows), len(agent_rows))
+        col_width = 36
+        for i in range(max_rows):
+            s = sys_rows[i] if i < len(sys_rows) else ""
+            t = tasks_rows[i] if i < len(tasks_rows) else ""
+            ag = agent_rows[i] if i < len(agent_rows) else ""
+            s = s.ljust(col_width)
+            t = t.ljust(col_width)
+            lines.append(f"  {s}  {t}  {ag}")
+
+        # ── BOTTOM: quick command reference ───────────────────────────────
+        lines.append(f"[{a}]╠══ QUICK COMMANDS ════════════════════════════════════════════════╣[/]")
+        cmds = ("run demo hello  ·  swarm create research  ·  mode deep  ·  "
+                "theme matrix  ·  note <fact>  ·  mem <query>  ·  mode focus")
+        lines.append(f"  [{di}]{cmds}[/]")
+        lines.append(f"[{a}]╚══════════════════════════════════════════════════════════════════╝[/]")
         return "\n".join(lines)
 
     def _render_right(self) -> None:

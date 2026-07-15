@@ -24,6 +24,7 @@ from .voice.persona import Persona
 from .llm import ChatSession, format_conversation, chat_send
 from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
 from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
+from .dashboard import collect_dashboard
 
 
 @dataclass
@@ -117,6 +118,9 @@ class Store:
 
     def _current_items(self) -> list[dict]:
         ws = self.cfg["workspaces"][self.state.active_ws]["id"]
+        if ws == "desktop":
+            d = collect_dashboard(self.state, self.cfg)
+            return [{"type": "dashboard", "data": d.as_dict()}]
         if ws == "models":
             return [{"id": h, "name": self.harnesses[h].name,
                      "vram": self.harnesses[h].vram_mb,
@@ -216,7 +220,8 @@ class Store:
 
     def _focused_task(self) -> Task | None:
         items = self._current_items()
-        if self.state.active_ws != 1 or not items:  # tasks workspace only
+        ws_id = self.cfg["workspaces"][self.state.active_ws]["id"]
+        if ws_id != "tasks" or not items:
             return None
         if self.state.focus >= len(items):
             return None

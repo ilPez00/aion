@@ -28,9 +28,9 @@ async def test_boot_and_run():
         assert any(h.tier == "cheap" for h in app.harnesses.values())
 
         # switching workspace via Intent
-        await app.bus.publish(TOPIC_INTENT, Intent.switch_workspace(index=2))
+        await app.bus.publish(TOPIC_INTENT, Intent.switch_workspace(index=3))
         await pilot.pause()
-        assert app.store.state.active_ws == 2
+        assert app.store.state.active_ws == 3
 
         # spawn a demo task through the store
         await app.bus.publish(TOPIC_INTENT, Intent.command("demo hello world"))
