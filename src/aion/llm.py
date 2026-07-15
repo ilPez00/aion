@@ -22,7 +22,17 @@ SYSTEM_PROMPT = (
     "You are aion, an AI cockpit assistant living inside a multi-workspace TUI. "
     "You have access to: models (harnesses), tasks, memory (persistent notes), "
     "vault (obsidian-style notes graph), system stats, projects, and hermes agent data. "
-    "Keep replies concise and useful. You can run tasks by saying 'run <harness> <prompt>'."
+    "Keep replies concise and useful.\n\n"
+    "You can ACT by emitting tool calls inside your reply using this exact format:\n"
+    "  <tool run>demo hello world</tool>      -> run a harness with a prompt\n"
+    "  <tool rerun></tool>                    -> rerun the last failed task\n"
+    "  <tool compare>which model is better?</tool> -> side-by-side model compare\n"
+    "  <tool mem>status query</tool>          -> search persistent memory\n"
+    "  <tool note>a useful fact</tool>        -> save a note\n"
+    "  <tool state></tool>                    -> snapshot of current cockpit state\n"
+    "After a tool call, you will receive its result and can act on it. "
+    "Use tools when the user asks you to DO something (run, compare, recall), "
+    "not just talk. End with a short natural-language summary for the user."
 )
 
 
@@ -181,7 +191,7 @@ def format_conversation(session: ChatSession) -> list[dict]:
         out.append({
             "id": "empty",
             "role": "system",
-            "content": "💬 Type a message in the command palette to chat with the AI. Or: 'run demo hello', 'tier cheap', 'mem <query>', 'theme matrix'.",
+            "content": "💬 Agent with tools: ask it to DO things — 'run demo hello', 'compare <q>', 'mem <query>', 'rerun', 'note <fact>'. The agent calls cockpit tools and reports back.",
             "pending": False,
         })
     return out
@@ -212,3 +222,42 @@ def chat_send_multi(prompt: str, providers: list[str], timeout: int = 30) -> dic
         else:
             out[prov] = reply[:400]
     return out
+
+
+def agent_run(session: ChatSession, env, max_steps: int = 3, timeout: int = 30) -> str:
+    """Agent loop: chat, let the LLM emit tool calls, execute them, re-prompt.
+
+    Flow:
+      1. send user message -> get reply
+      2. if reply has <tool ...> tags, execute them via `env`, append the
+         observations as a tool-result turn, and ask the LLM to continue
+      3. repeat up to max_steps, then return the final natural-language reply
+
+    `env` is an aion.agent.ToolEnv with real callables. Falls back to a plain
+    chat reply if no tools are emitted (so it still works as a normal chat).
+    """
+    from .agent import execute
+
+    # initial turn
+    reply = chat_send(session, _last_user(session), timeout=timeout)
+    steps = 0
+    while steps < max_steps:
+        natural, obs = execute(reply, env)
+        if not obs:
+            # no tool calls -> final answer
+            return natural or reply
+        # record the tool exchange in the session so context carries forward
+        session.add("assistant", reply)
+        session.add("user", f"[tool results]\n{obs}\n\nContinue using the results above.")
+        reply = chat_send(session, _last_user(session), timeout=timeout)
+        steps += 1
+    # return whatever the last reply was (tools stripped)
+    natural, _ = execute(reply, env)
+    return natural or reply
+
+
+def _last_user(session: ChatSession) -> str:
+    for m in reversed(session.messages):
+        if m.role == "user":
+            return m.content
+    return ""

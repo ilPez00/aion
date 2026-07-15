@@ -17,7 +17,8 @@ from typing import Any
 
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore,
-    Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
+    Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS,
+    TOPIC_INTENT, load_config,
 )
 from .memory import MemoryStore
 from .voice.persona import Persona
@@ -64,6 +65,8 @@ class Store:
         # tests can pass fakes). Falls back to empty.
         self.harnesses: dict = harnesses or {}
         self._prev_task_states: dict[str, TaskState] = {}
+        self._task_prompts: dict[str, str] = {}  # task id -> last prompt (for rerun)
+        self._loop = None  # captured event loop (set in _chat for agent tools)
         self.memory = MemoryStore()
         self.chat = ChatSession()
         self.swarm = SwarmOrchestrator(bus=self.bus)
@@ -289,6 +292,7 @@ class Store:
         if h is None:
             return
         task = self.registry.create(f"{h.name}: {prompt[:30]}", h.id)
+        self._task_prompts[task.id] = prompt
         asyncio.create_task(h.run(task, prompt))
 
     async def _respawn(self, old: Task) -> None:
@@ -424,12 +428,84 @@ class Store:
             self.state.history.append(f"unknown swarm subcommand: {sub}")
 
     async def _chat(self, message: str) -> None:
-        """Send a message to the inline LLM chat (runs in executor)."""
+        """Send a message to the inline LLM agent (tool-calling loop)."""
         import asyncio
+        from .agent import ToolEnv
+        from .llm import agent_run
+        from .core import Intent, IntentType
+
+        # capture the running loop so agent tools (called from the executor
+        # thread inside agent_run) can safely publish intents back
+        self._loop = asyncio.get_event_loop()
+
+        # Build the agent's tool environment from the live cockpit.
+        # Tool callables emit Intents on the bus (handled by the store/app).
+        env = ToolEnv(
+            run=lambda h, p: self._agent_run_tool(h, p),
+            rerun=lambda: self._agent_rerun_tool(),
+            compare=lambda q: self._agent_compare_tool(q),
+            mem=lambda q: self._agent_mem_tool(q),
+            note=lambda f: self._agent_note_tool(f),
+            state=lambda: self._agent_state_tool(),
+        )
         loop = asyncio.get_event_loop()
-        reply = await loop.run_in_executor(None, chat_send, self.chat, message)
-        # Force re-render by publishing a stats-like event
+        reply = await loop.run_in_executor(None, agent_run, self.chat, env)
         await self.bus.publish("chat", {"role": "assistant", "content": reply})
+
+    # ---- agent tool implementations (the cockpit's own capabilities) -----
+    # These run from the executor thread (inside agent_run), so they must NOT
+    # await. They schedule Intent publishes on the captured loop (self._loop).
+    def _emit(self, intent) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                lambda i=intent: asyncio.ensure_future(self.bus.publish(TOPIC_INTENT, i)))
+
+    def _agent_run_tool(self, harness: str, prompt: str) -> str:
+        hid = harness.strip()
+        if hid not in self.harnesses:
+            return f"unknown harness '{hid}' (have: {', '.join(self.harnesses)})"
+        self._emit(Intent.command(f"run {hid} {prompt}"))
+        return f"scheduled {hid}: {prompt[:40]}"
+
+    def _agent_rerun_tool(self) -> str:
+        failed = [t for t in self.registry.tasks.values()
+                  if t.state.value == "failed"]
+        if not failed:
+            return "no failed tasks to rerun"
+        t = failed[-1]
+        prompt = self._task_prompts.get(t.id, t.label)
+        self._emit(Intent.command(f"run {t.harness} {prompt}"))
+        return f"rerunning {t.id} ({t.harness})"
+
+    def _agent_compare_tool(self, prompt: str) -> str:
+        self._emit(Intent.compare(prompt))
+        return f"comparing models for: {prompt[:60]}"
+
+    def _agent_mem_tool(self, query: str) -> str:
+        try:
+            from .hermes import HermesMemoryReader
+            mem = HermesMemoryReader()
+            hits = mem.search(query, limit=3) if hasattr(mem, "search") else []
+            if not hits:
+                return f"no memory hits for '{query}'"
+            return "\n".join(f"- {h.title}: {h.snippet[:80]}" for h in hits)
+        except Exception as e:  # noqa: BLE001
+            return f"memory unavailable: {e}"
+
+    def _agent_note_tool(self, fact: str) -> str:
+        self.memory.add(fact)
+        return f"noted: {fact[:60]}"
+
+    def _agent_state_tool(self) -> str:
+        tasks = list(self.registry.tasks.values())
+        running = sum(1 for t in tasks if t.state.value == "running")
+        failed = sum(1 for t in tasks if t.state.value == "failed")
+        sugg = len(self.state.suggestions)
+        st = self.state.stats.get("stats")
+        tok = st.get("in", 0) + st.get("out", 0) if st else 0
+        return (f"tasks={len(tasks)} running={running} failed={failed} "
+                f"suggestions={sugg} tokens={tok} "
+                f"ws={self.cfg['workspaces'][self.state.active_ws]['id']}")
 
     # ---- bus subscriptions: keep state + persist in sync ----------------
     async def _on_task_event(self, msg: dict) -> None:
