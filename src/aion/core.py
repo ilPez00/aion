@@ -38,7 +38,8 @@ class IntentType(Enum):
     PAUSE = auto()             # pause focused running task
     RESUME = auto()            # resume focused paused task
     CANCEL = auto()            # cancel focused task
-    RERUN = auto()             # re-run focused interrupted/cancelled/failed task
+    RERUN = auto()          # re-run focused interrupted/cancelled/failed task
+    COMPARE = auto()         # side-by-side model comparison, payload: {"text": str}
 
 
 @dataclass
@@ -74,6 +75,10 @@ class Intent:
     @classmethod
     def mode_toggle(cls, mode: str) -> "Intent":
         return cls(IntentType.MODE_TOGGLE, {"mode": mode})
+
+    @classmethod
+    def compare(cls, text: str) -> "Intent":
+        return cls(IntentType.COMPARE, {"text": text})
 
 
 # --------------------------------------------------------------------------

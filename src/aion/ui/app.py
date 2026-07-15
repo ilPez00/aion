@@ -139,7 +139,7 @@ class AiOSApp(App):
             yield VerticalScroll(id="center")
             yield VerticalScroll(id="right")
         yield Static("", id="bottom")
-        yield Input(placeholder="› command  (run <h> <prompt> · tier <cheap|standard|premium>)", id="palette")
+        yield Input(placeholder="› command  (run <h> <prompt> · compare <q> · tier <cheap|standard|premium>)", id="palette")
         yield Static("", id="help")
 
     async def on_mount(self) -> None:
@@ -270,7 +270,11 @@ class AiOSApp(App):
                 p.value = ""
                 self.query_one("#palette").display = False
                 if text:
-                    asyncio.create_task(self.router.emit(Intent.command(text)))
+                    # compare command: "compare <prompt>" -> multi-model side-by-side
+                    if text.lower().startswith("compare "):
+                        asyncio.create_task(self.router.emit(Intent.compare(text[8:].strip())))
+                    else:
+                        asyncio.create_task(self.router.emit(Intent.command(text)))
                 event.prevent_default()
                 return
             # All other keys go through to Input widget
@@ -660,12 +664,36 @@ class AiOSApp(App):
         return "\n".join(lines)
 
     def _agent_panel(self, theme: dict) -> str:
-        """Render the inline LLM chat conversation."""
+        """Render the Agent workspace: either chat or side-by-side compare."""
         items = self.store._current_items()
         a, di = theme["accent"], theme["dim"]
-        if not items or not items[0].get("messages"):
+        if not items:
             return f"[{di}]Agent workspace ready. Type a message in Ctrl-K or select a harness.[/]"
-        msgs = items[0]["messages"]
+        it = items[0]
+        # Compare view
+        if it.get("type") == "compare":
+            prompt = it.get("prompt", "")
+            answers = it.get("answers", {})
+            done = it.get("done", False)
+            lines = [f"[{a}]╔══ MODEL COMPARE {'DONE' if done else '...'} ═════════════════╗[/]"]
+            lines.append(f" [{di}]Q: {prompt[:44]}[/]")
+            provs = list(answers.keys())
+            # two-column layout
+            left = provs[0] if len(provs) > 0 else ""
+            right = provs[1] if len(provs) > 1 else ""
+            lines.append(f" [{a}]├─ {left or '-'} ─┤─ {right or '-'} ─┤[/]")
+            L = (answers.get(left, "") or "")[:200]
+            R = (answers.get(right, "") or "")[:200]
+            for i in range(max(len(L), len(R), 1)):
+                lc = L[i:i+24] if i < len(L) else ""
+                rc = R[i:i+24] if i < len(R) else ""
+                lines.append(f" [{di}]{lc:<24}│{rc}[/]")
+            lines.append(f"[{a}]╚══════════════════════════════════════╝[/]")
+            return "\n".join(lines)
+        # Chat view
+        msgs = it.get("messages", [])
+        if not msgs:
+            return f"[{di}]Agent workspace ready. Type a message in Ctrl-K or select a harness.[/]"
         lines = [f"[{a}]╔══ AGENT CHAT ═══════════════════════╗[/]"]
         for msg in msgs[-20:]:
             role = msg.get("role", "?")
@@ -809,7 +837,7 @@ class AiOSApp(App):
 
         # ─── 06 COMMANDS ─────────────────────────────────────────────────
         p.append(f" [{a}]06 QUICK[/]")
-        p.append(f" [{di}]Ctrl-K: run demo|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
+        p.append(f" [{di}]Ctrl-K: run demo|compare <q>|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
 
         p.append(f" {sep}")
         return "\n".join(p)

@@ -47,6 +47,8 @@ class ViewState:
     active_mode: str = "default"
     swarm_dashboard: str = ""
     task_history: list[dict] = field(default_factory=list)  # completed tasks
+    compare_result: dict = field(default_factory=dict)      # multi-model compare
+    suggestions: list[str] = field(default_factory=list)    # proactive jarvis
 
 
 class Store:
@@ -159,6 +161,11 @@ class Store:
         if ws == "sys":
             return [{"kind": "live"}]  # rendered specially from stats
         if ws == "agent":
+            cr = self.state.compare_result
+            if cr and cr.get("answers"):
+                # side-by-side compare takes over the agent workspace
+                return [{"type": "compare", "prompt": cr.get("prompt", ""),
+                         "answers": cr["answers"], "done": cr.get("done", False)}]
             msgs = format_conversation(self.chat)
             return [{"type": "chat", "messages": msgs}] if msgs else []
         if ws == "swarm":
@@ -203,6 +210,8 @@ class Store:
             self._control("cancel")
         elif t == IntentType.RERUN:
             self._control("rerun")
+        elif t == IntentType.COMPARE:
+            asyncio.create_task(self._run_compare(p.get("text", "")))
         # MODE_TOGGLE/SELECT handled by app/voice layer if needed
 
     def _navigate(self, direction: str) -> None:
@@ -329,6 +338,25 @@ class Store:
             await self._chat(text)
         else:
             await self._spawn(self.state.active_harness, text)
+
+    async def _run_compare(self, text: str) -> None:
+        """Side-by-side multi-model comparison. Switches Agent ws to show it."""
+        from .llm import chat_send_multi
+        prompt = text.strip()
+        if not prompt:
+            return
+        providers = ["fcm", "groq"]
+        self.state.compare_result = {"prompt": prompt, "answers": {}, "done": False}
+        # jump to Agent workspace so the side-by-side is visible
+        ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+        if "agent" in ws_ids:
+            self.state.active_ws = ws_ids.index("agent")
+            self.state.focus = 0
+        # run in executor to avoid blocking the loop on network
+        loop = asyncio.get_event_loop()
+        answers = await loop.run_in_executor(None, chat_send_multi, prompt, providers)
+        self.state.compare_result = {"prompt": prompt, "answers": answers, "done": True}
+        self.state.history.append(f"compare: {prompt[:40]}")
 
     def _set_mode(self, mode_id: str) -> None:
         """Switch the operational mode."""

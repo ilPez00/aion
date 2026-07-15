@@ -185,3 +185,30 @@ def format_conversation(session: ChatSession) -> list[dict]:
             "pending": False,
         })
     return out
+
+
+def chat_send_multi(prompt: str, providers: list[str], timeout: int = 30) -> dict[str, str]:
+    """Side-by-side model comparison. Returns {provider: reply_or_warning}.
+
+    Provider keys map to backends: 'fcm' -> local FCM proxy, 'groq' -> Groq API.
+    Any other key currently falls back to FCM (single backend today). Replies are
+    capped at 400 chars so the side-by-side UI stays readable.
+    """
+    api_msgs = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    out: dict[str, str] = {}
+    for prov in providers:
+        if prov == "groq":
+            reply = _groq_chat(api_msgs, timeout=timeout)
+        else:  # default: fcm (and any unknown key)
+            reply = _fcm_chat(api_msgs, timeout=timeout)
+            if reply is None and prov == "fcm":
+                # fcm is the local-only proxy; don't double-count groq unless asked
+                pass
+        if reply is None:
+            out[prov] = f"⚠️ {prov} unavailable"
+        else:
+            out[prov] = reply[:400]
+    return out
