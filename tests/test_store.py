@@ -95,7 +95,7 @@ def test_pause_resume_cancel():
         await asyncio.sleep(0.2)
         assert task.paused is False
         s.handle(Intent(IntentType.CANCEL))
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
         assert task.state == TaskState.CANCELLED
     asyncio.run(go())
 

@@ -433,6 +433,8 @@ class AiOSApp(App):
             return self._sys_panel(theme)
         if ws == "swarm":
             return self._swarm_panel(theme)
+        if ws == "tasks":
+            return self._tasks_panel(theme)
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -605,6 +607,44 @@ class AiOSApp(App):
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
         lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
         lines.append(f"[{theme['dim']}]Commands: swarm create|add <name> <goal>|run|status|stop[/]")
+        return "\n".join(lines)
+
+    def _tasks_panel(self, theme: dict) -> str:
+        """Full task-progress dashboard: active + history."""
+        from .gauges import hbar
+        tasks = sorted(self.store.registry.tasks.values(),
+                       key=lambda t: t.created, reverse=True)
+        lines = []
+        lines.append(f"[{theme['accent']}]╔══ TASK PROGRESS ════════════════════════╗[/]")
+        # Summary
+        total = len(tasks)
+        running = [t for t in tasks if t.state.value in ("running", "pending")]
+        done = [t for t in tasks if t.state.value == "done"]
+        failed = [t for t in tasks if t.state.value == "failed"]
+        summ = f"▣ {total} total · ●{len(running)} active · ✓{len(done)} done · ✗{len(failed)} failed"
+        lines.append(f"  [{theme['dim']}]{summ}[/]")
+        # Active tasks (sort by progress desc)
+        if running:
+            lines.append(f"[{theme['accent']}]╠══ Active ═══════════════════════════════╣[/]")
+            for t in sorted(running, key=lambda x: x.progress, reverse=True):
+                icon = "⏸" if t.paused else "●"
+                col = theme["warn"]
+                bar_str = hbar(t.progress, width=12, color=col)
+                lines.append(f"  [{col}]{icon}[/] [{theme['accent']}]{t.label[:22]:22s}[/]")
+                lines.append(f"     {bar_str} [{theme['dim']}]{int(t.progress*100)}% · {t.harness}[/]")
+        else:
+            lines.append(f"[{theme['dim']}]╠══ Active ═══════════════════════════════╣[/]")
+            lines.append(f"  [{theme['dim']}](no active tasks)[/]")
+        # Recent history
+        hist = self.store.state.task_history[-8:][::-1]
+        if hist:
+            lines.append(f"[{theme['accent']}]╠══ History ══════════════════════════════╣[/]")
+            for h in hist:
+                icon = "✓" if h["result"] == "done" else "✗" if h["result"] == "failed" else "—"
+                col = theme["ok"] if h["result"] == "done" else theme["err"] if h["result"] == "failed" else theme["dim"]
+                lines.append(f"  [{col}]{icon}[/] [{theme['dim']}]{h['label'][:32]:32s}[/] [{theme['dim']}]{h['harness']}[/]")
+        lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
+        lines.append(f"[{theme['dim']}]Commands: run <h> <prompt> · tier <cheap|standard|premium>[/]")
         return "\n".join(lines)
 
     def _render_right(self) -> None:

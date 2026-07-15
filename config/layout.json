@@ -46,6 +46,7 @@
     {"id": "skills",  "title": "Skills",   "icon": "📚"},
     {"id": "projects","title": "Projects", "icon": "⬢"},
     {"id": "term",    "title": "Term",     "icon": "▣"},
+    {"id": "tasks",   "title": "Tasks",    "icon": "✓"},
     {"id": "swarm",   "title": "Swarm",    "icon": "⚇"},
     {"id": "settings","title": "Settings", "icon": "⚙️"}
   ],
