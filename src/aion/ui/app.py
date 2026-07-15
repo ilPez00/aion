@@ -390,7 +390,10 @@ class AiOSApp(App):
         self.query_one("#header", expect_type=Header).text = (
             f"[{theme['accent']}]{self.persona.name}[/]  "
             f"harness: [{theme['ok']}]{name}[/]  "
-            f"{status}{hud}  [{theme['dim']}]{clock}{vmode}[/]"
+            f"[{theme['accent']}]◉{s.active_mode}[/]  "
+            f"{status}{hud}  "
+            + (f"[{theme['err']}]⚠{len(s.suggestions)}[/]  " if s.suggestions else "")
+            + f"[{theme['dim']}]{clock}{vmode}[/]"
         )
 
     def _render_rail(self) -> None:
