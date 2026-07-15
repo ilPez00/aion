@@ -159,7 +159,8 @@ class Store:
         if ws == "sys":
             return [{"kind": "live"}]  # rendered specially from stats
         if ws == "agent":
-            return format_conversation(self.chat)
+            msgs = format_conversation(self.chat)
+            return [{"type": "chat", "messages": msgs}] if msgs else []
         if ws == "swarm":
             s = self.state.swarm_dashboard
             if s:

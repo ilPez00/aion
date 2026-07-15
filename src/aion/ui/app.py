@@ -88,6 +88,7 @@ class AiOSApp(App):
     """
 
     BINDINGS = [
+        ("enter", "activate", "Activate"),
         ("?, slash", "help", "Help"),
         ("escape", "back", "Back"),
         ("space", "activate", "Activate"),
@@ -255,6 +256,19 @@ class AiOSApp(App):
             if event.key == "escape":
                 self.query_one("#palette").display = False
                 self.set_focus(None)
+                event.prevent_default()
+                return
+            if event.key == "enter":
+                # Submit palette text directly
+                p = self.query_one("#palette", expect_type=Input)
+                text = p.value.strip()
+                p.value = ""
+                self.query_one("#palette").display = False
+                if text:
+                    asyncio.create_task(self.router.emit(Intent.command(text)))
+                event.prevent_default()
+                return
+            # All other keys go through to Input widget
             return
         if self.query_one("#help").display:
             if event.key == "escape" or event.key in ("?", "/"):
@@ -305,13 +319,6 @@ class AiOSApp(App):
         p.display = not p.display
         if p.display:
             p.focus()
-
-    async def on_submit(self, event: Input.Submitted) -> None:
-        if event.input.id == "palette":
-            text = event.value.strip()
-            self.query_one("#palette").display = False
-            if text:
-                await self.router.emit(Intent.command(text))
 
     # ===== RENDER (targeted) ============================================
     def _render_all(self) -> None:
@@ -437,6 +444,8 @@ class AiOSApp(App):
             return self._desktop_panel(theme)
         if ws == "tasks":
             return self._tasks_panel(theme)
+        if ws == "agent":
+            return self._agent_panel(theme)
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -609,6 +618,27 @@ class AiOSApp(App):
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
         lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
         lines.append(f"[{theme['dim']}]Commands: swarm create|add <name> <goal>|run|status|stop[/]")
+        return "\n".join(lines)
+
+    def _agent_panel(self, theme: dict) -> str:
+        """Render the inline LLM chat conversation."""
+        items = self.store._current_items()
+        a, di = theme["accent"], theme["dim"]
+        if not items or not items[0].get("messages"):
+            return f"[{di}]Agent workspace ready. Type a message in Ctrl-K or select a harness.[/]"
+        msgs = items[0]["messages"]
+        lines = [f"[{a}]╔══ AGENT CHAT ═══════════════════════╗[/]"]
+        for msg in msgs[-20:]:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            col = a if role == "assistant" else theme["ok"] if role == "user" else di
+            name = "You" if role == "user" else "AI" if role == "assistant" else role
+            lines.append(f" [{col}]{name}:[/]")
+            while content:
+                lines.append(f" [{di}]{content[:48]}[/]")
+                content = content[48:]
+        lines.append(f"[{a}]╚══════════════════════════════════╝[/]")
+        lines.append(f"[{di}]Type 'search <q>' or a message in Ctrl-K to chat[/]")
         return "\n".join(lines)
 
     def _tasks_panel(self, theme: dict) -> str:
