@@ -85,6 +85,26 @@ SEARCH_TOOL = {
 }
 
 
+FCM_URL = "http://localhost:19280/v1/chat/completions"
+
+
+def _fcm_chat(messages: list[dict], timeout: int = 20) -> str | None:
+    """Try FCM local proxy (free-coding-models daemon). Returns text or None."""
+    import requests
+    try:
+        r = requests.post(
+            FCM_URL,
+            headers={"Authorization": "Bearer fcm-local", "Content-Type": "application/json"},
+            json={"model": "fcm", "messages": messages, "temperature": 0.3, "max_tokens": 600},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        pass
+    return None
+
+
 def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> dict:
     """ReAct-style web answer. Returns {answer, sources, searched}."""
     import json as _json
@@ -92,6 +112,9 @@ def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> di
     _load_env()
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
+        fcm = _fcm_chat([{"role": "user", "content": prompt}])
+        if fcm:
+            return {"answer": fcm, "sources": [], "searched": False}
         return {"answer": _fallback(prompt), "sources": [], "searched": False}
     sys = ("You are Aion, an AI-first OS assistant. You may call web_search to get current "
            "facts. When you have enough info, answer concisely and cite sources by title.")
@@ -134,6 +157,9 @@ def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> di
                     "sources": sources, "searched": bool(sources)}
         return {"answer": msg["content"].strip(), "sources": [], "searched": False}
     except Exception as e:  # noqa: BLE001
+        fcm = _fcm_chat(messages)
+        if fcm:
+            return {"answer": fcm + " [via FCM fallback]", "sources": [], "searched": False}
         return {"answer": f"[deepsearch error: {e}] " + _fallback(prompt),
                 "sources": [], "searched": False}
 

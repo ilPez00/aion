@@ -35,6 +35,38 @@ live harness progress:
 python tests/test_smoke.py
 ```
 
+The HUD data layer (gauges, vault, health, system) is covered by
+`tests/test_hud.py`:
+
+```bash
+python -m pytest tests/test_hud.py -q
+```
+
+## Iron Man HUD (the varied cockpit)
+
+Beyond the task harnesses, aion renders a live, multi-panel HUD. Two new
+workspaces + a set of background pollers feed it:
+
+- **Vault** (`📓`) — an Obsidian-style graph of your markdown notes.
+  Parses `[[wikilinks]]` + `#tags`, resolves backlinks, and shows each note's
+  link degree, tags, headings and preview. On first launch it **prompts you to
+  choose your vault path** (default `notes/`; point it at `~/Obsidian` etc.).
+- **System** (`🖥`) — the Iron Man panel: live CPU (per-core heat-map), RAM,
+  disk usage, network up/down rates, and GPU util — plus a **REAL LIFE**
+  block (steps / heart-rate / sleep / active calories) read from Google Fit,
+  Apple Health, or a JSON file.
+
+Wire a real health source in `config/layout.json`:
+
+```json
+{"id": "health", "type": "health", "name": "Life HUD",
+ "source": "google", "path": "~/takeout/fit.csv", "interval": 60}
+```
+
+`source` is one of `"json"` (default `~/.aion/health.json`), `"google"`
+(Takeout CSV), `"apple"` (Health `export.xml`). The JSON shape is
+`{"records": [{"date","steps","heart_rate","sleep_hours","active_calories","screen_time"}]}`.
+
 ## Controls
 
 | Input        | Action                                              |
@@ -80,14 +112,20 @@ forget <n>                  drop fact #n from the current memory view
   - Install the voice extra: `pip install -e ".[voice]"`
 
 ## Architecture (src/aion/)
-
+## Architecture (src/aion/)
 - `core.py`    — `Intent`, async `Bus` (pub/sub), `TaskRegistry`, `Config`.
 - `harnesses.py` — swappable backends. `DemoHarness`, `ShellHarness`,
   `CyclopsHarness` (stub). Add a new backend = 1 subclass + 1 config entry.
+  Plus the Iron Man HUD pollers: `SystemHarness` (computer stats),
+  `HealthHarness` (real-life stats), `VaultHarness` (notes graph).
 - `input.py`   — `Router` + `KeyboardMap`, `JoystickInput` (evdev),
   `VoiceInput` (STT stub). All emit `Intent`.
 - `ui/app.py`  — the Textual cockpit. Renders from the model; subscribes to
   the bus so work never blocks the UI.
+- `ui/gauges.py` — reusable HUD widgets (sparklines, bars, gauges).
+- `vault.py`   — Obsidian-style notes reader (`[[wikilinks]]` + backlinks → graph).
+- `health.py`  — pluggable real-life stats (Google Fit / Apple Health / JSON).
+- `sysinfo.py` — computer stats reader (CPU/RAM/disk/net/GPU via psutil).
 
 ## Customizing
 

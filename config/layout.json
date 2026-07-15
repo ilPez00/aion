@@ -40,10 +40,13 @@
     {"id": "tasks",   "title": "Tasks",    "icon": "▤"},
     {"id": "agent",   "title": "Agent",    "icon": "✦"},
     {"id": "memory",  "title": "Memory",   "icon": "◎"},
+    {"id": "vault",   "title": "Vault",    "icon": "📓"},
+    {"id": "sys",     "title": "System",   "icon": "🖥"},
     {"id": "hermes",  "title": "Hermes",   "icon": "⚡"},
     {"id": "skills",  "title": "Skills",   "icon": "📚"},
     {"id": "projects","title": "Projects", "icon": "⬢"},
-    {"id": "term",    "title": "Term",     "icon": "▣"}
+    {"id": "term",    "title": "Term",     "icon": "▣"},
+    {"id": "settings","title": "Settings", "icon": "⚙️"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {
@@ -66,6 +69,10 @@
     {"id": "skill",   "type": "skill",   "name": "Skill Runner",   "enabled": true, "vram_mb": 0,   "tier": "standard"},
     {"id": "projects","type": "projects","name": "Projects",       "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false},
     {"id": "term",    "type": "term",    "name": "Term",          "enabled": true, "vram_mb": 0,   "tier": "cheap", "command": "btop", "cols": 110, "rows": 32},
-    {"id": "web",     "type": "web",     "name": "DeepSearch",    "enabled": true, "vram_mb": 0,   "tier": "cheap"}
+    {"id": "web",     "type": "web",     "name": "DeepSearch",     "enabled": true, "vram_mb": 0,   "tier": "cheap"},
+    {"id": "opencode","type": "opencode","name": "OpenCode Agent", "enabled": true, "vram_mb": 0,   "tier": "premium", "extra": {"model": "deepseek/deepseek-v4-pro", "timeout": 300, "auto": false}},
+    {"id": "system",  "type": "system",  "name": "Computer HUD",   "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 2.0},
+    {"id": "health",  "type": "health",  "name": "Life HUD",       "enabled": true, "vram_mb": 0,   "tier": "standard", "source": "json", "interval": 30.0},
+    {"id": "vault",   "type": "vault",   "name": "Vault",          "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 15.0, "prompt_setup": true}
   ]
 }

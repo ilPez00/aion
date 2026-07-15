@@ -18,6 +18,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 from .core import Bus, Task, TaskRegistry, TaskState, TOPIC_STATS
 
@@ -333,6 +334,190 @@ class TelemetryHarness(Harness):
                 await self._stat(gpu_util_pct=int(parts[0]), gpu_mem_mb=int(parts[1]))
 
 
+class SystemHarness(Harness):
+    """Iron Man HUD poller: real-time COMPUTER statistics.
+
+    Reads CPU / RAM / disk / network / GPU through psutil (+ reuses the
+    TelemetryHarness GPU probe) and publishes a structured dict on
+    TOPIC_STATS under harness id "system". The `sys` workspace renders from
+    it. No task needed — call .start() once at boot, like the other pollers.
+
+    Degrades gracefully if psutil is missing (emits ok:False so the HUD can
+    show "(stats unavailable)").
+
+    Config extras:
+      interval: seconds between reads   (default 2.0)
+      disk:     list of mount points     (default: all physical mounts)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.interval = float(extra.get("interval", 2.0))
+        self.disk_paths = extra.get("disk") or None
+        self._task: asyncio.Task | None = None
+        self._reader = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    def _ensure_reader(self):
+        if self._reader is None:
+            from .sysinfo import SystemReader
+            self._reader = SystemReader(disk_paths=self.disk_paths)
+        return self._reader
+
+    async def poll_once(self) -> dict:
+        reader = self._ensure_reader()
+        snap = await asyncio.to_thread(reader.snapshot)
+        metrics = snap
+        await self._stat(**metrics)
+        return metrics
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
+class HealthHarness(Harness):
+    """Iron Man HUD poller: REAL-LIFE statistics (health / fitness / sleep).
+
+    Reads from a pluggable HealthReader (Google Fit / Apple Health / JSON)
+    and publishes a normalized summary on TOPIC_STATS under harness id
+    "health". The `sys` workspace renders it. .start() once at boot.
+
+    Config extras:
+      source: "json" | "google" | "apple"   (default "json")
+      path:   file/dir for the source        (default ~/.aion/health.json)
+      interval: seconds between reads         (default 30.0)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.source = extra.get("source", "json")
+        self.path = extra.get("path") or str(Path.home() / ".aion" / "health.json")
+        self.interval = float(extra.get("interval", 30.0))
+        self._task: asyncio.Task | None = None
+        self._reader = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    def _ensure_reader(self):
+        if self._reader is None:
+            from .health import HealthReader
+            self._reader = HealthReader(source=self.source, path=self.path)
+        return self._reader
+
+    async def poll_once(self) -> dict:
+        reader = self._ensure_reader()
+        summary = await asyncio.to_thread(reader.summary)
+        await self._stat(**summary)
+        return summary
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
+class VaultHarness(Harness):
+    """Iron Man HUD poller: OBSIDIAN-VAULT graph for notes.
+
+    Reads the markdown vault (notes/ by default) and publishes a graph
+    (nodes + edges + backlinks) on TOPIC_STATS under harness id "vault".
+    The `vault` workspace renders it. On first boot it PROMPTS the user to
+    set up their storage (path). .start() once at boot.
+
+    Config extras:
+      root:     vault directory             (default <repo>/notes)
+      interval: seconds between re-reads     (default 15.0)
+      prompt_setup: bool, ask user to set path first run (default True)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.interval = float(extra.get("interval", 15.0))
+        self.prompt_setup = bool(extra.get("prompt_setup", True))
+        root = extra.get("root")
+        if not root:
+            root = str(Path(__file__).resolve().parents[2] / "notes")
+        self.root = root
+        self._task: asyncio.Task | None = None
+        self._reader = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    def _ensure_reader(self):
+        if self._reader is None:
+            from .vault import VaultReader
+            self._reader = VaultReader(self.root)
+        return self._reader
+
+    async def poll_once(self) -> dict:
+        reader = self._ensure_reader()
+        graph = await asyncio.to_thread(reader.graph)
+        graph["root"] = str(reader.root)
+        graph["ok"] = reader.exists()
+        await self._stat(**graph)
+        return graph
+
+    async def start(self) -> None:
+        # first-run storage setup prompt (non-blocking, one-shot)
+        if self.prompt_setup and not self._reader_setup_done():
+            self._prompt_storage_setup()
+        self._task = asyncio.create_task(self._poll())
+
+    def _reader_setup_done(self) -> bool:
+        from pathlib import Path as _P
+        flag = _P.home() / ".aion" / "vault_setup_done"
+        return flag.exists()
+
+    def _prompt_storage_setup(self) -> None:
+        from pathlib import Path as _P
+        flag = _P.home() / ".aion" / "vault_setup_done"
+        print("\n[VAULT SETUP] Choose your notes vault (Obsidian-style storage):")
+        print(f"  [Enter] keep default: {self.root}")
+        print("  or type an absolute path to a markdown vault (e.g. ~/Obsidian):")
+        try:
+            ans = input("  vault path > ").strip()
+        except (EOFError, OSError):
+            ans = ""  # headless / non-interactive -> keep default
+        if ans:
+            self.root = ans
+            self._reader = None  # rebuild reader for new path
+        print(f"[VAULT] using: {self.root}")
+        try:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text(self.root)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
 class StatsHarness(Harness):
     """Jarvis HUD poller: republishes REAL token/cost/live-agent numbers.
 
@@ -535,6 +720,48 @@ class HermesHarness(Harness):
         self._finish(task)
 
 
+class OpenCodeHarness(Harness):
+    """Runs OpenCode as a sub-harness via OpenCodeClient.
+
+    Spawns ``opencode run <prompt> -m <model>`` for each task and streams
+    response lines into the task log.  Supports pause / resume / cancel.
+    """
+
+    model: str = ""
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        from .hermes.opencode import OpenCodeClient, OpenCodeConfig
+
+        cfg = OpenCodeConfig(
+            model=self.model or self.cfg.extra.get("model", "deepseek/deepseek-v4-pro"),
+            auto_approve=self.cfg.extra.get("auto", False),
+            timeout=float(self.cfg.extra.get("timeout", 300)),
+            dir=self.cfg.extra.get("dir", ""),
+        )
+        client = OpenCodeClient(cfg)
+        lines = 0
+        try:
+            async for line in client.run(prompt):
+                if self._killed(task):
+                    self.registry.set_state(task, TaskState.CANCELLED)
+                    self._finish(task)
+                    return
+                if not await self._wait_if_paused(task):
+                    self.registry.set_state(task, TaskState.CANCELLED)
+                    self._finish(task)
+                    return
+                self.registry.log(task, f"[opencode] {line}")
+                lines += 1
+            self.registry.set_state(task, TaskState.DONE)
+            self.registry.log(task, f"[opencode] done ({lines} lines)")
+        except (RuntimeError, TimeoutError) as e:
+            self.registry.log(task, f"[opencode] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+
+
 class SkillHarness(Harness):
     """Loads and runs a skill's workflow from a skill directory."""
 
@@ -587,7 +814,11 @@ HARNESS_TYPES = {
     "app": AppHarness,
     "hermes": HermesHarness,
     "skill": SkillHarness,
+    "opencode": OpenCodeHarness,
     "web": WebHarness,
+    "system": SystemHarness,
+    "health": HealthHarness,
+    "vault": VaultHarness,
 }
 
 

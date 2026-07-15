@@ -22,9 +22,9 @@ from textual.widgets import Header, Static, Input, Label, Footer
 from textual import events
 
 from ..core import (
-    Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
+    Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
@@ -142,9 +142,10 @@ class AiOSApp(App):
         self.query_one("#palette").display = False
         self.query_one("#help").display = False
         self.set_interval(1.0, self._tick)
-        # telemetry + stats (Jarvis HUD) pollers
+        # all background HUD pollers (Jarvis HUD + Iron Man panels)
         for h in self.harnesses.values():
-            if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness)):
+            if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness,
+                              SystemHarness, HealthHarness, VaultHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         self.router.register(JoystickInput())
@@ -160,8 +161,9 @@ class AiOSApp(App):
     def _tick(self) -> None:
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
-        # projects workspace polls on a timer, not on input -> refresh it live
-        if self.cfg["workspaces"][self.store.state.active_ws]["id"] == "projects":
+        # projects + vault + sys workspaces poll on a timer, not on input
+        wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+        if wid in ("projects", "vault", "sys"):
             self._render_center()
         self._sync_term_pane()
         self._push_deck_hud()
@@ -412,6 +414,16 @@ class AiOSApp(App):
                     f"[{theme['dim']}]{desc}[/]")
         if ws == "projects":
             return self._project_card(it, focused, theme)
+        if ws == "settings":
+            ep = it.get("endpoint", "")
+            key = it.get("key_preview", "")
+            return (f"[{col}]{f}{it['id']}[/]\n"
+                    f"  [{theme['dim']}]{ep}[/]\n"
+                    f"  [{theme['ok'] if key else theme['err']}]{key}[/]")
+        if ws == "vault":
+            return self._vault_line(it, focused, theme)
+        if ws == "sys":
+            return self._sys_panel(theme)
         # agent log
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
@@ -456,6 +468,100 @@ class AiOSApp(App):
                 f"[{dcol}]{dtxt}[/]{sync}{prtxt}{act}\n"
                 f"  [{theme['dim']}]{lc[:56]}[/] "
                 f"[{theme['dim']}]{cage}[/]")
+
+    def _vault_line(self, it: dict, focused: bool, theme: dict) -> str:
+        f = "▌" if focused else " "
+        col = theme["accent"] if focused else theme["dim"]
+        if it.get("name") == "(none)":
+            return (f"[{col}]{f}vault not loaded[/]\n"
+                    f"  [{theme['dim']}]{it.get('preview','') or 'notes/ not found'}[/]")
+        title = it.get("title", it.get("name", "?"))
+        degree = it.get("degree", 0)
+        bl = len(it.get("backlinks", []))
+        lk = len(it.get("links", []))
+        tags = " ".join("#" + t for t in it.get("tags", [])[:4])
+        head = it.get("headings", [])
+        head_txt = f"  [{theme['dim']}]{' · '.join(head[:3])}[/]" if head else ""
+        preview = it.get("preview", "")
+        prev_txt = f"\n    [{theme['dim']}]{preview[:90]}[/]" if preview else ""
+        tag_txt = f"  [{theme['warn']}]{tags}[/]" if tags else ""
+        return (f"[{col}]{f}{title}[/]  [{theme['dim']}][{lk}→{bl}][/]\n"
+                f"  [{theme['accent']}]⛓ {degree} links[/]{tag_txt}{head_txt}{prev_txt}")
+
+    def _sys_panel(self, theme: dict) -> str:
+        """Iron Man HUD: computer + real-life stats, rendered as gauges."""
+        from .gauges import (hbar, core_grid, sparkline, metric, gauge_panel,
+                             mem_readable, bytes_per_sec)
+        st = self.store.state.stats
+        blocks: list[str] = []
+
+        # ---- COMPUTER (system) ----
+        sys_ = st.get("system")
+        if sys_ and sys_.get("ok"):
+            cpu = sys_["cpu"]
+            cpu_line = (metric("CPU", f"{cpu['total_pct']}", "%", theme["warn"]) +
+                        f"  [{theme['dim']}]{cpu['cores']}c load {cpu['load1']}[/]")
+            grid = core_grid(cpu["per_core_pct"])
+            ram_line = (metric("RAM", f"{sys_['mem']['pct']}", "%", theme["accent"]) +
+                        f"  [{theme['dim']}]{mem_readable(sys_['mem']['used'])}/"
+                        f"{mem_readable(sys_['mem']['total'])}[/]")
+            ram_bar = hbar(sys_["mem"]["pct"] / 100.0, width=20, color=theme["accent"])
+            blocks.append(gauge_panel("COMPUTER",
+                         "\n  ".join([cpu_line, grid, ram_line, ram_bar]),
+                         theme["accent"]))
+            disk_lines = []
+            for d in sys_["disks"]:
+                dl = (metric(d["mount"], f"{d['pct']}", "%", theme["warn"]) +
+                      f"  [{theme['dim']}]{mem_readable(d['free'])} free[/]")
+                disk_lines.append(dl)
+                disk_lines.append("  " + hbar(d["pct"] / 100.0, width=16, color=theme["warn"]))
+            if disk_lines:
+                blocks.append(gauge_panel("STORAGE", "\n  ".join(disk_lines), theme["warn"]))
+            net = sys_["net"]
+            net_line = (metric("up", bytes_per_sec(net["up_bps"]), "", theme["ok"]) + "\n  " +
+                        metric("dn", bytes_per_sec(net["down_bps"]), "", theme["ok"]) + "\n  " +
+                        f"[{theme['dim']}]{net['conns']} active conns[/]")
+            blocks.append(gauge_panel("NETWORK", net_line, theme["ok"]))
+            gpu = sys_.get("gpu") or {}
+            if gpu:
+                if "gpu_util_pct" in gpu:
+                    g = (metric("util", f"{gpu['gpu_util_pct']}", "%", theme["accent"]) + "\n  " +
+                         hbar(gpu["gpu_util_pct"] / 100.0, width=16, color=theme["accent"]) +
+                         "\n  " +
+                         f"[{theme['dim']}]{gpu.get('gpu_mem_mb',0)}/"
+                         f"{gpu.get('gpu_mem_total_mb',0)} MB[/]")
+                    blocks.append(gauge_panel("GPU", g, theme["accent"]))
+                elif "gpu_models" in gpu:
+                    blocks.append(gauge_panel(
+                        "GPU",
+                        f"[{theme['ok']}]{gpu['gpu_models']} model(s) loaded · "
+                        f"{gpu.get('gpu_vram_mb',0)}MB[/]", theme["accent"]))
+        else:
+            blocks.append(gauge_panel("COMPUTER", "[#5a6b7b](stats unavailable)[/]", theme["accent"]))
+
+        # ---- REAL LIFE (health) ----
+        hl = st.get("health")
+        if hl and hl.get("ok"):
+            av = hl.get("avg_7d", {})
+            latest = hl.get("latest") or {}
+            lines = [
+                metric("steps", str(latest.get("steps", 0)), "", theme["ok"]),
+                metric("bpm", str(latest.get("heart_rate", 0)), "", theme["err"]),
+                metric("sleep", f"{latest.get('sleep_hours',0)}", "h", theme["accent"]),
+                metric("active", f"{latest.get('active_calories',0)}", "kcal", theme["warn"]),
+                f"[{theme['dim']}](7d avg steps {av.get('steps',0)} · "
+                f"sleep {av.get('sleep_hours',0)}h)[/]",
+            ]
+            series = hl.get("series", {})
+            if series.get("steps"):
+                lines.append("  " + sparkline(series["steps"], width=20))
+            blocks.append(gauge_panel("REAL LIFE", "\n  ".join(lines), theme["ok"]))
+        else:
+            blocks.append(gauge_panel("REAL LIFE",
+                         "[#5a6b7b](no health data — source: google/apple/json)[/]",
+                         theme["ok"]))
+
+        return "\n\n".join(blocks)
 
     def _render_right(self) -> None:
         theme = self.cfg["theme"]
@@ -551,6 +657,8 @@ class AiOSApp(App):
                 "joystick: axis=navigate A=activate B=back C=context\n"
                 "voice: 'go to models' · 'run demo hello' · 'stop'\n"
                 "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
+                "vault: Obsidian-style notes graph (wikilinks + backlinks)\n"
+                "system: Iron Man HUD — CPU/RAM/disk/net/GPU + real-life stats\n"
                 "hermes: 'kanban' · 'mem' · 'gateway'\n"
                 "skills: 'skill <name> <prompt>'\n"
                 "deck: joy2=navigate · MODE=gamepad")

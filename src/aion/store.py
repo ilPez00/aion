@@ -17,7 +17,7 @@ from typing import Any
 
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore,
-    Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, load_config,
+    Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
 from .memory import MemoryStore
 from .voice.persona import Persona
@@ -39,6 +39,7 @@ class ViewState:
     hermes_memory: list[dict] = field(default_factory=list)
     hermes_gateway: dict = field(default_factory=dict)
     skills: list[dict] = field(default_factory=list)
+    settings_providers: dict[str, dict] = field(default_factory=dict)
 
 
 class Store:
@@ -63,6 +64,7 @@ class Store:
         self.bus.subscribe("mode", self._on_mode)
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill)
+        self.bus.subscribe(TOPIC_SETTINGS, self._on_settings)
         # restore interrupted tasks from a previous crash
         for t in self.store.load():
             self.registry.ingest(t)
@@ -80,6 +82,17 @@ class Store:
             await self.bus.publish(TOPIC_HERMES, {"action": "kanban", "data": {"tasks": kanban}})
             sections = HermesMemoryReader().sections()
             await self.bus.publish(TOPIC_HERMES, {"action": "memory", "data": {"sections": sections}})
+        except Exception:
+            pass
+
+    async def _load_settings_data(self) -> None:
+        try:
+            from .hermes.env import parse_provider_env
+            self.state.settings_providers = dict(parse_provider_env())
+            await self.bus.publish(TOPIC_SETTINGS, {
+                "action": "providers",
+                "data": self.state.settings_providers,
+            })
         except Exception:
             pass
 
@@ -119,6 +132,19 @@ class Store:
             if pj and pj.get("projects"):
                 return list(pj["projects"])
             return []
+        if ws == "settings":
+            asyncio.create_task(self._load_settings_data())
+            return [{"id": k, "endpoint": v.get("endpoint", ""),
+                     "key_preview": v.get("key_preview", "")}
+                    for k, v in self.state.settings_providers.items()]
+        if ws == "vault":
+            v = self.state.stats.get("vault")
+            if v and v.get("ok"):
+                return list(v.get("nodes", []))
+            return [{"name": "(none)", "title": "vault not loaded",
+                     "preview": v.get("error", "") if v else ""}]
+        if ws == "sys":
+            return [{"kind": "live"}]  # rendered specially from stats
         return []
 
     def _running_for(self, hid: str) -> int:
@@ -304,3 +330,7 @@ class Store:
     async def _on_skill(self, msg: dict) -> None:
         if msg.get("action") == "list":
             self.state.skills = msg.get("data", [])
+
+    async def _on_settings(self, msg: dict) -> None:
+        if msg.get("action") == "providers":
+            self.state.settings_providers.update(msg.get("data", {}))
