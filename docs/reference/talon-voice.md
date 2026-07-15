@@ -42,6 +42,18 @@ Sources for this AI's HUD / voice / agent design.
 - **License**: MIT
 - **Already applied**: Numbered panel sections (01-06), activity feed, cinematic boot, KV rows, status dots
 
+## 3b. chrisguevara805-prog/J.AR.V.I.S. (+ upstream DawoodTouseef/J.AR.V.I.S.)
+
+- **URL**: <https://github.com/chrisguevara805-prog/J.AR.V.I.S.> (fork of <https://github.com/DawoodTouseef/J.AR.V.I.S.>)
+- **License**: Apache 2.0 (note: not MIT)
+- **Stack**: PyQt5 desktop app + OpenCV (desktop, not web — same domain as aion's TUI)
+- **Key ideas (validates Cycle 3 proactive Jarvis)**:
+  - **Voice activation + system monitoring + proactive suggestions** triad — exactly what aion built in Cycle 3
+  - **Proactive from camera/screenshot analysis** — novel: JARVIS watches the screen/camera and suggests. aion could pull Cyclops wearable frames later for the same
+  - **Witty JARVIS persona** — maps to aion's `voice/persona.py` charm layer
+  - Built with mem0 (memory), pvporcupine (wake word), crewai (multi-agent)
+- **Relevance to aion**: confirms the proactive-suggestion direction; the camera/screenshot trigger is a stealable future feature (Cyclops = wearable cam feed)
+
 ## 4. Community ecosystem
 
 - **Rango** — Browser voice navigation (Vimium for Talon)
