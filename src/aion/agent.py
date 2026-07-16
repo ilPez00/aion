@@ -23,6 +23,9 @@ class ToolEnv:
     mem: object = None          # mem(query: str) -> str
     note: object = None         # note(fact: str) -> str
     state: object = None        # state() -> str (snapshot of cockpit)
+    vault: object = None        # vault(path: str, content: str) -> str
+    swarm: object = None        # swarm(goal: str) -> str
+    hermes: object = None       # hermes(title: str, body: str) -> str
 
     def has(self, name: str) -> bool:
         return getattr(self, name, None) is not None
@@ -70,6 +73,20 @@ def execute(text: str, env: ToolEnv) -> tuple[str, str]:
                 out = env.note(args)
             elif name == "state":
                 out = env.state()
+            elif name == "vault":
+                # args: "path::content"
+                sp = args.split("::", 1)
+                path = sp[0].strip()
+                content = sp[1] if len(sp) > 1 else ""
+                out = env.vault(path, content)
+            elif name == "swarm":
+                out = env.swarm(args)
+            elif name == "hermes":
+                # args: "title::body"
+                sp = args.split("::", 1)
+                title = sp[0].strip()
+                body = sp[1] if len(sp) > 1 else ""
+                out = env.hermes(title, body)
             else:
                 out = f"[tool {name}: unsupported]"
         except Exception as e:  # noqa: BLE001

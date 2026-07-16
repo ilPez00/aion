@@ -452,6 +452,9 @@ class Store:
             mem=lambda q: self._agent_mem_tool(q),
             note=lambda f: self._agent_note_tool(f),
             state=lambda: self._agent_state_tool(),
+            vault=lambda p, c: self._agent_vault_tool(p, c),
+            swarm=lambda g: self._agent_swarm_tool(g),
+            hermes=lambda t, b: self._agent_hermes_tool(t, b),
         )
         loop = asyncio.get_event_loop()
         reply = await loop.run_in_executor(None, agent_run, self.chat, env)
@@ -511,6 +514,46 @@ class Store:
         return (f"tasks={len(tasks)} running={running} failed={failed} "
                 f"suggestions={sugg} tokens={tok} "
                 f"ws={self.cfg['workspaces'][self.state.active_ws]['id']}")
+
+    def _agent_vault_tool(self, path: str, content: str) -> str:
+        try:
+            from .notes import write_note
+            written = write_note(path, content)
+            return f"wrote {written}"
+        except Exception as e:  # noqa: BLE001
+            return f"vault error: {e}"
+
+    def _agent_swarm_tool(self, goal: str) -> str:
+        try:
+            orch = self.swarm
+            orch.decompose(goal)
+            orch.add_agent("Agent A", f"work on: {goal}")
+            self.state.swarm_dashboard = orch.dashboard()
+            return f"swarm planned for: {goal[:60]}"
+        except Exception as e:  # noqa: BLE001
+            return f"swarm error: {e}"
+
+    def _agent_hermes_tool(self, title: str, body: str) -> str:
+        # Create a task on the Hermes kanban board (delegates real work to
+        # another Hermes profile / agent). Best-effort: requires `hermes` CLI.
+        try:
+            import asyncio
+            from .hermes.client import HermesClient
+            client = HermesClient()
+            # schedule the CLI call on the loop (this runs in executor thread)
+            async def _create():
+                summary = (body or title)[:400]
+                return await client.run("kanban", "create",
+                                        "--title", title,
+                                        "--body", summary)
+            fut = asyncio.get_event_loop().run_in_executor(
+                None, lambda: asyncio.run(_create()))
+            result = fut.result(timeout=30)
+            return f"hermes task created: {result[:80]}"
+        except FileNotFoundError:
+            return "hermes CLI not found (is `hermes` installed?)"
+        except Exception as e:  # noqa: BLE001
+            return f"hermes error: {e}"
 
     # ---- bus subscriptions: keep state + persist in sync ----------------
     async def _on_task_event(self, msg: dict) -> None:

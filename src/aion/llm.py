@@ -28,8 +28,12 @@ SYSTEM_PROMPT = (
     "  <tool rerun></tool>                    -> rerun the last failed task\n"
     "  <tool compare>which model is better?</tool> -> side-by-side model compare\n"
     "  <tool mem>status query</tool>          -> search persistent memory\n"
-    "  <tool note>a useful fact</tool>        -> save a note\n"
-    "  <tool state></tool>                    -> snapshot of current cockpit state\n"
+    "  <tool note>a useful fact</tool>        -> save a note\\n"
+    "  <tool state></tool>                    -> snapshot of current cockpit state\\n"
+    "  <tool vault>path::content</tool>       -> write a vault note (path like 'ideas/x')\\n"
+    "  <tool swarm>goal</tool>                -> plan a multi-agent swarm for a goal\\n"
+    "  <tool hermes>title::body</tool>        -> create a task on the Hermes kanban board\\n"
+    "For vault/hermes, separate the path/title from content/body with '::'. "
     "After a tool call, you will receive its result and can act on it. "
     "Use tools when the user asks you to DO something (run, compare, recall), "
     "not just talk. End with a short natural-language summary for the user."
@@ -92,26 +96,33 @@ def _load_env() -> None:
 
 
 def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
-    """Send a message to the LLM, get a reply. Blocks (runs in thread)."""
+    """Send a message to the LLM, get a reply. Blocks (runs in thread).
+
+    Backend fallback chain: FCM local proxy -> Groq -> OpenRouter.
+    The first backend that returns a real reply wins; if all fail, returns a
+    '⚠️' diagnostic string naming which providers were tried.
+    """
     session.add("user", message)
     session.pending = True
     try:
         api_msgs = session.as_api_messages()
-        # Try FCM local proxy first
-        reply = _fcm_chat(api_msgs, timeout=timeout)
-        if reply is None:
-            # Fall back to Groq
-            reply = _groq_chat(api_msgs, timeout=timeout)
-        if reply is None:
-            reply = "⚠️ LLM unavailable (FCM proxy + Groq both unreachable)."
-        session.add("assistant", reply)
-        return reply
+        tried: list[str] = []
+        for name, fn in (("FCM", _fcm_chat), ("Groq", _groq_chat),
+                         ("OpenRouter", _openrouter_chat)):
+            reply = fn(api_msgs, timeout=timeout)
+            if _is_ok(reply):
+                session.add("assistant", reply)  # type: ignore[arg-type]
+                return reply
+            tried.append(name)
+        session.add("assistant",
+                    f"⚠️ LLM unavailable (tried {', '.join(tried)}).")
+        return f"⚠️ LLM unavailable (tried {', '.join(tried)})."
     finally:
         session.pending = False
 
 
 def _fcm_chat(messages: list[dict], timeout: int = 30) -> str | None:
-    """Try FCM local proxy. Returns text or None."""
+    """Try FCM local proxy. Returns text, a '⚠️ ...' error string, or None."""
     import urllib.request
     import urllib.error
     try:
@@ -133,16 +144,24 @@ def _fcm_chat(messages: list[dict], timeout: int = 30) -> str | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read())
             return body["choices"][0]["message"]["content"].strip()
-    except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError):
-        return None
+    except urllib.error.HTTPError as e:
+        return f"⚠️ FCM HTTP {e.code}"
+    except (urllib.error.URLError, OSError) as e:
+        return f"⚠️ FCM unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (ValueError, KeyError, IndexError) as e:
+        return f"⚠️ FCM bad response: {e}"
 
 
 def _groq_chat(messages: list[dict], timeout: int = 30) -> str | None:
-    """Fallback to Groq API if key is available."""
+    """Fallback to Groq API if key is available.
+
+    Returns the reply, or a human-readable error string prefixed with '⚠️'
+    (so the UI can show WHY a provider failed instead of a silent blank).
+    """
     _load_env()
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
-        return None
+        return "⚠️ GROQ_API_KEY not set"
     import urllib.request
     import urllib.error
     try:
@@ -164,8 +183,62 @@ def _groq_chat(messages: list[dict], timeout: int = 30) -> str | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read())
             return body["choices"][0]["message"]["content"].strip()
-    except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError):
-        return None
+    except urllib.error.HTTPError as e:
+        # surface the real status so a blocked/expired key is visible
+        return f"⚠️ Groq HTTP {e.code}"
+    except (urllib.error.URLError, OSError) as e:
+        return f"⚠️ Groq unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (ValueError, KeyError, IndexError) as e:
+        return f"⚠️ Groq bad response: {e}"
+
+
+def _oa_compatible(messages: list[dict], *, url: str, key: str, model: str,
+                   auth_scheme: str = "Bearer", timeout: int = 30) -> str | None:
+    """Generic OpenAI-compatible chat completion. Returns text or '⚠️ ...'."""
+    import urllib.request
+    import urllib.error
+    try:
+        data = json.dumps({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.5,
+            "max_tokens": 800,
+        }).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Authorization": f"{auth_scheme} {key}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+            return body["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        return f"⚠️ HTTP {e.code}"
+    except (urllib.error.URLError, OSError) as e:
+        return f"⚠️ unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (ValueError, KeyError, IndexError) as e:
+        return f"⚠️ bad response: {e}"
+
+
+def _openrouter_chat(messages: list[dict], timeout: int = 30) -> str | None:
+    """Third-tier fallback: OpenRouter (many models, one key)."""
+    _load_env()
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        return "⚠️ OPENROUTER_API_KEY not set"
+    return _oa_compatible(
+        messages,
+        url="https://openrouter.ai/api/v1/chat/completions",
+        key=key,
+        model="openai/gpt-4o-mini",  # cheap, reliable default
+        timeout=timeout,
+    )
+
+
+def _is_ok(reply: str | None) -> bool:
+    """A reply counts as success only if it's non-empty and not a '⚠️' warning."""
+    return bool(reply) and not (isinstance(reply, str) and reply.startswith("⚠️"))
 
 
 def format_conversation(session: ChatSession) -> list[dict]:
@@ -200,9 +273,10 @@ def format_conversation(session: ChatSession) -> list[dict]:
 def chat_send_multi(prompt: str, providers: list[str], timeout: int = 30) -> dict[str, str]:
     """Side-by-side model comparison. Returns {provider: reply_or_warning}.
 
-    Provider keys map to backends: 'fcm' -> local FCM proxy, 'groq' -> Groq API.
-    Any other key currently falls back to FCM (single backend today). Replies are
-    capped at 400 chars so the side-by-side UI stays readable.
+    Provider keys map to backends: 'fcm' -> local FCM proxy, 'groq' -> Groq API,
+    'openrouter' -> OpenRouter. Replies are capped at 400 chars so the
+    side-by-side UI stays readable. A dead backend yields a '⚠️ ...' string
+    instead of crashing.
     """
     api_msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -212,15 +286,14 @@ def chat_send_multi(prompt: str, providers: list[str], timeout: int = 30) -> dic
     for prov in providers:
         if prov == "groq":
             reply = _groq_chat(api_msgs, timeout=timeout)
-        else:  # default: fcm (and any unknown key)
+        elif prov == "openrouter":
+            reply = _openrouter_chat(api_msgs, timeout=timeout)
+        else:  # fcm (and any unknown key)
             reply = _fcm_chat(api_msgs, timeout=timeout)
-            if reply is None and prov == "fcm":
-                # fcm is the local-only proxy; don't double-count groq unless asked
-                pass
-        if reply is None:
-            out[prov] = f"⚠️ {prov} unavailable"
+        if _is_ok(reply):
+            out[prov] = reply[:400]  # type: ignore[index]
         else:
-            out[prov] = reply[:400]
+            out[prov] = reply or f"⚠️ {prov} unavailable"
     return out
 
 
