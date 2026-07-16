@@ -40,6 +40,14 @@ def _load_env() -> None:
                         os.environ.setdefault(k, v)
 
 
+# LLM endpoint — defaults to the OmniRoute router (which proxies free-coding-models / FCM).
+# Override with env vars to point elsewhere or change model without code edits.
+#   AION_LLM_BASE_URL  (default: http://localhost:20128/v1  — OmniRoute)
+#   AION_LLM_MODEL     (default: fcm/fcm                — FCM node inside OmniRoute)
+LLM_BASE_URL = os.environ.get("AION_LLM_BASE_URL", "http://localhost:20128/v1")
+LLM_MODEL = os.environ.get("AION_LLM_MODEL", "fcm/fcm")
+
+
 def web_search(q: str, n: int = 5) -> list[dict]:
     """DuckDuckGo HTML scrape. Returns list of {title,url,snippet}. Timeout-safe."""
     import requests
@@ -85,12 +93,15 @@ SEARCH_TOOL = {
 }
 
 
-def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> dict:
+def deepsearch_answer(prompt: str, model: str = LLM_MODEL) -> dict:
     """ReAct-style web answer. Returns {answer, sources, searched}."""
     import json as _json
     import requests
     _load_env()
-    key = os.environ.get("GROQ_API_KEY", "")
+    # Keep using GROQ_API_KEY as the auth token by default (OmniRoute allows
+    # keyless local access, so this is ignored locally but lets you repoint at a
+    # remote OpenAI-compatible endpoint by setting AION_LLM_BASE_URL + key).
+    key = os.environ.get("GROQ_API_KEY", "fcm-local")
     if not key:
         return {"answer": _fallback(prompt), "sources": [], "searched": False}
     sys = ("You are Aion, an AI-first OS assistant. You may call web_search to get current "
@@ -98,7 +109,7 @@ def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> di
     messages = [{"role": "system", "content": sys}, {"role": "user", "content": prompt}]
     try:
         r1 = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            f"{LLM_BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json={"model": model, "messages": messages, "tools": [SEARCH_TOOL],
                   "tool_choice": "auto", "temperature": 0.3, "max_tokens": 600},
@@ -106,7 +117,7 @@ def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> di
         )
         if r1.status_code != 200:
             r0 = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 600},
                 timeout=25,
@@ -125,7 +136,7 @@ def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> di
                     messages.append({"role": "tool", "tool_call_id": tc["id"],
                                      "content": _json.dumps(res)})
             r2 = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={"model": model, "messages": messages, "temperature": 0.3, "max_tokens": 600},
                 timeout=25,
