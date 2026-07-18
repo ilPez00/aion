@@ -51,17 +51,16 @@ def test_term_harness_send_writes_pty():
         h.ensure_running()
         time.sleep(0.1)
         h.send(b"HELLO_PTY\n")
-        got = b""
+        # Since the pump thread reads master and feeds self.stream,
+        # the echoed text will be processed by pyte and show up on the screen.
+        # We wait for "HELLO_PTY" to appear in h.render().
         for _ in range(50):
-            # read back from the master to confirm the byte was written
-            import os, select
-            r, _, _ = select.select([h.master], [], [], 0.05)
-            if r:
-                got += os.read(h.master, 1024)
-            if b"HELLO_PTY" in got:
+            if "HELLO_PTY" in h.render():
                 break
-        assert b"HELLO_PTY" in got, got
-        print("ok: send() writes keystrokes to the pty master")
+            time.sleep(0.05)
+        out = h.render()
+        assert "HELLO_PTY" in out, out
+        print("ok: send() writes keystrokes to the pty master and it echoes to screen")
     finally:
         h.stop()
 
