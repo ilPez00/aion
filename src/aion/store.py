@@ -332,9 +332,28 @@ class Store:
         task = self.registry.create(f"{h.name}: {old.label[:24]}", h.id)
         asyncio.create_task(h.run(task, old.label))
 
-    async def _run_command(self, text: str) -> None:
+    async def _run_command(self, text: str, _interpreted: bool = False) -> None:
         self.state.history.append(text)
         parts = text.split(" ", 1)
+        if parts[0] == "goto" and len(parts) == 2:
+            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+            target = parts[1].strip().lower()
+            if target in ws_ids:
+                self.state.active_ws = ws_ids.index(target)
+                self.state.focus = 0
+            else:
+                self.state.logs.append(f"goto: no workspace '{target}' ({' '.join(ws_ids)})")
+                self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "help":
+            self.state.logs.extend([
+                "Just type what you want — e.g.:",
+                "  'open mail' · 'edit plan.md' · 'todo buy milk' · 'done 1'",
+                "  'i use this for coding and writing' · 'scan' · 'watch this'",
+                "  'go to vault' · press ? for keys",
+            ])
+            self.state.logs = self.state.logs[-50:]
+            return
         if parts[0] == "note" and len(parts) == 2:
             self.memory.add(parts[1])
             return
@@ -457,7 +476,26 @@ class Store:
             return
         if len(parts) == 2 and parts[0] in self.harnesses:
             await self._spawn(parts[0], parts[1])
-        elif self.cfg["workspaces"][self.state.active_ws]["id"] == "agent":
+            return
+        # ---- plain-language layer: rules first, then LLM translate -------
+        if not _interpreted:
+            from .interpret import interpret
+            canon = interpret(text)
+            if canon is None and " " in text.strip() and \
+                    self.cfg["workspaces"][self.state.active_ws]["id"] != "agent":
+                import asyncio as _aio
+                from .interpret import llm_translate
+                try:
+                    canon = await _aio.get_event_loop().run_in_executor(
+                        None, llm_translate, text)
+                except Exception:
+                    canon = None
+            if canon:
+                self.state.logs.append(f"→ {canon}")
+                self.state.logs = self.state.logs[-50:]
+                await self._run_command(canon, _interpreted=True)
+                return
+        if self.cfg["workspaces"][self.state.active_ws]["id"] == "agent":
             # Agent workspace: route unknown text to inline LLM chat
             await self._chat(text)
         else:

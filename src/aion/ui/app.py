@@ -147,7 +147,7 @@ class AiOSApp(App):
             yield VerticalScroll(id="center")
             yield VerticalScroll(id="right")
         yield Static("", id="bottom")
-        yield Input(placeholder="› command  (run <h> <prompt> · compare <q> · app <mail|edit|sheet|files|git> · tier <cheap|standard|premium>)", id="palette")
+        yield Input(placeholder="› say what you want — open mail · edit plan.md · todo buy milk · i use this for coding · watch this", id="palette")
         yield Static("", id="help")
 
     async def on_mount(self) -> None:
@@ -1000,7 +1000,7 @@ class AiOSApp(App):
 
         # ─── 06 COMMANDS ─────────────────────────────────────────────────
         p.append(f" [{a}]09 QUICK[/]")
-        p.append(f" [{di}]Ctrl-K: app mail|todo <t>|setup dev|observe ai|run demo|compare <q>|swarm create|mode focus|note <f>|mem <q>[/]")
+        p.append(f" [{di}]Ctrl-K, then say what you want: 'open mail' · 'todo buy milk' · 'watch this' · 'help'[/]")
 
         p.append(f" {sep}")
         return "\n".join(p)
@@ -1161,29 +1161,33 @@ class AiOSApp(App):
         theme = self.cfg["theme"]
         ws_count = len(self.cfg["workspaces"])
         ws_keys = "/".join(str(i) for i in range(1, ws_count + 1))
-        return (f"[{theme['accent']}]aion — shortcuts[/]\n"
-                f"{ws_keys}         switch workspace\n"
-                "↑↓ j/k         move selection\n"
-                "←→ h/l         switch workspace\n"
-                "Enter / Space  run harness / pause-resume task\n"
-                "p              pause or resume focused task\n"
-                "x              cancel focused task\n"
-                "r              re-run interrupted/cancelled task\n"
-                "Ctrl-K         command palette (optional)\n"
-                "v              toggle offline voice control\n"
-                "? / /          this help\n"
-                "joystick: axis=navigate A=activate B=back C=context\n"
-                "voice: 'go to models' · 'run demo hello' · 'stop'\n"
-                "apps: 'apps' lists TUI programs · 'app <mail|edit|sheet|files|git|rss|monitor> [args]' opens in Term\n"
-                "todo: 'todo <text>' · 'todo done <n>' · 'todo rm <n>' (desktop panel)\n"
-                "data: 'setup <scopes>' asks scope of use + scans disk · 'scan' refreshes trackers\n"
-                "observer: AI HUD watches the Term app · 'observe ai' / 'observe off'\n"
-                "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
-                "vault: Obsidian-style notes graph (wikilinks + backlinks)\n"
-                "system: Iron Man HUD — CPU/RAM/disk/net/GPU + real-life stats\n"
-                "hermes: 'kanban' · 'mem' · 'gateway'\n"
-                "skills: 'skill <name> <prompt>'\n"
-                "deck: joy2=navigate · MODE=gamepad")
+        a, di = theme["accent"], theme["dim"]
+        return (
+            f"[{a}]aion — just say what you want[/]\n"
+            "\n"
+            f"[{a}]Ctrl-K opens the palette. Type plain language:[/]\n"
+            "  open mail            launch your email program\n"
+            "  edit plan.md         open the editor on a file\n"
+            "  spreadsheet          open visidata / sc-im\n"
+            "  todo buy milk        add to the TODO panel\n"
+            "  done 1               check off TODO #1\n"
+            "  i use this for coding and writing\n"
+            "                       first-run setup: scans disk, builds live trackers\n"
+            "  watch this           AI observer describes what the app is doing\n"
+            "  go to vault          jump to a workspace\n"
+            "  help                 show examples in the activity feed\n"
+            f"[{di}]Power users: canonical commands (app/todo/setup/scan/observe/goto/run)\n"
+            "still work exactly as typed — the AI layer only kicks in when needed.[/]\n"
+            "\n"
+            f"[{a}]Keys[/]\n"
+            f"  {ws_keys}  workspaces · ←→ h/l switch · ↑↓ j/k select\n"
+            "  Enter/Space activate · p pause · x cancel · r re-run\n"
+            "  v voice · ? this help · Ctrl-K palette\n"
+            "\n"
+            f"[{a}]More[/]\n"
+            "  memory: note <fact> · mem <query>   vault: notes graph\n"
+            "  hermes: kanban · gateway            skills: skill <name> <prompt>\n"
+            "  deck: joy2=navigate · MODE=gamepad  voice: 'go to models', 'stop'")
 
 
 def main() -> None:

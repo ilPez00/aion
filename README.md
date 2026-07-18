@@ -97,27 +97,56 @@ Web deps: `pip install -e ".[web]"` (websockets, pyte, requests, python-dotenv).
 | 1 2 3        | jump to workspace N                                 |
 | Enter / Space| activate (run selected harness / cancel task)       |
 | Esc / b      | back / close palette                                |
-| **Ctrl-K**   | command palette: `run <harness> <prompt>`           |
+| **Ctrl-K**   | palette — plain language: "open mail", "todo buy milk" |
 | **v**        | toggle offline voice control (faster-whisper + mic) |
 | trackpad     | click any row                                       |
 | joystick     | axis = navigate, A=activate B=back C=context        |
 | voice        | "go to models", "run demo hello", "stop"            |
 
-### Command palette grammar
+### The palette speaks plain language
+
+Press **Ctrl-K** and type what you want. An interpreter (fast rules first,
+cheap LLM fallback when they miss) turns it into the right command and shows
+the mapping in the activity feed (`→ app mail`), so you learn the short form
+by osmosis — but you never have to.
+
 ```
+open mail                    → app mail        (launches aerc/neomutt/…)
+edit plan.md                 → app edit plan.md
+spreadsheet                  → app sheet       (visidata / sc-im)
+todo buy milk                → todo buy milk   (desktop TODO panel)
+done 1                       → todo done 1
+i use this for coding and writing
+                             → setup dev writing  (scans disk, live trackers)
+watch this                   → observe ai      (AI HUD describes the app)
+go to vault                  → goto vault
+help                         → examples in the activity feed
+```
+
+First run: the desktop DATA panel asks *"what do you use this computer
+for?"* — answer in plain words and aion scans your disk and generates
+live trackers for the things you actually do.
+
+<details>
+<summary>Canonical command reference (power users)</summary>
+
+```
+app <mail|edit|sheet|files|git|rss|monitor> [args]   launch a TUI program
+apps                        list programs + availability
+todo <text> | todo done <n> | todo rm <n>
+setup <dev writing media data comms finance>   profile + disk scan
+scan                        refresh the live trackers
+observe ai | observe off    AI observer over the Term program
+goto <workspace>            jump to a workspace by id
 run <harness> <prompt>      spawn a task on a specific backend
 <prompt>                    spawn on the active harness
-tier <cheap|standard|premium>   switch active harness by tier (lesson #3)
-app <program>               spawn a real program (pause=SIGSTOP, cancel=kill)
-note <fact>                 remember something (persistent memory)
-mem <query>                 recall — opens the Memory workspace filtered
-forget <n>                  drop fact #n from the current memory view
-mode <default|focus|deep|monitor|stealth|demo>   switch operational mode
-theme <jarvis|matrix|amber>  switch color pack (colors only — not a persona)
-swarm create <goal>         start a multi-agent swarm
-swarm add <name> <goal> [<< dep1,dep2]   add an agent to the swarm
-swarm run | status | stop   control the swarm
+tier <cheap|standard|premium>   switch active harness by tier
+note <fact> · mem <query> · forget <n>          persistent memory
+mode <default|focus|deep|monitor|stealth|demo>  operational mode
+theme <jarvis|matrix|amber> color pack
+swarm create <goal> · swarm add <name> <goal> · swarm run|status|stop
 ```
+</details>
 
 ### Crash-safe & per-task control (lessons from RESEARCH.md)
 - **Persistence**: the task registry is checkpointed to `~/.aion/session.json`
@@ -152,6 +181,11 @@ swarm run | status | stop   control the swarm
 - `vault.py`   — Obsidian-style notes reader (`[[wikilinks]]` + backlinks → graph).
 - `memory.py`  — persistent fact store (`note`/`mem`/`forget`).
 - `llm.py`     — inline LLM chat (FCM proxy + Groq fallback).
+- `interpret.py` — plain-language palette: rules + LLM translate to commands.
+- `apps.py`    — TUI app registry (mail/edit/sheet/…): fallback chains + install hints.
+- `todos.py`   — markdown-backed TODO list (`~/.aion/todos.md`).
+- `profile.py` — scope-of-use setup, budgeted disk scan, live trackers.
+- `observer.py` — observant AI HUD over the Term program (heuristics + LLM).
 - `swarm.py`   — multi-agent swarm orchestration (deps, status, progress).
 - `modes.py`   — operational modes (default/focus/deep/monitor/stealth/demo).
 - `voice/persona.py` — Jarvis/Odysseus-style proactive voice persona.
