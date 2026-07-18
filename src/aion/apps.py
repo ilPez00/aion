@@ -94,6 +94,31 @@ def resolve(app_id: str, extra_args: str = "") -> tuple[str | None, str]:
     return None, f"{spec.label}: nothing installed — {hint}"
 
 
+_AVAIL_CACHE: tuple[float, list[dict]] | None = None
+_AVAIL_TTL_S = 30.0
+
+
+def availability() -> list[dict]:
+    """Cached launcher view: [{'id','label','available','binary'}].
+
+    Dashboard renders every tick; PATH probes are cheap but not free, so
+    results are cached for _AVAIL_TTL_S.
+    """
+    global _AVAIL_CACHE
+    import time
+    now = time.time()
+    if _AVAIL_CACHE and now - _AVAIL_CACHE[0] < _AVAIL_TTL_S:
+        return _AVAIL_CACHE[1]
+    out = []
+    for spec in APPS.values():
+        cmd, note = resolve(spec.id)
+        out.append({"id": spec.id, "label": spec.label,
+                    "available": cmd is not None,
+                    "binary": note if cmd else ""})
+    _AVAIL_CACHE = (now, out)
+    return out
+
+
 def list_apps() -> list[str]:
     """One line per app: id, label, resolved binary or install hint."""
     lines = []

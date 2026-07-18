@@ -132,6 +132,8 @@ class AiOSApp(App):
         self._greeted = False
         self._term_pane = None          # mounted TermPane widget (lazy)
         self._term_active = False       # whether the term workspace is active
+        from ..observer import Observer
+        self.observer = Observer()      # observant AI HUD over the Term pty
         self._boot_tick = 0             # cinematic boot progress
         self._jarvis_tick = 0           # proactive jarvis poll counter
         self._tour_active = False       # walkthrough mode
@@ -204,6 +206,7 @@ class AiOSApp(App):
         if wid in ("projects", "vault", "sys"):
             self._render_center()
         self._sync_term_pane()
+        self._tick_observer()
         self._push_deck_hud()
 
     def _sync_term_pane(self) -> None:
@@ -239,6 +242,7 @@ class AiOSApp(App):
             term_h.ensure_running()
             self._term_pane = TermPane(term_h, id="termpane")
             center.mount(self._term_pane)
+            self.observer.attach(term_h.command.split()[0])
         else:
             # tear down: kill pty, restore empty cell list (rebuilt on next render)
             if self._term_pane is not None:
@@ -246,7 +250,32 @@ class AiOSApp(App):
                 term_h.stop()
                 self._term_pane.remove()
                 self._term_pane = None
+            self.observer.detach()
             self._center = []
+
+    def _tick_observer(self) -> None:
+        """Feed the Term screen to the observer HUD; fire the optional AI
+        one-liner in an executor when due (never blocks the UI loop)."""
+        if not (self._term_active and self._term_pane is not None):
+            return
+        self.observer.ai_enabled = self.store.state.observer_ai
+        try:
+            self.observer.tick(self._term_pane._h.render())
+        except Exception:
+            return
+        if self.observer.want_ai_pass():
+            prompt = self.observer.begin_ai_pass()
+
+            async def ai_pass():
+                from ..llm import ChatSession, chat_send
+                loop = asyncio.get_event_loop()
+                try:
+                    reply = await loop.run_in_executor(
+                        None, chat_send, ChatSession(), prompt, 15)
+                    self.observer.set_ai_result(reply)
+                except Exception:
+                    self.observer.ai_failed()
+            asyncio.create_task(ai_pass())
 
     def _poll_jarvis(self) -> None:
         """Proactive Jarvis: scan state, surface actionable suggestions.
@@ -858,8 +887,70 @@ class AiOSApp(App):
         p.append(f" [{di}]NET[/] ▼{nd} ▲{nu}")
         p.append(f" [{ok_}]●[/]{tr} running  [{ok_}]✓[/]{td} done  [{er}]✗[/]{tf} failed" + (f"  [{wa}]⚇[/]{sw} working" if sw else ""))
 
-        # ─── 02 SYSTEM ────────────────────────────────────────────────────
-        p.append(f" [{a}]02 SYSTEM[/]")
+        # ─── 02 LAUNCHER ─────────────────────────────────────────────────
+        p.append(f" [{a}]02 LAUNCHER[/]")
+        launcher = data.get("launcher", [])
+        if launcher:
+            row = []
+            for app_ in launcher:
+                cl = ok_ if app_["available"] else di
+                mark = "▸" if app_["available"] else "·"
+                row.append(f"[{cl}]{mark}{app_['id']}[/]")
+            p.append(" " + "  ".join(row))
+            p.append(f" [{di}]Ctrl-K: app <name> [args] · apps for detail[/]")
+        else:
+            p.append(f" [{di}](registry empty)[/]")
+
+        # ─── 03 TODO ─────────────────────────────────────────────────────
+        openc = data.get("todos_open", 0)
+        p.append(f" [{a}]03 TODO[/]" + (f" [{wa}]{openc} open[/]" if openc else ""))
+        todos = data.get("todos", [])
+        if todos:
+            for t in todos[:5]:
+                ic, cl = ("✓", di) if t["done"] else ("○", wa)
+                p.append(f" [{cl}]{ic}[/] [{di if t['done'] else a}]#{t['n']} {t['text'][:40]}[/]")
+        else:
+            p.append(f" [{di}](empty · Ctrl-K: todo <text>)[/]")
+
+        # ─── 04 SESSIONS ─────────────────────────────────────────────────
+        p.append(f" [{a}]04 SESSIONS[/]")
+        active = [t for t in data.get("active_tasks", [])
+                  if t["state"] in ("running", "pending")]
+        if active:
+            for t in active[:4]:
+                ic = "⏸" if t.get("paused") else "●"
+                p.append(f" [{wa}]{ic}[/] [{di}]{t['harness'][:8]}[/] {t['label'][:22]}"
+                         f" {hbar(t['progress'], 8, wa)} {int(t['progress']*100)}%")
+        else:
+            p.append(f" [{di}](no running session)[/]")
+        hist = data.get("task_history", [])
+        ended = [t for t in data.get("active_tasks", [])
+                 if t["state"] in ("done", "failed", "cancelled", "interrupted")]
+        for h in (hist[-3:] if hist else ended[:3]):
+            res = h.get("result", h.get("state", "?"))
+            ic = "✓" if res == "done" else "✗"
+            cl = ok_ if res == "done" else er
+            p.append(f" [{cl}]{ic}[/] [{di}]{h['label'][:28]} · {res}[/]")
+
+        # ─── 05 DATA ─────────────────────────────────────────────────────
+        p.append(f" [{a}]05 DATA[/]")
+        prof = data.get("profile") or {}
+        if prof.get("scopes"):
+            from ..profile import human_size, tracker_line
+            p.append(f" [{di}]scope:[/] [{a}]{' '.join(prof['scopes'])}[/]")
+            for t in prof.get("trackers", [])[:5]:
+                p.append(f" [{ok_}]▹[/] [{di}]{tracker_line(t)}[/]")
+            top = prof.get("disk", [])[:3]
+            if top:
+                p.append(" " + "  ".join(
+                    f"[{di}]{d['name']}[/] {human_size(d['size'])}" for d in top))
+        else:
+            p.append(f" [{wa}]no profile — what do you use this computer for?[/]")
+            p.append(f" [{di}]Ctrl-K: setup dev writing media data comms finance[/]")
+            p.append(f" [{di}](scans disk, generates live trackers)[/]")
+
+        # ─── 06 SYSTEM ────────────────────────────────────────────────────
+        p.append(f" [{a}]06 SYSTEM[/]")
         ru = data.get("ram_used_gb", 0); rt = data.get("ram_total_gb", 16)
         per_core = data.get("cpu_per_core", [])
         if per_core:
@@ -875,28 +966,8 @@ class AiOSApp(App):
         extra = [f"📓{vn}" for vn in [vn] if vn] + [f"◎{mn}" for mn in [mn] if mn]
         if extra: p.append(f" {' '.join(extra)}")
 
-        # ─── 03 TASKS ─────────────────────────────────────────────────────
-        p.append(f" [{a}]03 TASKS[/]")
-        active = data.get("active_tasks", [])
-        if active:
-            for t in active[:4]:
-                tc = ok_ if t["state"] == "done" else wa
-                ic = "⏸" if t.get("paused") else "●" if t["state"] == "running" else "◆"
-                lines = []
-                lines.append(f" [{tc}]{ic}[/] [{di}]{t['label'][:20]}[/]")
-                lines.append(f"  {hbar(t['progress'], 8, tc)} {int(t['progress']*100)}%")
-                p.append("".join(lines))
-        else:
-            p.append(f" [{di}](idle · Ctrl-K: run demo hello)[/]")
-        hist = data.get("task_history", [])
-        if hist:
-            for h in hist[:2]:
-                ic = "✓" if h["result"] == "done" else "✗"
-                cl = ok_ if h["result"] == "done" else er
-                p.append(f" [{cl}]{ic}[/] [{di}]{h['label'][:28]}[/]")
-
-        # ─── 04 AGENTS ────────────────────────────────────────────────────
-        p.append(f" [{a}]04 AGENTS[/]")
+        # ─── 07 AGENTS ────────────────────────────────────────────────────
+        p.append(f" [{a}]07 AGENTS[/]")
         m = data.get("token_models", [])
         if m:
             for x in m[:2]:
@@ -912,8 +983,8 @@ class AiOSApp(App):
         if not m and not sw_ag:
             p.append(f" [{di}]no agent data yet[/]")
 
-        # ─── 05 ACTIVITY ─────────────────────────────────────────────────
-        p.append(f" [{a}]05 ACTIVITY[/]")
+        # ─── 08 ACTIVITY ─────────────────────────────────────────────────
+        p.append(f" [{a}]08 ACTIVITY[/]")
         sugg = self.store.state.suggestions
         if sugg:
             top = sugg[0]
@@ -928,8 +999,8 @@ class AiOSApp(App):
             p.append(f" [{di}](idle)[/]")
 
         # ─── 06 COMMANDS ─────────────────────────────────────────────────
-        p.append(f" [{a}]06 QUICK[/]")
-        p.append(f" [{di}]Ctrl-K: run demo|compare <q>|app mail|apps|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
+        p.append(f" [{a}]09 QUICK[/]")
+        p.append(f" [{di}]Ctrl-K: app mail|todo <t>|setup dev|observe ai|run demo|compare <q>|swarm create|mode focus|note <f>|mem <q>[/]")
 
         p.append(f" {sep}")
         return "\n".join(p)
@@ -939,7 +1010,17 @@ class AiOSApp(App):
         right = self.query_one("#right", expect_type=VerticalScroll)
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
-        lines = [f"[{theme['accent']}]LIVE TASKS[/]"]
+        lines = []
+        # ---- Observant AI HUD: status of the program in the Term pane ----
+        if self.observer.active:
+            lines.append(f"[{theme['accent']}]OBSERVER[/]")
+            lines.append(f"[{theme['warn']}]{self.observer.status_line}[/]")
+            if self.observer.ai_line:
+                lines.append(f"[{theme['ok']}]{self.observer.ai_line}[/]")
+            elif not self.store.state.observer_ai:
+                lines.append(f"[{theme['dim']}]Ctrl-K: observe ai[/]")
+            lines.append("")
+        lines.append(f"[{theme['accent']}]LIVE TASKS[/]")
         if not running:
             lines.append(f"[{theme['dim']}](idle)[/]")
         for t in running:
@@ -1094,6 +1175,9 @@ class AiOSApp(App):
                 "joystick: axis=navigate A=activate B=back C=context\n"
                 "voice: 'go to models' · 'run demo hello' · 'stop'\n"
                 "apps: 'apps' lists TUI programs · 'app <mail|edit|sheet|files|git|rss|monitor> [args]' opens in Term\n"
+                "todo: 'todo <text>' · 'todo done <n>' · 'todo rm <n>' (desktop panel)\n"
+                "data: 'setup <scopes>' asks scope of use + scans disk · 'scan' refreshes trackers\n"
+                "observer: AI HUD watches the Term app · 'observe ai' / 'observe off'\n"
                 "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
                 "vault: Obsidian-style notes graph (wikilinks + backlinks)\n"
                 "system: Iron Man HUD — CPU/RAM/disk/net/GPU + real-life stats\n"

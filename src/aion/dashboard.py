@@ -65,6 +65,16 @@ class DashboardData:
     # — activity feed —
     agent_feed: list[str] = field(default_factory=list)
 
+    # — todos —
+    todos: list[dict] = field(default_factory=list)
+    todos_open: int = 0
+
+    # — launcher (TUI app registry availability) —
+    launcher: list[dict] = field(default_factory=list)
+
+    # — data profile (scope-of-use + disk scan + live trackers) —
+    profile: dict = field(default_factory=dict)
+
     # — mode —
     active_mode: str = "default"
     mode_icon: str = "◉"
@@ -79,9 +89,34 @@ class DashboardData:
         return {k: v for k, v in self.__dict__.items()}
 
 
-def collect_dashboard(state, cfg: dict) -> DashboardData:
+def collect_dashboard(state, cfg: dict, todos=None) -> DashboardData:
     """Build a DashboardData snapshot from ViewState + config."""
     d = DashboardData()
+
+    # Todos (markdown-backed store, injected by the Store)
+    if todos is not None:
+        try:
+            items = todos.items()
+            d.todos = items[:6]
+            d.todos_open = sum(1 for t in items if not t["done"])
+        except Exception:
+            pass
+
+    # Launcher availability (cached probe of the app registry)
+    try:
+        from .apps import availability
+        d.launcher = availability()
+    except Exception:
+        pass
+
+    # Data profile (scanned in the background by the Store; state copy wins
+    # over the on-disk one so a fresh scan shows without a reload)
+    d.profile = state.stats.get("profile") or {}
+    if not d.profile:
+        from .profile import load as load_profile
+        d.profile = load_profile() or {}
+        if d.profile:
+            state.stats["profile"] = d.profile   # avoid re-reading every tick
     d.app_name = cfg.get("app_name", "aion")
     d.hostname = _safe_get("hostname", "")
     d.active_mode = state.active_mode

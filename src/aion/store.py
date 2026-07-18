@@ -51,6 +51,7 @@ class ViewState:
     compare_result: dict = field(default_factory=dict)      # multi-model compare
     suggestions: list[str] = field(default_factory=list)    # proactive jarvis
     term_command: str = ""        # app command for the Term workspace ("" = default btop)
+    observer_ai: bool = False     # opt-in LLM layer of the Term observer HUD
 
 
 class Store:
@@ -69,6 +70,9 @@ class Store:
         self._task_prompts: dict[str, str] = {}  # task id -> last prompt (for rerun)
         self._loop = None  # captured event loop (set in _chat for agent tools)
         self.memory = MemoryStore()
+        from .todos import TodoStore
+        self.todos = TodoStore()
+        self._profile_scanning = False
         self.chat = ChatSession()
         self.swarm = SwarmOrchestrator(bus=self.bus)
         self.active_mode_cfg: ModeConfig = get_mode("default") or MODES["default"]
@@ -125,7 +129,8 @@ class Store:
     def _current_items(self) -> list[dict]:
         ws = self.cfg["workspaces"][self.state.active_ws]["id"]
         if ws == "desktop":
-            d = collect_dashboard(self.state, self.cfg)
+            d = collect_dashboard(self.state, self.cfg, todos=self.todos)
+            self._maybe_rescan_profile(d.profile)
             return [{"type": "dashboard", "data": d.as_dict()}]
         if ws == "models":
             return [{"id": h, "name": self.harnesses[h].name,
@@ -178,6 +183,30 @@ class Store:
                 return [{"type": "dashboard", "data": s}]
             return [{"type": "empty", "label": "No active swarm. Use 'swarm create <goal>' to start."}]
         return []
+
+    def _maybe_rescan_profile(self, profile: dict) -> None:
+        """Keep the DATA trackers live: background rescan when stale."""
+        import time
+        from .profile import RESCAN_AFTER_S
+        if (not profile or self._profile_scanning
+                or time.time() - profile.get("scanned_at", 0) < RESCAN_AFTER_S):
+            return
+        self._profile_scanning = True
+
+        def worker():
+            from .profile import scan, save, load
+            try:
+                prev = load()
+                p = scan(profile.get("scopes", []), prev=prev)
+                save(p)
+                self.state.stats["profile"] = p
+            except Exception:
+                pass
+            finally:
+                self._profile_scanning = False
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
 
     def _running_for(self, hid: str) -> int:
         return sum(1 for t in self.registry.tasks.values()
@@ -318,6 +347,62 @@ class Store:
             return
         if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
             self.memory.forget(int(parts[1]))
+            return
+        if parts[0] == "todo":
+            arg = parts[1].strip() if len(parts) == 2 else ""
+            sub = arg.split(" ", 1)
+            if sub[0] == "done" and len(sub) == 2 and sub[1].strip().isdigit():
+                ok = self.todos.done(int(sub[1]))
+                self.state.logs.append(f"todo #{sub[1]} done" if ok else "todo: bad index")
+            elif sub[0] == "rm" and len(sub) == 2 and sub[1].strip().isdigit():
+                ok = self.todos.rm(int(sub[1]))
+                self.state.logs.append(f"todo #{sub[1]} removed" if ok else "todo: bad index")
+            elif arg:
+                self.todos.add(arg)
+                self.state.logs.append(f"todo added: {arg[:40]}")
+            else:
+                self.state.logs.append("usage: todo <text> | todo done <n> | todo rm <n>")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] in ("setup", "scan"):
+            from .profile import SCOPES, load, scan, save
+            prev = load()
+            if parts[0] == "setup":
+                scopes = [s for s in (parts[1].split() if len(parts) == 2 else [])
+                          if s in SCOPES]
+                if not scopes:
+                    opts = " ".join(f"{k}({v})" for k, v in SCOPES.items())
+                    self.state.logs.append(f"usage: setup <scopes> — {opts}")
+                    self.state.logs = self.state.logs[-50:]
+                    return
+            else:
+                scopes = (prev or {}).get("scopes", [])
+                if not scopes:
+                    self.state.logs.append("scan: run 'setup <scopes>' first")
+                    self.state.logs = self.state.logs[-50:]
+                    return
+            self.state.logs.append(f"scanning disk for scopes: {' '.join(scopes)} ...")
+            self.state.logs = self.state.logs[-50:]
+
+            def worker():
+                try:
+                    p = scan(scopes, prev=prev)
+                    save(p)
+                    self.state.stats["profile"] = p
+                    self.state.logs.append(
+                        f"scan done: {len(p['trackers'])} trackers, "
+                        f"{len(p['disk'])} dirs sized")
+                except Exception as e:
+                    self.state.logs.append(f"scan failed: {e}")
+                self.state.logs = self.state.logs[-50:]
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        if parts[0] == "observe" and len(parts) == 2:
+            mode = parts[1].strip().lower()
+            self.state.observer_ai = (mode in ("ai", "on"))
+            self.state.logs.append(f"observer AI {'on' if self.state.observer_ai else 'off'}")
+            self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "apps":
             from .apps import list_apps
