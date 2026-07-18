@@ -1,9 +1,9 @@
 # The CyclUno Deck — aion's physical console
 
-aion is the Jarvis screen; the deck is what your hand rests on. One Arduino
-Uno, two thumb joysticks, four face buttons, a mode switch, three LEDs and an
-OLED — wired over USB serial, speaking the same v2 frame protocol as the
-Cyclops wearable.
+aion is the **HUD / desktop shell**; the deck is what your hand rests on. One
+Arduino Uno, two thumb joysticks, face buttons, a mode switch, LEDs and a
+128×128 SPI TFT — wired over USB serial, speaking the same v2 frame protocol
+as the Cyclops wearable. (APP-mode LED is A4; D13 is SPI clock.)
 
 ![console layout](https://raw.githubusercontent.com/ilPez00/CyclUno/main/docs/img/deck-layout.svg)
 

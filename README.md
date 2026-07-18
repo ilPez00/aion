@@ -1,15 +1,18 @@
 # aion
 
-A customizable **multi-harness AI cockpit** and **stats visualizer**, driven by
-a TUI you control with keyboard, trackpad, a joystick/gamepad, voice — and the
-**CyclUno deck**, a physical console (2 sticks + clickable wheel + buttons +
-OLED on an Arduino Uno) that navigates the cockpit one-handed and doubles as
-a Linux gamepad for programs aion spawns. See `docs/DECK.md`.
+**Splitscreen HUD + application desktop** — not a chat assistant.
 
-The core idea: every input device emits the *same* `Intent` objects, and every
-AI backend is a swappable `Harness`. The UI only renders; harnesses push live
-task progress + stats through an async bus. That's what makes "joystick, voice,
-keyboard, mouse all drive one screen" trivial instead of four code paths.
+aion is a customizable multi-harness **desktop shell** and **stats HUD** for
+half a screen (or a full console). Drive it with keyboard, trackpad,
+joystick/gamepad, optional voice, and the **CyclUno deck** (physical console:
+sticks + buttons + SPI TFT) that navigates workspaces one-handed and doubles as
+a Linux gamepad for programs aion spawns. See `docs/DECK.md` and
+`docs/IDENTITY.md`.
+
+The core idea: every input device emits the *same* `Intent` objects; every
+backend is a swappable `Harness` (apps, shells, agents, monitors). The UI
+**renders status and manages processes**; it does not exist to chat. Harnesses
+push live task progress + stats through an async bus.
 
 ```
 ┌─ HEADER: app · active harness · voice mode · clock ────────────┐
@@ -110,7 +113,7 @@ note <fact>                 remember something (persistent memory)
 mem <query>                 recall — opens the Memory workspace filtered
 forget <n>                  drop fact #n from the current memory view
 mode <default|focus|deep|monitor|stealth|demo>   switch operational mode
-theme <jarvis|matrix|amber>  switch color theme
+theme <jarvis|matrix|amber>  switch color pack (colors only — not a persona)
 swarm create <goal>         start a multi-agent swarm
 swarm add <name> <goal> [<< dep1,dep2]   add an agent to the swarm
 swarm run | status | stop   control the swarm
