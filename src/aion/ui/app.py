@@ -145,7 +145,7 @@ class AiOSApp(App):
             yield VerticalScroll(id="center")
             yield VerticalScroll(id="right")
         yield Static("", id="bottom")
-        yield Input(placeholder="› command  (run <h> <prompt> · compare <q> · tier <cheap|standard|premium>)", id="palette")
+        yield Input(placeholder="› command  (run <h> <prompt> · compare <q> · app <mail|edit|sheet|files|git> · tier <cheap|standard|premium>)", id="palette")
         yield Static("", id="help")
 
     async def on_mount(self) -> None:
@@ -211,6 +211,15 @@ class AiOSApp(App):
         the Term workspace. Considers last-render so we only act on change."""
         ws_id = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         want = (ws_id == "term")
+        desired_cmd = self.store.state.term_command
+        # restart the pane in place when an `app <name>` command changed the
+        # program while the Term workspace is already active
+        if (want and self._term_active and self._term_pane is not None
+                and desired_cmd and self._term_pane._h.command != desired_cmd):
+            self._term_pane._h.stop()
+            self._term_pane.remove()
+            self._term_pane = None
+            self._term_active = False
         if want == self._term_active:
             return
         self._term_active = want
@@ -220,11 +229,12 @@ class AiOSApp(App):
             for c in self._center:
                 c.remove()
             self._center = []
-            term_h = self.harnesses.get("term")
+            # `app <name>` overrides the default term harness (btop)
+            term_h = None if desired_cmd else self.harnesses.get("term")
             if term_h is None:
                 term_h = TermHarness(
                     HarnessConfig.from_dict({"id": "term", "type": "term",
-                                             "command": "btop"}),
+                                             "command": desired_cmd or "btop"}),
                     self.bus, self.store.registry)
             term_h.ensure_running()
             self._term_pane = TermPane(term_h, id="termpane")
@@ -298,8 +308,15 @@ class AiOSApp(App):
             if event.key == "escape":
                 event.prevent_default()
             return
-        # embedded terminal passthrough (Term workspace)
-        if self._term_active and self._term_pane is not None:
+        # embedded terminal passthrough (Term workspace). Ctrl-K still opens
+        # the palette (so `app <name>` can swap the program), and while the
+        # palette is visible its handler below owns the keys.
+        if (self._term_active and self._term_pane is not None
+                and not self.query_one("#palette").display):
+            if event.key == "ctrl+k":
+                self._toggle_palette()
+                event.prevent_default()
+                return
             if event.key == "ctrl+t":
                 # reserved: leave the terminal pane back to normal navigation
                 return
@@ -912,7 +929,7 @@ class AiOSApp(App):
 
         # ─── 06 COMMANDS ─────────────────────────────────────────────────
         p.append(f" [{a}]06 QUICK[/]")
-        p.append(f" [{di}]Ctrl-K: run demo|compare <q>|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
+        p.append(f" [{di}]Ctrl-K: run demo|compare <q>|app mail|apps|swarm create|mode focus|theme matrix|note <f>|mem <q>|tier standard[/]")
 
         p.append(f" {sep}")
         return "\n".join(p)
@@ -1076,6 +1093,7 @@ class AiOSApp(App):
                 "? / /          this help\n"
                 "joystick: axis=navigate A=activate B=back C=context\n"
                 "voice: 'go to models' · 'run demo hello' · 'stop'\n"
+                "apps: 'apps' lists TUI programs · 'app <mail|edit|sheet|files|git|rss|monitor> [args]' opens in Term\n"
                 "memory: 'note <fact>' · 'mem <query>' · 'forget <n>'\n"
                 "vault: Obsidian-style notes graph (wikilinks + backlinks)\n"
                 "system: Iron Man HUD — CPU/RAM/disk/net/GPU + real-life stats\n"

@@ -50,6 +50,7 @@ class ViewState:
     task_history: list[dict] = field(default_factory=list)  # completed tasks
     compare_result: dict = field(default_factory=dict)      # multi-model compare
     suggestions: list[str] = field(default_factory=list)    # proactive jarvis
+    term_command: str = ""        # app command for the Term workspace ("" = default btop)
 
 
 class Store:
@@ -317,6 +318,26 @@ class Store:
             return
         if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
             self.memory.forget(int(parts[1]))
+            return
+        if parts[0] == "apps":
+            from .apps import list_apps
+            self.state.logs.extend(list_apps())
+            self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "app" and len(parts) == 2:
+            from .apps import resolve
+            sub = parts[1].split(" ", 1)
+            cmd, note = resolve(sub[0], sub[1] if len(sub) == 2 else "")
+            if cmd is None:
+                self.state.logs.append(note)
+                self.state.logs = self.state.logs[-50:]
+                return
+            self.state.term_command = cmd
+            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+            if "term" in ws_ids:
+                self.state.active_ws = ws_ids.index("term")
+                self.state.focus = 0
+            self.state.history.append(f"app: {cmd}")
             return
         if parts[0] in ("search", "web") and len(parts) == 2:
             # DeepSearch: run the web harness with the query as the prompt
