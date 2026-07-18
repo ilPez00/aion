@@ -75,7 +75,7 @@ Wire a real health source in `config/layout.json`:
 The same HUD is also served as a browser UI (`static/index.html`):
 
 ```bash
-./aion.sh web          # or: python aion_web.py  → http://127.0.0.1:8742
+./aion.sh web          # or: python scripts/aion_web.py  → http://127.0.0.1:8742
 ```
 
 Modules: Terminal (PTY), Files (organic graph), Browser (voice → DeepSearch),

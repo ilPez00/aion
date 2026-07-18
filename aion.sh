@@ -53,7 +53,7 @@ case "${1:-run}" in
   web)
     ensure_venv
     shift || true
-    exec "$PY" server.py "$@"
+    exec "$PY" scripts/aion_web.py "$@"
     ;;
   shell)
     ensure_venv
@@ -62,11 +62,6 @@ case "${1:-run}" in
   run|"")
     ensure_venv
     exec "$PY" -m aion.ui.app
-    ;;
-  web)
-    ensure_venv
-    shift || true
-    exec "$PY" aion_web.py "$@"
     ;;
   *)
     echo "usage: ./aion.sh [run|install|web|test|shell]" >&2
