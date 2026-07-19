@@ -41,7 +41,14 @@ def bar(pct: float, width: int = 18, color: str = "#7CFFB2") -> str:
 
 class Cell(Static):
     """A single updatable text cell. Mutating .update() is cheap (no remount)."""
-    DEFAULT_CSS = "Cell { height: auto; }"
+    DEFAULT_CSS = "Cell { height: auto; } Cell:hover { background: #15303f; }"
+
+    def on_click(self) -> None:
+        """Click activates the focused item or toggles palette on bottom."""
+        app = self.app
+        if not isinstance(app, AiOSApp):
+            return
+        app.action_activate()
 
 
 class TermPane(Static):
@@ -65,12 +72,18 @@ class TermPane(Static):
 
 
 def _key_bytes(key: str) -> bytes:
-    # map Textual key names to terminal byte sequences
     table = {
         "enter": b"\r", "escape": b"\x1b", "tab": b"\t",
         "up": b"\x1b[A", "down": b"\x1b[B", "right": b"\x1b[C", "left": b"\x1b[D",
-        "backspace": b"\x7f", "space": b" ", "ctrl+c": b"\x03", "ctrl+d": b"\x04",
+        "backspace": b"\x7f", "space": b" ",
+        "ctrl+c": b"\x03", "ctrl+d": b"\x04", "ctrl+z": b"\x1a",
+        "ctrl+a": b"\x01", "ctrl+b": b"\x02", "ctrl+e": b"\x05", "ctrl+f": b"\x06",
+        "ctrl+k": b"\x0b", "ctrl+l": b"\x0c", "ctrl+n": b"\x0e", "ctrl+p": b"\x10",
+        "ctrl+r": b"\x12", "ctrl+t": b"\x14", "ctrl+u": b"\x15", "ctrl+w": b"\x17",
+        "ctrl+x": b"\x18", "ctrl+y": b"\x19",
         "pageup": b"\x1b[5~", "pagedown": b"\x1b[6~",
+        "home": b"\x1b[H", "end": b"\x1b[F",
+        "insert": b"\x1b[2~", "delete": b"\x1b[3~",
     }
     return table.get(key, b"")
 
@@ -574,6 +587,10 @@ class AiOSApp(App):
         theme = self.cfg["theme"]
         ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         center = self.query_one("#center", expect_type=VerticalScroll)
+
+        if ws == "term":
+            self._sync_term_pane()
+            return
 
         items = self.store._current_items()
         # rebuild only if the item count changed (structural); else mutate text
@@ -1245,24 +1262,57 @@ class AiOSApp(App):
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
         lines: list[str] = []
-        # ---- Workflow Pulse (always, replaces decorative viz) ----
         wf = self.store.state.workflows
-        if wf:
+        wf_live = [w for w in wf if w.get("stage") not in ("done",)] if wf else []
+        # ---- Workflow Pulse (when live workflows exist) ----
+        if wf_live:
             from ..workflows import workflow_pulse
             pulse = workflow_pulse(wf, theme, max_rows=3)
             lines.extend(pulse)
             if pulse:
                 lines.append("")
+        # ---- Decorative viz (when idle — spectrum/wave/radar rotation) ----
+        if not wf_live:
+            from .visualizers import spectrum_eq, task_wave, pulse_radar
+            st = self.store.state.stats
+            sys_ = st.get("system") or {}
+            phase = (self._viz_tick // 10) % 3
+            if phase == 0 and sys_.get("ok"):
+                cpu = sys_["cpu"]["total_pct"] / 100.0
+                mem = sys_["mem"]["pct"] / 100.0
+                disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0
+                rcount = min(len(running) / 3.0, 1.0)
+                vals = [cpu, mem, disk_pct, rcount]
+                labels = ["CPU", "RAM", "DSK", "TASK"]
+                viz = spectrum_eq(vals, self._viz_tick, height=4, labels=labels)
+                lines.append(f"[{a}]◈ SPECTRUM[/]")
+                for line in viz.split("\n"):
+                    lines.append(f"  {line}")
+            elif phase == 1:
+                hist = self._task_wave_history[-24:] if self._task_wave_history else [0.0]
+                viz = task_wave(hist, self._viz_tick, width=24, label="ACTIVITY")
+                lines.append(f"[{a}]◈ WAVE[/]")
+                for line in viz.split("\n"):
+                    lines.append(f"  {line}")
+            else:
+                rcount = min(len(running) / 5.0, 1.0)
+                sesh_count = len(self.store.state.stats.get("stats", {}).get("agents", []))
+                rings = [
+                    {"label": "TASKS", "value": rcount,
+                     "items": [f"t{i}" for i in range(min(len(running), 12))]},
+                    {"label": "AGENTS", "value": min(sesh_count / 5.0, 1.0),
+                     "items": [f"s{i}" for i in range(min(sesh_count, 12))]},
+                ]
+                viz = pulse_radar(rings, self._viz_tick, size=12)
+                lines.append(f"[{a}]◈ RADAR[/]")
+                for line in viz.split("\n"):
+                    lines.append(f"  {line}")
+            lines.append("")
         # ---- LIVE TASKS (compact) ----
-        lines.append(f"[{a}]TASKS[/]")
-        if not running:
-            lines.append(f" [{di}](idle)[/]")
-        else:
-            wlive = self.store.state.workflows_live
-            hdr = f" ●{len(running)}" + (f"  ◆{wlive} wf" if wlive else "")
-            lines[-1] = f"[{a}]TASKS[/][{wa}]{hdr}[/]"
-        for t in running:
-            lines.append(f" [{wa}]●[/] [{di}]{t.label[:20]}[/] {bar(t.progress, width=10, color=wa)}")
+        if running or wf_live:
+            lines.append(f"[{a}]TASKS[/][{wa}] ●{len(running)}{' ◆'+str(len(wf_live))+'wf' if wf_live else ''}[/]")
+            for t in running:
+                lines.append(f" [{wa}]●[/] [{di}]{t.label[:20]}[/] {bar(t.progress, width=10, color=wa)}")
         # ---- Telemetry one-liner ----
         tel = self.store.state.stats.get("telemetry")
         if tel:
