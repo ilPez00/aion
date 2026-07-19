@@ -169,6 +169,8 @@ class Store:
                      "preview": v.get("error", "") if v else ""}]
         if ws == "sys":
             return [{"kind": "live"}]  # rendered specially from stats
+        if ws == "mind":
+            return [{"kind": "live"}]  # rendered from stats["mind"]
         if ws == "agent":
             cr = self.state.compare_result
             if cr and cr.get("answers"):
