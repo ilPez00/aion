@@ -51,6 +51,10 @@ class DashboardData:
     swarm_done: int = 0
     swarm_total: int = 0
 
+    # — unified agentic workflows (glance layer) —
+    workflows: list[dict] = field(default_factory=list)
+    workflows_live: int = 0
+
     # — vault —
     vault_notes: int = 0
     vault_links: int = 0
@@ -89,8 +93,15 @@ class DashboardData:
         return {k: v for k, v in self.__dict__.items()}
 
 
-def collect_dashboard(state, cfg: dict, todos=None) -> DashboardData:
-    """Build a DashboardData snapshot from ViewState + config."""
+def collect_dashboard(state, cfg: dict, todos=None, *,
+                      swarm_agents: list | None = None,
+                      boards: list | None = None,
+                      agent_entities: list | None = None) -> DashboardData:
+    """Build a DashboardData snapshot from ViewState + config.
+
+    Optional swarm_agents / boards / agent_entities enrich the Workflow Pulse
+    layer (see workflows.collect_workflows).
+    """
     d = DashboardData()
 
     # Todos (markdown-backed store, injected by the Store)
@@ -190,6 +201,39 @@ def collect_dashboard(state, cfg: dict, todos=None) -> DashboardData:
 
     # Agent activity feed (last 6 log lines)
     d.agent_feed = list(state.logs)[-6:]
+
+    # Unified workflows (Mission Strip / Pulse)
+    from .workflows import collect_workflows
+    hermes_agents = []
+    st = state.stats.get("stats") or {}
+    if isinstance(st, dict):
+        hermes_agents = list(st.get("agents") or [])
+    # boards: prefer explicit inject, else stats from BoardHarness
+    board_list = list(boards or [])
+    if not board_list:
+        bd = state.stats.get("board") or {}
+        if isinstance(bd, dict) and bd.get("boards"):
+            board_list = list(bd["boards"])
+    # agent entities from harness stats if not injected
+    ag_list = list(agent_entities or [])
+    if not ag_list:
+        ae = state.stats.get("agent_entity") or {}
+        if isinstance(ae, dict) and ae.get("agents"):
+            ag_list = list(ae["agents"])
+    task_src = list(getattr(state, "tasks", []) or [])
+    wrows = collect_workflows(
+        tasks=task_src,
+        swarm_dashboard=state.swarm_dashboard,
+        swarm_agents=swarm_agents,
+        boards=board_list,
+        hermes_agents=hermes_agents,
+        agent_entities=ag_list,
+    )
+    d.workflows = [w.as_dict() for w in wrows]
+    d.workflows_live = sum(
+        1 for w in d.workflows
+        if w.get("stage") in ("act", "wait", "blocked", "plan", "failed", "verify")
+    )
 
     return d
 

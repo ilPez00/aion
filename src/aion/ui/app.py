@@ -544,14 +544,33 @@ class AiOSApp(App):
             vmode += " [PAD]" if s.deck_app else " [DECK]"
         clock = __import__("time").strftime("%H:%M:%S")
         status = f"running: {running}" if running else "standing by"
-        # Jarvis HUD: real token burn + spend + live agents from Hermes state.db
+        # Mission strip: live count · type summary · pipeline · block
+        wf = s.workflows
+        wlive = s.workflows_live
+        if wf:
+            from ..workflows import stage_glyph, stage_theme_key, pipeline_strip, workflow_types_summary
+            summary = workflow_types_summary(wf)
+            top = next((r for r in wf if r.get("stage") not in ("done",)), wf[0])
+            top_stage = top.get("stage", "plan")
+            col = theme.get(stage_theme_key(top_stage), theme["dim"])
+            g = stage_glyph(top_stage)
+            pipe = pipeline_strip(top.get("pipeline", []), top_stage, theme, width=24)
+            import re
+            pipe_plain = re.sub(r'\[/?\w+(?:=\S+)?\]', '', pipe)[:20]
+            blocked = top.get("blocked_by")
+            blk = f" ⊘{blocked[:8]}" if blocked else ""
+            status = (f"⇶[{theme['warn']}]{wlive}[/]"
+                      f" [{theme['dim']}]{summary}[/]"
+                      f" [{theme['dim']}]{pipe_plain}[/]{blk}")
+        # Jarvis HUD: token burn + live agents from all sources
         hud = ""
         st = self.store.state.stats.get("stats")
+        ext_count = sum(1 for w in wf if w.get("kind") == "tool") if wf else 0
         if st and st.get("ok"):
             from ..stats import human_tokens
             tot = st.get("in", 0) + st.get("out", 0) + st.get("reasoning", 0)
             cost = st.get("cost_usd", 0.0)
-            live = st.get("live", 0)
+            live = st.get("live", 0) + ext_count
             costs = f" ${cost:.2f}" if cost else ""
             hud = (f"  [{theme['accent']}]Σ{human_tokens(tot)}[/]"
                    f"[{theme['dim']}]/{st.get('window','today')}[/]"
@@ -561,7 +580,7 @@ class AiOSApp(App):
             f"[{theme['accent']}]{self.persona.name}[/]  "
             f"harness: [{theme['ok']}]{name}[/]  "
             f"[{theme['accent']}]◉{s.active_mode}[/]  "
-            f"{status}{hud}  "
+            f"{status}  "
             + (f"[{theme['err']}]⚠{len(s.suggestions)}[/]  " if s.suggestions else "")
             + f"[{theme['dim']}]{clock}{vmode}[/]"
         )
@@ -905,6 +924,16 @@ class AiOSApp(App):
             lines.append(f"[{theme['dim']}]─ Plan ────────────────────────────────────────[/]")
             lines.append(f"  [{theme['accent']}]goal:[/] {plan.get('goal','')[:50]}")
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
+        # DAG: show agent dependency graph when >1 agent with deps
+        dag_agents = [a for a in agents if a.get("deps") or a.get("dependencies")]
+        if dag_agents:
+            from ..workflows import swarm_dag
+            dag = swarm_dag(agents, theme)
+            if dag:
+                lines.append(f"[{theme['dim']}]─ DAG ─────────────────────────────────────────[/]")
+                for dag_line in dag.split("\n"):
+                    stripped = dag_line.replace("DAG ", "")
+                    lines.append(f"  {stripped}")
         lines.append(f"[{theme['dim']}]swarm create|add|run|status|stop[/]")
         return "\n".join(lines)
 
@@ -924,9 +953,13 @@ class AiOSApp(App):
             focused = bi == self.store.state.focus
             mark = "▌" if focused else " "
             col = a if focused else di
-            lines.append(f"[{col}]{mark}⬡ {b['title']}[/]  [{di}]{b['card_count']} cards[/]")
-            cols = b.get("columns", ["backlog", "active", "done"])
             col_data = b.get("column_data", {})
+            bl = len(col_data.get("backlog", []) or [])
+            ac = len(col_data.get("active", []) or [])
+            dn = len(col_data.get("done", []) or [])
+            glance = f"B{bl} A{ac} D{dn}" if (bl or ac or dn) else f"{b.get('card_count', 0)} cards"
+            lines.append(f"[{col}]{mark}⬡ {b['title']}[/]  [{di}]{glance}[/]")
+            cols = b.get("columns", ["backlog", "active", "done"])
             for ci, col_name in enumerate(cols):
                 cards = col_data.get(col_name, [])
                 icon = {"backlog": "📋", "active": "⚡", "done": "✓"}.get(col_name, "·")
@@ -1144,27 +1177,37 @@ class AiOSApp(App):
                 for line in b.split("\n"):
                     p.append(f" [{a}]{V}[/] {line}")
 
-        # ┌── VIZ ─────────────────────────────────────────────────────────┐
-        from .visualizers import pulse_radar
-        st = self.store.state.stats
-        sys_ = st.get("system") or {}
-        cpu = (sys_.get("cpu") or {}).get("total_pct", 0) / 100.0
-        mem = (sys_.get("mem") or {}).get("pct", 0) / 100.0
-        running_count = sum(1 for t in self.store.registry.tasks.values()
-                            if t.state.value in ("running", "pending"))
-        _rings = [
-            {"label": "CPU", "value": cpu,
-             "items": ["■"] * int(cpu * 12)},
-            {"label": "RAM", "value": mem,
-             "items": ["■"] * int(mem * 12)},
-            {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
-             "items": ["●"] * min(running_count, 12)},
-        ]
-        _viz = pulse_radar(_rings, self._viz_tick, size=10)
-        _viz_lines = _viz.split("\n")
-        p.append(f" [{a}]{H*3} VIZ {H*40}'┐[/]".replace("'┐", "┐"))
-        for line in _viz_lines:
-            p.append(f" [{a}]{V}[/] {line}")
+        # ┌── MISSIONS / VIZ ───────────────────────────────────────────────┐
+        wf = self.store.state.workflows
+        wlive = self.store.state.workflows_live
+        if wf and wlive:
+            from ..workflows import desktop_missions
+            ms = desktop_missions(wf, theme, max_rows=3)
+            ms_lines = ms.split("\n")
+            p.append(f" [{a}]{H*3} MISSIONS {H*36}┐[/]")
+            for line in ms_lines:
+                p.append(f" [{a}]{V}[/] {line}")
+        else:
+            from .visualizers import pulse_radar
+            st = self.store.state.stats
+            sys_ = st.get("system") or {}
+            cpu = (sys_.get("cpu") or {}).get("total_pct", 0) / 100.0
+            mem = (sys_.get("mem") or {}).get("pct", 0) / 100.0
+            running_count = sum(1 for t in self.store.registry.tasks.values()
+                                if t.state.value in ("running", "pending"))
+            _rings = [
+                {"label": "CPU", "value": cpu,
+                 "items": ["■"] * int(cpu * 12)},
+                {"label": "RAM", "value": mem,
+                 "items": ["■"] * int(mem * 12)},
+                {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
+                 "items": ["●"] * min(running_count, 12)},
+            ]
+            _viz = pulse_radar(_rings, self._viz_tick, size=10)
+            _viz_lines = _viz.split("\n")
+            p.append(f" [{a}]{H*3} VIZ {H*40}'┐[/]".replace("'┐", "┐"))
+            for line in _viz_lines:
+                p.append(f" [{a}]{V}[/] {line}")
 
         # ┌── QUICK ──────────────────────────────────────────────────────┐
         p.append(f" [{a}]{H*3} COMMANDS {H*35}┐[/]")
@@ -1304,6 +1347,14 @@ class AiOSApp(App):
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
         lines = self._right_viz_block(theme)
+        # ---- Workflow Pulse (replaces one viz slot when workflows live) ----
+        wf = self.store.state.workflows
+        if wf:
+            from ..workflows import workflow_pulse
+            pulse = workflow_pulse(wf, theme, max_rows=3)
+            if len(pulse) > 1:
+                # replace decorative viz header with WORKFLOWS header
+                lines = pulse + [""] + lines[1:]
         # ---- Observant AI HUD: status of the program in the Term pane ----
         if self.observer.active:
             lines.append(f"[{theme['accent']}]OBSERVER[/]")
@@ -1348,15 +1399,21 @@ class AiOSApp(App):
                     lines.append(f"[{theme['dim']}]{nm}[/]")
                     lines.append(f"  {meter} [{theme['dim']}]{human_tokens(m['tot'])}[/]")
             agents = st.get("agents", [])
+            ext_workflows = [w for w in self.store.state.workflows if w.get("kind") == "tool"] if self.store.state.workflows else []
+            total_live = st.get('live', 0) + len(ext_workflows)
             lines.append("")
-            lines.append(f"[{theme['accent']}]LIVE AGENTS[/] [{theme['warn']}]◆{st.get('live',0)}[/]")
-            if not agents:
-                lines.append(f"[{theme['dim']}](none active)[/]")
+            lines.append(f"[{theme['accent']}]LIVE AGENTS[/] [{theme['warn']}]◆{total_live}[/]")
             for a in agents[:6]:
                 where = a.get("branch") or a.get("repo") or a["model"].split("/")[-1][:12]
                 mins = a.get("age_s", 0) // 60
-                lines.append(f"[{theme['ok']}]●[/] [{theme['dim']}]{where[:16]} "
+                lines.append(f"[{theme['accent']}]●[/] [{theme['dim']}]{where[:16]} "
                              f"{a.get('msgs',0)}m {mins}′[/]")
+            for w in ext_workflows[:4]:
+                name = str(w.get("title", "tool"))[:14]
+                age = int(w.get("age_s", 0)) // 60
+                lines.append(f"[{theme['warn']}]●[/] [{theme['dim']}]{name}[/]  [{theme['dim']}]{age}′[/]")
+            if not agents and not ext_workflows:
+                lines.append(f"[{theme['dim']}](none active)[/]")
         elif st is not None and not st.get("ok"):
             lines.append("")
             lines.append(f"[{theme['dim']}](state.db unavailable)[/]")

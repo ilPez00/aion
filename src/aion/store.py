@@ -11,6 +11,7 @@ app is a thin view: it calls store.handle(intent) and renders store.state.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,6 +59,8 @@ class ViewState:
     term_command: str = ""        # app command for the Term workspace ("" = default btop)
     observer_ai: bool = False     # opt-in LLM layer of the Term observer HUD
     last_command: str = ""        # most recent command text (for context routing)
+    workflows: list[dict] = field(default_factory=list)   # WorkflowRow dicts for HUD pulse
+    workflows_live: int = 0       # count of non-done workflows
 
 
 class Store:
@@ -86,6 +89,7 @@ class Store:
         self.swarm = SwarmOrchestrator(bus=self.bus)
         self.active_mode_cfg: ModeConfig = get_mode("default") or MODES["default"]
         self.state = ViewState(active_harness=self._first_harness())
+        self._external_agents_cache: tuple[float, list[dict]] = (0.0, [])
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
         self.bus.subscribe("stats", self._on_stats)
@@ -138,8 +142,38 @@ class Store:
 
     def _current_items(self) -> list[dict]:
         ws = self.cfg["workspaces"][self.state.active_ws]["id"]
+
+        # always collect workflows for the HUD pulse (stored on ViewState)
+        self._collect_workflows()
+
         if ws == "desktop":
-            d = collect_dashboard(self.state, self.cfg, todos=self.todos)
+            # freshest task list for workflow collector
+            self.state.tasks = list(self.registry.tasks.values())
+            swarm_agents = [a.as_dict() for a in self.swarm.agents.values()] if self.swarm.agents else None
+            board_list = None
+            try:
+                board_list = []
+                for b in self.board_store.list_all():
+                    bd = b.as_dict()
+                    # column_data for glance
+                    col_data: dict = {}
+                    for c in b.cards:
+                        col_data.setdefault(c.column, []).append(c.as_dict())
+                    bd["column_data"] = col_data
+                    bd["card_count"] = len(b.cards)
+                    board_list.append(bd)
+            except Exception:
+                board_list = None
+            ag_entities = None
+            ae = self.state.stats.get("agent_entity")
+            if ae and ae.get("agents"):
+                ag_entities = ae["agents"]
+            d = collect_dashboard(
+                self.state, self.cfg, todos=self.todos,
+                swarm_agents=swarm_agents,
+                boards=board_list,
+                agent_entities=ag_entities,
+            )
             self._maybe_rescan_profile(d.profile)
             # merge project stats into desktop dashboard
             pj = self.state.stats.get("projects")
@@ -249,6 +283,83 @@ class Store:
         if ws == "term":
             return [{"kind": "terminal"}]
         return []
+
+    def _detect_external_agents(self) -> list[dict]:
+        """Detect running external coding agent processes (opencode, agy, ...)."""
+        import subprocess, os, time
+        BINARIES = {
+            "opencode": "OpenCode",
+            "agy": "Antigravity",
+            "claude": "Claude Code",
+            "codex": "Codex CLI",
+        }
+        agents = []
+        for binary, label in BINARIES.items():
+            if shutil.which(binary) is None:
+                continue
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-x", binary],
+                    capture_output=True, text=True, timeout=2,
+                )
+                pids = [int(p) for p in result.stdout.strip().split() if p]
+                for pid in pids:
+                    try:
+                        create_time = os.path.getctime(f"/proc/{pid}")
+                        agents.append({
+                            "name": label,
+                            "pid": pid,
+                            "age_s": time.time() - create_time,
+                        })
+                    except (OSError, PermissionError):
+                        pass
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+        return agents
+
+    def _collect_workflows(self) -> None:
+        from .workflows import collect_workflows
+        self.state.tasks = list(self.registry.tasks.values())
+        swarm_agents = [a.as_dict() for a in self.swarm.agents.values()] if self.swarm.agents else None
+        hermes_agents = []
+        st = self.state.stats.get("stats") or {}
+        if isinstance(st, dict):
+            hermes_agents = list(st.get("agents") or [])
+        board_list = None
+        try:
+            board_list = []
+            for b in self.board_store.list_all():
+                bd = b.as_dict()
+                col_data: dict = {}
+                for c in b.cards:
+                    col_data.setdefault(c.column, []).append(c.as_dict())
+                bd["column_data"] = col_data
+                bd["card_count"] = len(b.cards)
+                board_list.append(bd)
+        except Exception:
+            board_list = None
+        ag_entities = None
+        ae = self.state.stats.get("agent_entity")
+        if ae and ae.get("agents"):
+            ag_entities = ae["agents"]
+        ext_cache_ts, ext_cache_data = self._external_agents_cache
+        if time.time() - ext_cache_ts > 5.0:
+            self._external_agents_cache = (time.time(), self._detect_external_agents())
+        external_agents = self._external_agents_cache[1]
+        wrows = collect_workflows(
+            tasks=list(self.registry.tasks.values()),
+            swarm_dashboard=self.state.swarm_dashboard,
+            swarm_agents=swarm_agents,
+            boards=board_list,
+            hermes_agents=hermes_agents,
+            agent_entities=ag_entities,
+            external_agents=external_agents,
+        )
+        self.state.workflows = [w.as_dict() for w in wrows]
+        self.state.workflows_live = sum(
+            1 for w in self.state.workflows
+            if w.get("stage") in ("act", "wait", "blocked", "plan", "failed", "verify")
+        )
 
     def _maybe_rescan_profile(self, profile: dict) -> None:
         """Keep the DATA trackers live: background rescan when stale."""
