@@ -153,7 +153,6 @@ def test_desktop_panel_renders_new_sections():
     async def run():
         app = AiOSApp()
         async with app.run_test(size=(140, 50)):
-            app.action_skip_boot()
             theme = app.cfg["theme"]
             panel = app._desktop_panel(theme)
             # new desktop uses box-drawing layout

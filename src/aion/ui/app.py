@@ -130,12 +130,11 @@ class AiOSApp(App):
         from ..voice.output import VoiceOutput
         self.persona = Persona()
         self.voice_output = VoiceOutput()
-        self._greeted = False
         self._term_pane = None          # mounted TermPane widget (lazy)
         self._term_active = False       # whether the term workspace is active
         from ..observer import Observer
         self.observer = Observer()      # observant AI HUD over the Term pty
-        self._boot_tick = 0             # cinematic boot progress
+
         self._jarvis_tick = 0           # proactive jarvis poll counter
         self._viz_tick = 0              # visualizer animation frame
         self._task_wave_history: list[float] = []  # recent task counts
@@ -174,20 +173,6 @@ class AiOSApp(App):
                               PhysisHarness, AgentEntityHarness, BoardHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
-        # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
-        # only shows once; clear by deleting the flag file to see it again.
-        flag = Path(self.cfg.get("_data_dir", Path.home() / ".aion")) / ".seen_tour"
-        try:
-            seen = flag.exists()
-        except Exception:
-            seen = True
-        if not seen:
-            self.action_tour()
-            try:
-                flag.parent.mkdir(parents=True, exist_ok=True)
-                flag.write_text("1")
-            except Exception:
-                pass
         self.router.register(JoystickInput())
         asyncio.create_task(self.router.start_all())
 
@@ -228,12 +213,6 @@ class AiOSApp(App):
         self.bus.subscribe(TOPIC_VOICE, self._on_voice)
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes_event)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill_event)
-        # Proactive Jarvis-style greeting on first boot
-        greeting = self.persona.greeting()
-        self.query_one("#bottom", expect_type=Static).update(
-            f"[{self.cfg['theme']['accent']}]{greeting}[/]")
-        self._greeted = True
-
     def _tick(self) -> None:
         self._viz_tick += 1
         # track task count history for wave visualizer
@@ -249,10 +228,6 @@ class AiOSApp(App):
 
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
-        # Cinematic boot: progress through boot lines (capped), then release
-        if self._boot_tick < self.BOOT_TICKS:
-            self._boot_tick += 1
-            self._render_center()
         # Proactive Jarvis: every ~10 ticks, scan state for suggestions
         self._jarvis_tick += 1
         if self._jarvis_tick >= 10:
@@ -388,12 +363,6 @@ class AiOSApp(App):
         self._render_all()
 
     def on_key(self, event: events.Key) -> None:
-        # boot skip: any key (except palette/help toggles) ends the intro fast
-        if self._boot_tick < self.BOOT_TICKS and event.key not in ("ctrl+k", "?", "/"):
-            self.action_skip_boot()
-            if event.key == "escape":
-                event.prevent_default()
-            return
         # embedded terminal passthrough (Term workspace). Ctrl-K still opens
         # the palette (so `app <name>` can swap the program), and while the
         # palette is visible its handler below owns the keys.
@@ -601,21 +570,10 @@ class AiOSApp(App):
             cell.set_class(i == self.store.state.active_ws, "focus")
             cell.update(f"[{col}]{mark} {w['icon']} {w['title']}[/]")
 
-    # Cinematic boot sequence — reveals boot lines, then hands over. Capped at
-    # BOOT_SECONDS so it never traps the user (Cycle 7). Any key skips via
-    # action_skip_boot().
-    BOOT_SECONDS = 6
-    BOOT_TICKS = int(BOOT_SECONDS / 1.0)  # _tick runs at 1 Hz
-
     def _render_center(self) -> None:
         theme = self.cfg["theme"]
         ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
         center = self.query_one("#center", expect_type=VerticalScroll)
-
-        # Cinematic boot sequence — renders boot lines the first few seconds
-        if self._boot_tick < self.BOOT_TICKS and ws == "desktop":
-            self._render_boot_sequence(center, theme)
-            return
 
         items = self.store._current_items()
         # rebuild only if the item count changed (structural); else mutate text
@@ -628,26 +586,6 @@ class AiOSApp(App):
             focused = i == self.store.state.focus
             cell.set_class(focused, "focus")
             cell.update(self._center_line(ws, it, focused, theme))
-
-    def _render_boot_sequence(self, center: VerticalScroll, theme: dict) -> None:
-        """Cinematic Jarvis-style boot: reveal lines one-by-one, then hand over."""
-        a, ok_, di = theme["accent"], theme["ok"], theme["dim"]
-        lines = [
-            "INITIALIZING NEURAL INTERFACE",
-            "LOADING HUD MODULES",
-            "CONNECTING AION CORE",
-            "VOICE LINK ESTABLISHED",
-            "MEMORY SYSTEMS SYNCHRONIZED",
-            "ALL SYSTEMS NOMINAL",
-        ]
-        reveal = int(self._boot_tick / self.BOOT_TICKS * len(lines)) + 1
-        out = [f"[{a}]▸ AION BOOT SEQUENCE[/]"]
-        for i, line in enumerate(lines[:reveal]):
-            out.append(f" [{ok_}]▸ {line}  OK[/]")
-        if reveal < len(lines):
-            out.append(f" [{di}]▸ {lines[reveal]} ...[/]")
-        out.append(f" [{di}](any key to skip)[/]")
-        self._set_center_text("\n".join(out), center)
 
     def _set_center_text(self, text: str, center: VerticalScroll) -> None:
         """Render a single string into the center (used for boot + transient views)."""
@@ -1297,126 +1235,43 @@ class AiOSApp(App):
                  f"'remote add <id> <host>:<port>'[/]")
         return "\n".join(p)
 
-    def _right_viz_block(self, theme: dict) -> list[str]:
-        """Return animated visualizer lines for the right rail."""
-        from .visualizers import spectrum_eq, task_wave, pulse_radar
-        a = theme["accent"]
-        di = theme["dim"]
-        st = self.store.state.stats
-        sys_ = st.get("system") or {}
-
-        # Pick viz based on tick
-        phase = (self._viz_tick // 10) % 3
-
-        if phase == 0 and sys_.get("ok"):
-            cpu = sys_["cpu"]["total_pct"] / 100.0
-            mem = sys_["mem"]["pct"] / 100.0
-            disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0
-            running_count = sum(1 for t in self.store.registry.tasks.values()
-                                if t.state.value in ("running", "pending"))
-            vals = [cpu, mem, disk_pct, min(running_count / 3.0, 1.0)]
-            labels = ["CPU", "RAM", "DSK", "TASK"]
-            viz = spectrum_eq(vals, self._viz_tick, height=4, labels=labels)
-            header = f"[{a}]◈ SPECTRUM[/]"
-        elif phase == 1:
-            hist = self._task_wave_history[-24:] if self._task_wave_history else [0.0]
-            viz = task_wave(hist, self._viz_tick, width=24, label="ACTIVITY")
-            header = f"[{a}]◈ WAVE[/]"
-        else:
-            running_count = sum(1 for t in self.store.registry.tasks.values()
-                                if t.state.value in ("running", "pending"))
-            sesh_count = len(self.store.state.stats.get("stats", {}).get("agents", []))
-            rings = [
-                {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
-                 "items": [f"t{i}" for i in range(min(running_count, 12))]},
-                {"label": "AGENTS", "value": min(sesh_count / 5.0, 1.0),
-                 "items": [f"s{i}" for i in range(min(sesh_count, 12))]},
-            ]
-            viz = pulse_radar(rings, self._viz_tick, size=12)
-            header = f"[{a}]◈ RADAR[/]"
-
-        out = [header]
-        for line in viz.split("\n"):
-            out.append(f"  {line}")
-        out.append("")
-        return out
-
     def _render_right(self) -> None:
         theme = self.cfg["theme"]
         right = self.query_one("#right", expect_type=VerticalScroll)
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
-        lines = self._right_viz_block(theme)
-        # ---- Workflow Pulse (replaces one viz slot when workflows live) ----
+        lines: list[str] = []
+        # ---- Workflow Pulse (always, replaces decorative viz) ----
         wf = self.store.state.workflows
         if wf:
             from ..workflows import workflow_pulse
             pulse = workflow_pulse(wf, theme, max_rows=3)
-            if len(pulse) > 1:
-                # replace decorative viz header with WORKFLOWS header
-                lines = pulse + [""] + lines[1:]
-        # ---- Observant AI HUD: status of the program in the Term pane ----
-        if self.observer.active:
-            lines.append(f"[{theme['accent']}]OBSERVER[/]")
-            lines.append(f"[{theme['warn']}]{self.observer.status_line}[/]")
-            if self.observer.ai_line:
-                lines.append(f"[{theme['ok']}]{self.observer.ai_line}[/]")
-            elif not self.store.state.observer_ai:
-                lines.append(f"[{theme['dim']}]Ctrl-K: observe ai[/]")
-            lines.append("")
-        lines.append(f"[{theme['accent']}]LIVE TASKS[/]")
+            lines.extend(pulse)
+            if pulse:
+                lines.append("")
+        # ---- LIVE TASKS (compact) ----
+        lines.append(f"[{a}]TASKS[/]")
         if not running:
-            lines.append(f"[{theme['dim']}](idle)[/]")
+            lines.append(f" [{di}](idle)[/]")
+        else:
+            wlive = self.store.state.workflows_live
+            hdr = f" ●{len(running)}" + (f"  ◆{wlive} wf" if wlive else "")
+            lines[-1] = f"[{a}]TASKS[/][{wa}]{hdr}[/]"
         for t in running:
-            lines.append(f"[{theme['accent']}]{t.id}[/] {t.label[:18]}")
-            lines.append(f"  [{theme['warn']}]{t.state.value}{' ⏸' if t.paused else ''}[/] {bar(t.progress)}")
+            lines.append(f" [{wa}]●[/] [{di}]{t.label[:20]}[/] {bar(t.progress, width=10, color=wa)}")
+        # ---- Telemetry one-liner ----
         tel = self.store.state.stats.get("telemetry")
         if tel:
             bits = []
             if "vram_bytes" in tel:
-                bits.append(f"vram {tel['vram_bytes']//(1024*1024)}MB")
+                bits.append(f"vram{tel['vram_bytes']//(1024*1024)}MB")
             if "loaded_models" in tel:
-                bits.append(f"models {tel['loaded_models']}")
+                bits.append(f"mod{tel['loaded_models']}")
             if "gpu_util_pct" in tel:
-                bits.append(f"gpu {tel['gpu_util_pct']}%")
-            if "gpu_mem_mb" in tel:
-                bits.append(f"gmem {tel['gpu_mem_mb']}MB")
+                bits.append(f"gpu{tel['gpu_util_pct']}%")
             if bits:
-                lines.append(f"[{theme['dim']}]{' · '.join(bits)}[/]")
-        # ---- Jarvis HUD: per-model token burn + live agent census --------
-        st = self.store.state.stats.get("stats")
-        if st and st.get("ok"):
-            from ..stats import human_tokens
-            models = st.get("models", [])
-            if models:
-                lines.append("")
-                lines.append(f"[{theme['accent']}]TOKENS · {st.get('window','today')}[/]")
-                top = models[:5]
-                maxtot = max((m["tot"] for m in top), default=1) or 1
-                for m in top:
-                    nm = m["model"].split("/")[-1][:16]
-                    meter = bar(m["tot"] / maxtot, width=10, color=theme["accent"])
-                    lines.append(f"[{theme['dim']}]{nm}[/]")
-                    lines.append(f"  {meter} [{theme['dim']}]{human_tokens(m['tot'])}[/]")
-            agents = st.get("agents", [])
-            ext_workflows = [w for w in self.store.state.workflows if w.get("kind") == "tool"] if self.store.state.workflows else []
-            total_live = st.get('live', 0) + len(ext_workflows)
-            lines.append("")
-            lines.append(f"[{theme['accent']}]LIVE AGENTS[/] [{theme['warn']}]◆{total_live}[/]")
-            for a in agents[:6]:
-                where = a.get("branch") or a.get("repo") or a["model"].split("/")[-1][:12]
-                mins = a.get("age_s", 0) // 60
-                lines.append(f"[{theme['accent']}]●[/] [{theme['dim']}]{where[:16]} "
-                             f"{a.get('msgs',0)}m {mins}′[/]")
-            for w in ext_workflows[:4]:
-                name = str(w.get("title", "tool"))[:14]
-                age = int(w.get("age_s", 0)) // 60
-                lines.append(f"[{theme['warn']}]●[/] [{theme['dim']}]{name}[/]  [{theme['dim']}]{age}′[/]")
-            if not agents and not ext_workflows:
-                lines.append(f"[{theme['dim']}](none active)[/]")
-        elif st is not None and not st.get("ok"):
-            lines.append("")
-            lines.append(f"[{theme['dim']}](state.db unavailable)[/]")
+                lines.append(f" [{di}]{' '.join(bits)}[/]")
         # rebuild right rail only when line count changes (rare)
         if len(self._right) != len(lines):
             for c in self._right:
@@ -1428,18 +1283,15 @@ class AiOSApp(App):
 
     def _render_bottom(self) -> None:
         theme = self.cfg["theme"]
-        if not self._greeted:
-            self._greeted = True
-            greeting = self.persona.greeting()
-            self.query_one("#bottom", expect_type=Static).update(
-                f"[{theme['accent']}]{greeting}[/]"
-            )
-            return
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
         running = any(t.state.value == "running"
                       for t in self.store.registry.tasks.values())
-        hint = "tasks in progress" if running else "awaiting your command"
-        h = self.store.state.history[-1] if self.store.state.history else hint
-        self.query_one("#bottom", expect_type=Static).update(f"[{theme['dim']}]{h}[/]")
+        cmd = self.store.state.last_command or ""
+        tag = f" [{wa}]●{sum(1 for t in self.store.registry.tasks.values() if t.state.value=='running')}[/]" if running else ""
+        self.query_one("#bottom", expect_type=Static).update(
+            f"[{a}]▶[/] "
+            f"[{di if not cmd else ok_}]{cmd[:40] or 'todo, swarm, compare, or just type it'}[/]{tag}"
+            f"  [{di}]Ctrl-K[/]")
 
     WALKTHROUGH = [
         ("Welcome to aion", "This is your AI cockpit. Navigate with ↑↓ (or j/k), switch panels with ←→ (or h/l)."),
@@ -1530,12 +1382,6 @@ class AiOSApp(App):
                  "You can rerun this wizard anytime: Ctrl-K → 'setup wizard'\n\n"
                  "Press Enter to finish."},
     ]
-
-    def action_skip_boot(self) -> None:
-        """Skip the cinematic boot sequence (any key during boot)."""
-        if self._boot_tick < self.BOOT_TICKS:
-            self._boot_tick = self.BOOT_TICKS
-            self._render_center()
 
     def action_act(self) -> None:
         """Act on the top Jarvis suggestion (Cycle 6 — actionable Jarvis).
