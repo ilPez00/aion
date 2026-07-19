@@ -27,6 +27,9 @@ from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
 from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
 from .dashboard import collect_dashboard
 from .physis import get_client as _get_physis  # coherence brain (soft-fails if down)
+from .context import ContextRouter
+from .agents import AgentStore
+from .board import BoardStore
 
 
 
@@ -54,6 +57,7 @@ class ViewState:
     suggestions: list[str] = field(default_factory=list)    # proactive jarvis
     term_command: str = ""        # app command for the Term workspace ("" = default btop)
     observer_ai: bool = False     # opt-in LLM layer of the Term observer HUD
+    last_command: str = ""        # most recent command text (for context routing)
 
 
 class Store:
@@ -74,6 +78,8 @@ class Store:
         self.memory = MemoryStore()
         from .todos import TodoStore
         self.todos = TodoStore()
+        self.agent_store = AgentStore()
+        self.board_store = BoardStore()
         self._profile_scanning = False
         self.chat = ChatSession()
         self.swarm = SwarmOrchestrator(bus=self.bus)
@@ -134,65 +140,113 @@ class Store:
         if ws == "desktop":
             d = collect_dashboard(self.state, self.cfg, todos=self.todos)
             self._maybe_rescan_profile(d.profile)
-            return [{"type": "dashboard", "data": d.as_dict()}]
-        if ws == "models":
-            return [{"id": h, "name": self.harnesses[h].name,
-                     "vram": self.harnesses[h].vram_mb,
-                     "tier": self.harnesses[h].tier,
-                     "running": self._running_for(h)} for h in self.harnesses]
-        if ws == "tasks":
-            return [t.as_dict() for t in self.registry.tasks.values()]
-        if ws == "memory":
-            return self.memory.items()
-        if ws == "hermes":
-            asyncio.create_task(self._load_hermes_data())
-            return [{"id": t["id"], "title": t["title"], "status": t["status"],
-                     "assignee": t.get("assignee", "")}
-                    for t in self.state.hermes_kanban]
-        if ws == "skills":
-            asyncio.create_task(self._load_skills_data())
-            return [{"id": s.get("name", s.get("id", "")), "name": s.get("name", ""),
-                     "description": s.get("description", ""), "source": s.get("source", "")}
-                    for s in self.state.skills]
-        if ws == "projects":
+            # merge project stats into desktop dashboard
             pj = self.state.stats.get("projects")
-            if pj and pj.get("projects"):
-                return list(pj["projects"])
-            return []
+            proj_data = list(pj["projects"]) if pj and pj.get("projects") else []
+            # merge recent AI sessions from Hermes/opencode
+            st = self.state.stats.get("stats", {})
+            recent_sessions = st.get("recent_sessions", []) if isinstance(st, dict) else []
+            # merge interrupted tasks
+            interrupted = [t.as_dict() for t in self.registry.tasks.values()
+                          if t.state.value == "interrupted"]
+            dashboard = d.as_dict()
+            dashboard["projects"] = proj_data
+            dashboard["recent_sessions"] = recent_sessions
+            dashboard["interrupted_tasks"] = interrupted
+            return [{"type": "dashboard", "data": dashboard}]
+        if ws == "models":
+            ctx = ContextRouter().resolve(self)
+            domain_val = ctx.domain.value
+            active_id = self.state.active_harness
+            items = []
+            for hid, h in self.harnesses.items():
+                tags = h.cfg.context_tags
+                if domain_val in tags or hid == active_id:
+                    items.append({
+                        "id": hid, "name": h.name, "vram": h.vram_mb,
+                        "tier": h.tier, "running": self._running_for(hid),
+                        "context_tag": domain_val if domain_val in tags else "active",
+                    })
+            # Show active harness first, then context-match, then rest
+            matched = [i for i in items if i["context_tag"] != "active"]
+            rest = [i for i in items if i["context_tag"] == "active"]
+            if active_id and not any(i["id"] == active_id for i in items):
+                h = self.harnesses.get(active_id)
+                if h:
+                    rest.append({"id": active_id, "name": h.name, "vram": h.vram_mb,
+                                 "tier": h.tier, "running": self._running_for(active_id),
+                                 "context_tag": "active"})
+            return matched + rest
+        if ws == "tasks":
+            items = [t.as_dict() for t in self.registry.tasks.values()]
+            # merge board kanban data
+            bd = self.state.stats.get("board")
+            if bd and bd.get("ok"):
+                items.append({"type": "board", "boards": bd.get("boards", [])})
+            return items
         if ws == "settings":
             asyncio.create_task(self._load_settings_data())
-            return [{"id": k, "endpoint": v.get("endpoint", ""),
-                     "key_preview": v.get("key_preview", "")}
-                    for k, v in self.state.settings_providers.items()]
+            asyncio.create_task(self._load_skills_data())
+            providers = [{"id": k, "endpoint": v.get("endpoint", ""),
+                          "key_preview": v.get("key_preview", "")}
+                         for k, v in self.state.settings_providers.items()]
+            # merge skills data
+            skills = [{"type": "skill", "id": s.get("name", s.get("id", "")),
+                       "name": s.get("name", ""),
+                       "description": s.get("description", ""),
+                       "source": s.get("source", "")}
+                      for s in self.state.skills]
+            return providers + skills
         if ws == "vault":
             v = self.state.stats.get("vault")
+            items = []
             if v and v.get("ok"):
-                return list(v.get("nodes", []))
-            return [{"name": "(none)", "title": "vault not loaded",
-                     "preview": v.get("error", "") if v else ""}]
-        if ws == "sys":
+                items = list(v.get("nodes", []))
+            else:
+                items = [{"name": "(none)", "title": "vault not loaded",
+                          "preview": v.get("error", "") if v else ""}]
+            # merge memory facts
+            memory_items = [{"type": "memory_fact", "n": m["n"], "text": m["text"],
+                             "when": m.get("when", "")}
+                            for m in self.memory.items()]
+            return items + memory_items
+        if ws in ("system", "sys"):
             return [{"kind": "live"}]  # rendered specially from stats
         if ws == "agent":
-            cr = self.state.compare_result
-            if cr and cr.get("answers"):
-                # side-by-side compare takes over the agent workspace
-                return [{"type": "compare", "prompt": cr.get("prompt", ""),
-                         "answers": cr["answers"], "done": cr.get("done", False)}]
-            msgs = format_conversation(self.chat)
-            return [{"type": "chat", "messages": msgs}] if msgs else []
-        if ws == "swarm":
+            ag = self.state.stats.get("agent_entity")
             s = self.state.swarm_dashboard
+            cr = self.state.compare_result
+            mode = ContextRouter().agent_mode_for(self)
+            if mode == "swarm" and s:
+                return [{"type": "swarm_dashboard", "data": s,
+                         "mode_label": "SWARM"}]
+            if mode == "compare" and cr and cr.get("answers"):
+                return [{"type": "compare", "prompt": cr.get("prompt", ""),
+                         "answers": cr["answers"], "done": cr.get("done", False),
+                         "mode_label": "COMPARE"}]
+            if mode == "agents" and ag and ag.get("ok"):
+                return [{"type": "agents", "agents": ag.get("agents", []),
+                         "health_context": ag.get("health_context", {}),
+                         "mode_label": "AGENTS"}]
+            if ag and ag.get("ok"):
+                return [{"type": "agents", "agents": ag.get("agents", []),
+                         "health_context": ag.get("health_context", {}),
+                         "mode_label": "AGENTS"}]
             if s:
-                return [{"type": "dashboard", "data": s}]
-            return [{"type": "empty", "label": "No active swarm. Use 'swarm create <goal>' to start."}]
-        if ws == "physis":
-            ph = self.state.stats.get("physis")
-            if ph:
-                return [{"type": "physis", "degraded": ph.get("degraded", False),
-                         "kind": ph.get("kind", "?"),
-                         "semantic": ph.get("semantic", False),
-                         "graph": ph.get("graph", {})}]
-            return [{"type": "empty", "label": "physis engine offline — start physis-pro-web (:19876)."}]
+                return [{"type": "swarm_dashboard", "data": s,
+                         "mode_label": "SWARM"}]
+            if cr and cr.get("answers"):
+                return [{"type": "compare", "prompt": cr.get("prompt", ""),
+                         "answers": cr["answers"], "done": cr.get("done", False),
+                         "mode_label": "COMPARE"}]
+            msgs = format_conversation(self.chat)
+            if msgs:
+                return [{"type": "chat", "messages": msgs,
+                         "mode_label": "CHAT"}]
+            return [{"type": "empty",
+                     "label": "Agent workspace. Create agents, spawn a swarm, or start a chat."}]
+        if ws == "term":
+            return [{"kind": "terminal"}]
         return []
 
     def _maybe_rescan_profile(self, profile: dict) -> None:
@@ -356,6 +410,7 @@ class Store:
 
     async def _run_command(self, text: str, _interpreted: bool = False) -> None:
         self.state.history.append(text)
+        self.state.last_command = text
         parts = text.split(" ", 1)
         if parts[0] == "goto" and len(parts) == 2:
             ws_ids = [w["id"] for w in self.cfg["workspaces"]]
@@ -368,11 +423,13 @@ class Store:
                 self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "help":
+            if len(parts) > 1 and parts[1] == "manual":
+                return
             self.state.logs.extend([
                 "Just type what you want — e.g.:",
-                "  'open mail' · 'edit plan.md' · 'todo buy milk' · 'done 1'",
-                "  'i use this for coding and writing' · 'scan' · 'watch this'",
-                "  'go to vault' · press ? for keys",
+                "  'todo buy milk' · 'agent create Alice' · 'swarm research'",
+                "  'compare explain recursion' · 'goto vault'",
+                "  'help manual' for full reference · press ? for keys",
             ])
             self.state.logs = self.state.logs[-50:]
             return
@@ -382,8 +439,8 @@ class Store:
         if parts[0] == "mem":
             self.memory.query = parts[1] if len(parts) == 2 else ""
             ws_ids = [w["id"] for w in self.cfg["workspaces"]]
-            if "memory" in ws_ids:
-                self.state.active_ws = ws_ids.index("memory")
+            if "vault" in ws_ids:
+                self.state.active_ws = ws_ids.index("vault")
                 self.state.focus = 0
             return
         if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
@@ -488,6 +545,12 @@ class Store:
             self._set_mode(mode_id)
             return
         # Swarm orchestration
+        if parts[0] == "agent" and len(parts) >= 2:
+            await self._agent_command(text)
+            return
+        if parts[0] == "board" and len(parts) >= 2:
+            await self._board_command(text)
+            return
         if parts[0] == "swarm" and len(parts) >= 2:
             await self._swarm_command(text)
             return
@@ -597,6 +660,139 @@ class Store:
             self.state.history.append("swarm: all agents stopped")
         else:
             self.state.history.append(f"unknown swarm subcommand: {sub}")
+
+    async def _agent_command(self, text: str) -> None:
+        parts = text.split()
+        if len(parts) < 2:
+            self.state.history.append("usage: agent create <name> [goal] | assign <name> <goal> | status | forget <name>")
+            return
+        sub = parts[1]
+        rest = " ".join(parts[2:]) if len(parts) > 2 else ""
+        if sub == "create" and rest:
+            name = parts[2] if len(parts) > 2 else ""
+            goal = " ".join(parts[3:]) if len(parts) > 3 else ""
+            if not name:
+                self.state.history.append("agent create: need a name")
+                return
+            a = self.agent_store.create(name, goal)
+            self.state.history.append(f"agent created: {a.name} (id={a.id[:8]})")
+            return
+        if sub == "assign" and len(parts) >= 4:
+            name = parts[2]
+            goal = " ".join(parts[3:])
+            a = self.agent_store.get_by_name(name)
+            if a is None:
+                self.state.history.append(f"agent '{name}' not found")
+                return
+            self.agent_store.set_goal(a.id, goal)
+            # also try to assign any unassigned board cards
+            for b in self.board_store.list_all():
+                for c in b.cards:
+                    if c.column == "backlog" and c.agent_id is None:
+                        self.board_store.assign_card(b.id, c.id, a.id)
+                        self.agent_store.assign_task(a.id, c.id)
+                        self.state.history.append(f"card '{c.title}' assigned to {a.name}")
+                        break
+            self.state.history.append(f"agent '{name}' assigned goal: {goal[:40]}")
+            return
+        if sub == "status":
+            agents = self.agent_store.list_all()
+            if not agents:
+                self.state.history.append("No agents.")
+                return
+            for a in agents:
+                self.state.history.append(f"{a.name} ({a.status.value}) goal: {a.goal[:40]}")
+            return
+        if sub == "forget" and rest:
+            a = self.agent_store.get_by_name(rest)
+            if a is None:
+                self.state.history.append(f"agent '{rest}' not found")
+                return
+            self.agent_store.delete(a.id)
+            self.state.history.append(f"agent '{a.name}' removed")
+            return
+        if sub == "list":
+            agents = self.agent_store.list_all()
+            if not agents:
+                self.state.history.append("No agents.")
+                return
+            for a in agents:
+                mem_note = f" ({a.memory_entries} mem)" if a.memory_entries else ""
+                self.state.history.append(f"  {a.name} [{a.status.value}]{mem_note} goal: {a.goal[:40]}")
+            return
+        self.state.history.append(f"unknown agent subcommand: {sub}")
+
+    async def _board_command(self, text: str) -> None:
+        parts = text.split()
+        if len(parts) < 2:
+            self.state.history.append("usage: board create <title> | add <title> <card> | move <id> <col> | assign <id> <agent> | list")
+            return
+        sub = parts[1]
+        rest = " ".join(parts[2:]) if len(parts) > 2 else ""
+        if sub == "create" and rest:
+            b = self.board_store.create(rest)
+            self.state.history.append(f"board created: '{b.title}' (id={b.id[:8]})")
+            return
+        if sub == "add" and len(parts) >= 4:
+            board_title = parts[2]
+            card_title = " ".join(parts[3:])
+            b = self.board_store.get_by_title(board_title)
+            if b is None:
+                self.state.history.append(f"board '{board_title}' not found")
+                return
+            card = self.board_store.add_card(b.id, card_title)
+            self.state.history.append(f"card added: '{card_title}' to '{board_title}'")
+            return
+        if sub == "move" and len(parts) >= 4:
+            card_id = parts[2]
+            to_col = parts[3]
+            for b in self.board_store.list_all():
+                card = b.get_card(card_id)
+                if card:
+                    self.board_store.move_card(b.id, card_id, to_col)
+                    self.state.history.append(f"card '{card_id}' moved to '{to_col}'")
+                    return
+            self.state.history.append(f"card '{card_id}' not found")
+            return
+        if sub == "assign" and len(parts) >= 4:
+            card_id = parts[2]
+            agent_name = parts[3]
+            agent = self.agent_store.get_by_name(agent_name)
+            if agent is None:
+                self.state.history.append(f"agent '{agent_name}' not found")
+                return
+            for b in self.board_store.list_all():
+                card = b.get_card(card_id)
+                if card:
+                    self.board_store.assign_card(b.id, card_id, agent.id)
+                    self.agent_store.assign_task(agent.id, card_id)
+                    self.state.history.append(f"card '{card_id}' assigned to {agent_name}")
+                    return
+            self.state.history.append(f"card '{card_id}' not found")
+            return
+        if sub == "list":
+            boards = self.board_store.list_all()
+            if not boards:
+                self.state.history.append("No boards.")
+                return
+            for b in boards:
+                counts = {col: len(b.cards_in_column(col)) for col in b.columns}
+                self.state.history.append(f"  {b.title} ({b.cards} cards: {counts})")
+            return
+        if sub == "cards" and rest:
+            b = self.board_store.get_by_title(rest)
+            if b is None:
+                self.state.history.append(f"board '{rest}' not found")
+                return
+            for col in b.columns:
+                cards = b.cards_in_column(col)
+                if cards:
+                    self.state.history.append(f"  [{col}]")
+                    for c in cards:
+                        agent_tag = f" @{c.agent_id[:8]}" if c.agent_id else ""
+                        self.state.history.append(f"    {c.id} {c.title}{agent_tag}")
+            return
+        self.state.history.append(f"unknown board subcommand: {sub}")
 
     async def _chat(self, message: str) -> None:
         """Send a message to the inline LLM agent (tool-calling loop)."""

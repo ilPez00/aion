@@ -120,4 +120,4 @@ def test_help_command_logs_examples(tmp_path):
     async def run():
         await st._run_command("help")
     asyncio.run(run())
-    assert any("open mail" in line for line in st.state.logs)
+    assert any("todo buy milk" in line for line in st.state.logs)

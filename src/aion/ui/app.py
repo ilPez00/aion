@@ -25,7 +25,7 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, AgentEntityHarness, BoardHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
@@ -136,6 +136,8 @@ class AiOSApp(App):
         self.observer = Observer()      # observant AI HUD over the Term pty
         self._boot_tick = 0             # cinematic boot progress
         self._jarvis_tick = 0           # proactive jarvis poll counter
+        self._viz_tick = 0              # visualizer animation frame
+        self._task_wave_history: list[float] = []  # recent task counts
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
 
@@ -147,7 +149,7 @@ class AiOSApp(App):
             yield VerticalScroll(id="center")
             yield VerticalScroll(id="right")
         yield Static("", id="bottom")
-        yield Input(placeholder="› say what you want — open mail · edit plan.md · todo buy milk · i use this for coding · watch this", id="palette")
+        yield Input(placeholder="Ctrl-K: ask or command — try 'todo buy milk', 'help manual', 'agent create Alice'", id="palette")
         yield Static("", id="help")
 
     async def on_mount(self) -> None:
@@ -158,7 +160,7 @@ class AiOSApp(App):
         for h in self.harnesses.values():
             if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness,
                               SystemHarness, HealthHarness, VaultHarness,
-                              PhysisHarness)):
+                              PhysisHarness, AgentEntityHarness, BoardHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
@@ -191,6 +193,13 @@ class AiOSApp(App):
         self._greeted = True
 
     def _tick(self) -> None:
+        self._viz_tick += 1
+        # track task count history for wave visualizer
+        running = sum(1 for t in self.store.registry.tasks.values()
+                      if t.state.value in ("running", "pending"))
+        self._task_wave_history.append(running / max(1, running + 1))
+        self._task_wave_history = self._task_wave_history[-40:]
+
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
         # Cinematic boot: progress through boot lines (capped), then release
@@ -202,9 +211,9 @@ class AiOSApp(App):
         if self._jarvis_tick >= 10:
             self._jarvis_tick = 0
             self._poll_jarvis()
-        # projects + vault + sys workspaces poll on a timer, not on input
+        # workspaces that poll on a timer, not on input
         wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
-        if wid in ("projects", "vault", "sys"):
+        if wid in ("vault", "system", "sys", "desktop"):
             self._render_center()
         self._sync_term_pane()
         self._tick_observer()
@@ -373,6 +382,8 @@ class AiOSApp(App):
                         asyncio.create_task(self.router.emit(Intent.compare(text[8:].strip())))
                     elif text.lower().startswith("tour"):
                         self.action_tour()
+                    elif text.lower() in ("manual", "help manual") or text.lower().startswith("manual "):
+                        self.action_manual()
                     else:
                         asyncio.create_task(self.router.emit(Intent.command(text)))
                 event.prevent_default()
@@ -407,8 +418,15 @@ class AiOSApp(App):
         if h.display:
             h.display = False
         else:
-            h.update(self._help_text())
+            h.update(self._help_text(extended=False))
             h.display = True
+
+    def action_manual(self) -> None:
+        h = self.query_one("#help")
+        if h.display:
+            h.display = False
+        h.update(self._help_text(extended=True))
+        h.display = True
 
     def action_back(self) -> None:
         if self.query_one("#palette").display:
@@ -554,9 +572,14 @@ class AiOSApp(App):
         col = theme["accent"] if focused else theme["dim"]
         if ws == "models":
             mark = "●" if it["id"] == self.store.state.active_harness else " "
-            return (f"[{col}]{f}{mark} {it['name']}[/]  "
-                    f"[{theme['dim']}]tier:{it['tier']} vram:{it['vram']}MB run:{it['running']}[/]")
+            tag = it.get("context_tag", "")
+            tag_label = f"[{theme['ok']}]●[/]" if tag == "active" else f"[{theme['dim']}]·[/]"
+            return (f"[{col}]{f}{tag_label} {it['name']}[/]"
+                    f"  [{theme['dim']}]run:{it['running']}[/]")
         if ws == "tasks":
+            # board panel item embedded in tasks list
+            if it.get("type") == "board":
+                return self._board_panel(theme, item=it)
             st = it["state"]
             scol = {"running": theme["warn"], "done": theme["ok"], "failed": theme["err"],
                     "pending": theme["dim"], "cancelled": theme["dim"],
@@ -567,90 +590,40 @@ class AiOSApp(App):
             return (f"[{col}]{f}{it['id']} {it['label']}[/]\n"
                     f"  [{scol}]{st}{' (paused)' if it.get('paused') else ''}[/] "
                     f"{bar(it['progress'])} [{theme['dim']}]{eta}{note}[/]")
-        if ws == "memory":
-            q = self.store.memory.query
-            head = f" [filter: {q}]" if q else ""
-            return (f"[{col}]{f}#{it['n']} {it['text']}[/]  "
-                    f"[{theme['dim']}]{it['when']}{head}[/]")
-        if ws == "hermes":
-            status = it.get("status", "?")
-            scol = {"done": theme["ok"], "ready": theme["warn"],
-                    "blocked": theme["err"]}.get(status, theme["dim"])
-            emoji = {"done": "✓", "ready": "▶", "blocked": "⊘",
-                     "in_progress": "●"}.get(status, "○")
-            return (f"[{col}]{f}{emoji} {it['title'][:50]}[/]\n"
-                    f"  [{scol}]{status}[/] "
-                    f"[{theme['dim']}]assignee: {it.get('assignee','-')}[/]")
-        if ws == "skills":
-            desc = it.get("description", "")[:60]
-            return (f"[{col}]{f}{it.get('name','?')}[/]  "
-                    f"[{theme['dim']}]{desc}[/]")
-        if ws == "projects":
-            return self._project_card(it, focused, theme)
         if ws == "settings":
+            if it.get("type") == "skill":
+                desc = it.get("description", "")[:60]
+                return (f"[{col}]{f}{it.get('name','?')}[/]  "
+                        f"[{theme['dim']}]{desc}[/]")
             ep = it.get("endpoint", "")
             key = it.get("key_preview", "")
             return (f"[{col}]{f}{it['id']}[/]\n"
                     f"  [{theme['dim']}]{ep}[/]\n"
                     f"  [{theme['ok'] if key else theme['err']}]{key}[/]")
         if ws == "vault":
+            if it.get("type") == "memory_fact":
+                q = self.store.memory.query
+                head = f" [filter: {q}]" if q else ""
+                return (f"[{col}]{f}◎ #{it['n']} {it['text']}[/]  "
+                        f"[{theme['dim']}]{it['when']}{head}[/]")
             return self._vault_line(it, focused, theme)
-        if ws == "sys":
+        if ws in ("system", "sys"):
             return self._sys_panel(theme)
-        if ws == "swarm":
-            return self._swarm_panel(theme)
-        if ws == "physis":
-            return self._physis_panel(theme)
         if ws == "desktop":
             return self._desktop_panel(theme)
-        if ws == "tasks":
-            return self._tasks_panel(theme)
         if ws == "agent":
-            return self._agent_panel(theme)
-        # agent log
+            mode_label = it.get("mode_label", "")
+            mode_line = f"[{theme['accent']}]◈ {mode_label}[/]\n[{theme['dim']}]" + "─" * 40 + "[/]\n" if mode_label else ""
+            if it.get("type") == "agents":
+                return mode_line + self._agent_cards_panel(theme)
+            if it.get("type") == "swarm_dashboard":
+                return mode_line + self._swarm_panel(theme, item=it)
+            if it.get("type") in ("compare", "chat"):
+                return mode_line + self._agent_panel(theme)
+            return mode_line + self._agent_panel(theme)
+        # agent log fallback
         tail = "\n".join(self.store.state.logs[-40:]) or "[agent] no output yet — run a harness"
         return f"[{theme['dim']}]{tail}[/]"
-
-    def _project_card(self, it: dict, focused: bool, theme: dict) -> str:
-        f = "▌" if focused else " "
-        col = theme["accent"] if focused else theme["dim"]
-        name = it.get("name", "?")
-        if not it.get("exists"):
-            return f"[{col}]{f}{name}[/]  [{theme['err']}]missing[/]"
-        if not it.get("is_git"):
-            return f"[{col}]{f}{name}[/]  [{theme['warn']}]{it.get('error','not git')}[/]"
-        branch = it.get("branch", "?")
-        dirty = it.get("dirty", 0)
-        ahead, behind = it.get("ahead", 0), it.get("behind", 0)
-        # status glyphs: clean vs dirty, ahead/behind arrows
-        dcol = theme["warn"] if dirty else theme["ok"]
-        dtxt = f"±{dirty}" if dirty else "clean"
-        sync = ""
-        if ahead:
-            sync += f" [{theme['accent']}]↑{ahead}[/]"
-        if behind:
-            sync += f" [{theme['err']}]↓{behind}[/]"
-        prs = it.get("open_prs")
-        prtxt = f" [{theme['accent']}]PR:{prs}[/]" if prs else ""
-        # session activity
-        act = ""
-        if it.get("sessions_today"):
-            from ..stats import human_tokens
-            act = (f" [{theme['dim']}]· {it['sessions_today']} sess "
-                   f"{human_tokens(it.get('tokens_today',0))} tok today[/]")
-        elif it.get("last_session_age_s") is not None:
-            mins = int(it["last_session_age_s"] // 60)
-            act = f" [{theme['dim']}]· last active {mins}′ ago[/]"
-        # last commit + age
-        lc = it.get("last_commit", "")
-        cage = ""
-        if it.get("last_commit_age_s") is not None:
-            h = it["last_commit_age_s"] / 3600
-            cage = f"{int(h)}h" if h < 48 else f"{int(h/24)}d"
-        return (f"[{col}]{f}⬢ {name}[/] [{theme['dim']}]{branch}[/] "
-                f"[{dcol}]{dtxt}[/]{sync}{prtxt}{act}\n"
-                f"  [{theme['dim']}]{lc[:56]}[/] "
-                f"[{theme['dim']}]{cage}[/]")
 
     def _vault_line(self, it: dict, focused: bool, theme: dict) -> str:
         f = "▌" if focused else " "
@@ -675,8 +648,31 @@ class AiOSApp(App):
         """Iron Man HUD: computer + real-life stats, rendered as gauges."""
         from .gauges import (hbar, core_grid, sparkline, metric, gauge_panel,
                              mem_readable, bytes_per_sec)
+        from .visualizers import holo_gauge, spectrum_eq
         st = self.store.state.stats
         blocks: list[str] = []
+
+        # ── Holo Gauges ───────────────────────────────────────────────────
+        sys_ = st.get("system")
+        if sys_ and sys_.get("ok"):
+            cpu_pct = sys_["cpu"]["total_pct"] / 100.0
+            mem_pct = sys_["mem"]["pct"] / 100.0
+            disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0
+            gauges = [
+                holo_gauge(cpu_pct, self._viz_tick, width=14, label="CPU", color=theme["warn"]),
+                holo_gauge(mem_pct, self._viz_tick, width=14, label="RAM", color=theme["accent"]),
+                holo_gauge(disk_pct, self._viz_tick, width=14, label="DSK", color=theme["warn"]),
+            ]
+            gauge_lines = [g.split("\n") for g in gauges]
+            # merge side by side: row by row
+            merged = []
+            for row_i in range(3):  # 3 lines per gauge
+                parts = []
+                for g in gauge_lines:
+                    if row_i < len(g):
+                        parts.append(g[row_i])
+                merged.append("  ".join(parts))
+            blocks.append("\n".join(merged))
 
         # ---- COMPUTER (system) ----
         sys_ = st.get("system")
@@ -722,6 +718,28 @@ class AiOSApp(App):
         else:
             blocks.append(gauge_panel("COMPUTER", "[#5a6b7b](stats unavailable)[/]", theme["accent"]))
 
+        # ---- THERMAL (CPU/thermal sensors) ----
+        th = sys_.get("thermal") if sys_ and sys_.get("ok") else None
+        if th:
+            cpu = th.get("cpu") or []
+            other = th.get("other") or []
+            lines = []
+            if cpu:
+                max_c = th.get("max_cpu_c", max((t["current"] for t in cpu), default=0))
+                lines.append(metric("max", f"{max_c:.1f}", "°C", theme["err"] if max_c > 85 else theme["warn"] if max_c > 70 else theme["ok"]))
+                for t in cpu[:4]:  # top 4 cpu sensors
+                    label = t["label"]
+                    c = t["current"]
+                    col = theme["err"] if c > 85 else theme["warn"] if c > 70 else theme["ok"]
+                    lines.append(f"  {metric(label, f'{c:.1f}', '°C', col)}")
+            if other:
+                for t in other[:4]:  # top 4 other sensors
+                    label = t["label"]
+                    c = t["current"]
+                    lines.append(f"  {metric(label, f'{c:.1f}', '°C', theme['dim'])}")
+            if lines:
+                blocks.append(gauge_panel("THERMAL", "\n  ".join(lines), theme["err"]))
+
         # ---- REAL LIFE (health) ----
         hl = st.get("health")
         if hl and hl.get("ok"):
@@ -744,23 +762,59 @@ class AiOSApp(App):
                          "[#5a6b7b](no health data — source: google/apple/json)[/]",
                          theme["ok"]))
 
+        # ---- PHYSIS (coherence brain) ----
+        ph = st.get("physis")
+        if ph:
+            a, di, ok, warn = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
+            degraded = ph.get("degraded", False)
+            kind = ph.get("kind", "?")
+            semantic = ph.get("semantic", False)
+            status = f"[{warn}]DEGRADED[/]" if degraded else f"[{ok}]LIVE[/]"
+            ph_lines = [
+                f"  engine: {status}  embedder: [{a}]{kind}[/]  "
+                f"semantic: {'yes' if semantic else 'no'}",
+            ]
+            g = ph.get("graph", {}) or {}
+            nodes = g.get("nodes", []) if isinstance(g, dict) else []
+            edges = g.get("edges", []) if isinstance(g, dict) else []
+            if nodes:
+                ph_lines.append(f"[{di}]holarchy: {len(nodes)} nodes · {len(edges)} edges[/]")
+                for n in nodes[:5]:
+                    label = n.get("label", n.get("id", "?")) if isinstance(n, dict) else str(n)
+                    ph_lines.append(f"  [{a}]•[/] {label[:40]}")
+            blocks.append(gauge_panel("PHYSIS", "\n  ".join(ph_lines), theme["accent"]))
+
+        # ── Spectrum Analyzer ─────────────────────────────────────────────
+        sys_ = st.get("system")
+        cpu_pct = (sys_["cpu"]["total_pct"] / 100.0) if sys_ and sys_.get("ok") else 0
+        mem_pct = (sys_["mem"]["pct"] / 100.0) if sys_ and sys_.get("ok") else 0
+        disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0 if sys_ and sys_.get("ok") else 0
+        running_count = sum(1 for t in self.store.registry.tasks.values()
+                            if t.state.value in ("running", "pending"))
+        spec = spectrum_eq(
+            [cpu_pct, mem_pct, disk_pct, min(running_count / 3.0, 1.0)],
+            self._viz_tick,
+            height=4,
+            labels=["CPU", "RAM", "DSK", "TASK"],
+        )
+        blocks.append(gauge_panel("SPECTRUM", spec, theme["accent"]))
+
         return "\n\n".join(blocks)
 
-    def _swarm_panel(self, theme: dict) -> str:
+    def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
         """Render the multi-agent swarm dashboard."""
         from .gauges import hbar
-        items = self.store._current_items()
-        if not items or items[0].get("type") == "empty":
+        if item is None:
             return (f"[{theme['dim']}]No active swarm.[/]\n"
                     f"  [{theme['accent']}]swarm create <goal>[/] to start.\n"
                     f"  [{theme['dim']}]e.g. swarm create research and prototype a dashboard[/]")
-        data = items[0].get("data", {})
+        data = item.get("data", {})
         lines = []
-        lines.append(f"[{theme['accent']}]╔══ SWARM ORCHESTRATOR ═══════════════════╗[/]")
+        lines.append(f"[{theme['accent']}]SWARM[/]")
         s = data
         counts = f"🧠 {s.get('working',0)}W · {s.get('waiting',0)}⏳ · {s.get('done',0)}✓ · {s.get('failed',0)}✗ · {s.get('blocked',0)}⊘"
         lines.append(f"  {counts}")
-        lines.append(f"[{theme['dim']}]╠══ Agents ═══════════════════════════════╣[/]")
+        lines.append(f"[{theme['dim']}]─ Agents ──────────────────────────────────────[/]")
         agents = s.get("agents", [])
         if not agents:
             lines.append(f"  [{theme['dim']}](no agents yet)[/]")
@@ -774,40 +828,101 @@ class AiOSApp(App):
                          f" {bar}  [{theme['dim']}]{a['goal'][:28]}[/]")
         plan = s.get("active_plan")
         if plan:
-            lines.append(f"[{theme['dim']}]╠══ Plan ════════════════════════════════╣[/]")
+            lines.append(f"[{theme['dim']}]─ Plan ────────────────────────────────────────[/]")
             lines.append(f"  [{theme['accent']}]goal:[/] {plan.get('goal','')[:50]}")
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
-        lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
-        lines.append(f"[{theme['dim']}]Commands: swarm create|add <name> <goal>|run|status|stop[/]")
+        lines.append(f"[{theme['dim']}]swarm create|add|run|status|stop[/]")
         return "\n".join(lines)
 
-    def _physis_panel(self, theme: dict) -> str:
-        """Render the physis_pro coherence brain (live holarchy snapshot)."""
+    def _board_panel(self, theme: dict, item: dict | None = None) -> str:
+        """Render the kanban board workspace: 3-column post-it layout."""
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        if item is None:
+            return (f"[{di}]No boards.[/]\n"
+                    f"  [{a}]board create <title>[/] to start.\n"
+                    f"  [{di}]e.g. board create Research RAG[/]")
+        data = item
+        boards = data.get("boards", [])
+        if not boards:
+            return f"[{di}]No boards. 'board create <title>' to start.[/]"
+        lines = [f"[{a}]BOARD[/]"]
+        for bi, b in enumerate(boards[:3]):
+            focused = bi == self.store.state.focus
+            mark = "▌" if focused else " "
+            col = a if focused else di
+            lines.append(f"[{col}]{mark}⬡ {b['title']}[/]  [{di}]{b['card_count']} cards[/]")
+            cols = b.get("columns", ["backlog", "active", "done"])
+            col_data = b.get("column_data", {})
+            for ci, col_name in enumerate(cols):
+                cards = col_data.get(col_name, [])
+                icon = {"backlog": "📋", "active": "⚡", "done": "✓"}.get(col_name, "·")
+                clr = {"backlog": di, "active": wa, "done": ok_}.get(col_name, di)
+                lines.append(f"  [{clr}]{icon} {col_name.upper()}[/] [{di}]({len(cards)})[/]")
+                for c in cards[:5]:
+                    agent_tag = f" @{c.get('agent_id','')[:6]}" if c.get("agent_id") else ""
+                    lines.append(f"    [{di}]· {c['title'][:36]}{agent_tag}[/]")
+                if len(cards) > 5:
+                    lines.append(f"    [{di}]· ... +{len(cards)-5} more[/]")
+            if bi < len(boards) - 1:
+                lines.append(f"  [{di}]─" + "─" * 44 + "[/]")
+        lines.append(f"[{di}]board create|add|move|assign|list|cards[/]")
+        return "\n".join(lines)
+
+    def _agent_cards_panel(self, theme: dict) -> str:
+        """Render persistent agent entities as cards with peripheral health context."""
         items = self.store._current_items()
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
         if not items or items[0].get("type") == "empty":
-            return (f"[{theme['dim']}]physis engine offline.[/]\n"
-                    f"  Start it: physis-pro-web (default :19876)\n"
-                    f"  {items[0].get('label','') if items else ''}")
-        it = items[0]
-        a, di, ok, warn = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
-        degraded = it.get("degraded", False)
-        kind = it.get("kind", "?")
-        semantic = it.get("semantic", False)
-        lines = [f"[{a}]╔══ PHYSIS · COHERENCE BRAIN ═════════════╗[/]"]
-        status = f"[{warn}]DEGRADED[/]" if degraded else f"[{ok}]LIVE[/]"
-        lines.append(f"  engine: {status}  embedder: [{a}]{kind}[/]  "
-                     f"semantic: {'yes' if semantic else 'no'}")
-        g = it.get("graph", {}) or {}
-        nodes = g.get("nodes", []) if isinstance(g, dict) else []
-        edges = g.get("edges", []) if isinstance(g, dict) else []
-        if nodes:
-            lines.append(f"[{di}]╠══ Holarchy ({len(nodes)} nodes · {len(edges)} edges) ═════╣[/]")
-            for n in nodes[:14]:
-                label = n.get("label", n.get("id", "?")) if isinstance(n, dict) else str(n)
-                lines.append(f"  [{a}]•[/] {label[:40]}")
-        else:
-            lines.append(f"[{di}]  (no nodes ingested yet — run a harness to classify)[/]")
-        lines.append(f"[{a}]╚════════════════════════════════════════╝[/]")
+            return (f"[{di}]No agents.[/]\n"
+                    f"  [{a}]agent create <name> [goal][/] to start.\n"
+                    f"  [{di}]e.g. agent create Alice research-papers[/]")
+        data = items[0]
+        agents = data.get("agents", [])
+        hc = data.get("health_context", {})
+        if not agents:
+            return f"[{di}]No agents. 'agent create <name>' to start.[/]"
+        lines = []
+
+        # peripheral health context bar
+        if hc:
+            from .gauges import hbar, sparkline
+            health_series = hc.get("series", {})
+            lines.append(f" [{ok_}]❤[/] {hc.get('steps',0)} steps · "
+                         f"{hc.get('heart_rate',0)} bpm · "
+                         f"{hc.get('sleep_hours',0)}h sleep · "
+                         f"{hc.get('active_calories',0)} kcal")
+            lines.append(f" [{di}]7d avg: {hc.get('avg_steps_7d',0)} steps · "
+                         f"{hc.get('avg_sleep_7d',0)}h sleep[/]")
+            if health_series.get("steps"):
+                lines.append("  " + sparkline(health_series["steps"], width=20))
+            lines.append(f" [{di}]" + "─" * 48 + "[/]")
+
+        for i, ag in enumerate(agents):
+            focused = i == self.store.state.focus
+            mark = "▌" if focused else " "
+            col = a if focused else di
+            status_icon = {"idle": "○", "working": "●", "blocked": "⊘"}.get(
+                ag.get("status", "idle"), "○")
+            status_col = {"idle": di, "working": wa, "blocked": er}.get(
+                ag.get("status", "idle"), di)
+            lines.append(f"[{col}]{mark}[{status_col}]{status_icon}[/] "
+                         f"{ag['name']}[/]  [{di}]cap: "
+                         f"{','.join(ag.get('capabilities',[]))})[/]"
+                         f"  [{ok_}]🧠 {ag.get('mem_count',0)} mem[/]")
+            if ag.get("goal"):
+                lines.append(f"  [{di}]goal:[/] {ag['goal'][:52]}")
+            task_status = ag.get("task_status", "idle")
+            task_label = ag.get("task_label", "")
+            task_prog = ag.get("task_progress", 0.0)
+            if task_status != "idle" and task_label:
+                from .gauges import hbar
+                lines.append(f"  [{wa}]●[/] {task_label[:40]} "
+                             f"{hbar(task_prog, 8, wa)}")
+            else:
+                lines.append(f"  [{di}](idle — no active task)[/]")
+            if i < len(agents) - 1:
+                lines.append(f"  [{di}]─" + "─" * 48 + "[/]")
+        lines.append(f"[{di}]agent create|assign|status|list|forget[/]")
         return "\n".join(lines)
 
     def _agent_panel(self, theme: dict) -> str:
@@ -822,26 +937,24 @@ class AiOSApp(App):
             prompt = it.get("prompt", "")
             answers = it.get("answers", {})
             done = it.get("done", False)
-            lines = [f"[{a}]╔══ MODEL COMPARE {'DONE' if done else '...'} ═════════════════╗[/]"]
-            lines.append(f" [{di}]Q: {prompt[:44]}[/]")
+            lines = [f" [{di}]Q: {prompt[:44]}[/]"]
             provs = list(answers.keys())
             # two-column layout
             left = provs[0] if len(provs) > 0 else ""
             right = provs[1] if len(provs) > 1 else ""
-            lines.append(f" [{a}]├─ {left or '-'} ─┤─ {right or '-'} ─┤[/]")
+            lines.append(f" [{di}]─ {left or '-'} ── {right or '-'} ─[/]")
             L = (answers.get(left, "") or "")[:200]
             R = (answers.get(right, "") or "")[:200]
             for i in range(max(len(L), len(R), 1)):
                 lc = L[i:i+24] if i < len(L) else ""
                 rc = R[i:i+24] if i < len(R) else ""
                 lines.append(f" [{di}]{lc:<24}│{rc}[/]")
-            lines.append(f"[{a}]╚══════════════════════════════════════╝[/]")
             return "\n".join(lines)
         # Chat view
         msgs = it.get("messages", [])
         if not msgs:
             return f"[{di}]Agent workspace ready. Type a message in Ctrl-K or select a harness.[/]"
-        lines = [f"[{a}]╔══ AGENT CHAT ═══════════════════════╗[/]"]
+        lines = []
         for msg in msgs[-20:]:
             role = msg.get("role", "?")
             content = msg.get("content", "")
@@ -851,198 +964,194 @@ class AiOSApp(App):
             while content:
                 lines.append(f" [{di}]{content[:48]}[/]")
                 content = content[48:]
-        lines.append(f"[{a}]╚══════════════════════════════════╝[/]")
         lines.append(f"[{di}]Type 'search <q>' or a message in Ctrl-K to chat[/]")
         return "\n".join(lines)
 
-    def _tasks_panel(self, theme: dict) -> str:
-        """Full task-progress dashboard: active + history."""
-        from .gauges import hbar
-        tasks = sorted(self.store.registry.tasks.values(),
-                       key=lambda t: t.created, reverse=True)
-        lines = []
-        lines.append(f"[{theme['accent']}]╔══ TASK PROGRESS ════════════════════════╗[/]")
-        # Summary
-        total = len(tasks)
-        running = [t for t in tasks if t.state.value in ("running", "pending")]
-        done = [t for t in tasks if t.state.value == "done"]
-        failed = [t for t in tasks if t.state.value == "failed"]
-        summ = f"▣ {total} total · ●{len(running)} active · ✓{len(done)} done · ✗{len(failed)} failed"
-        lines.append(f"  [{theme['dim']}]{summ}[/]")
-        # Active tasks (sort by progress desc)
-        if running:
-            lines.append(f"[{theme['accent']}]╠══ Active ═══════════════════════════════╣[/]")
-            for t in sorted(running, key=lambda x: x.progress, reverse=True):
-                icon = "⏸" if t.paused else "●"
-                col = theme["warn"]
-                bar_str = hbar(t.progress, width=12, color=col)
-                lines.append(f"  [{col}]{icon}[/] [{theme['accent']}]{t.label[:22]:22s}[/]")
-                lines.append(f"     {bar_str} [{theme['dim']}]{int(t.progress*100)}% · {t.harness}[/]")
-        else:
-            lines.append(f"[{theme['dim']}]╠══ Active ═══════════════════════════════╣[/]")
-            lines.append(f"  [{theme['dim']}](no active tasks)[/]")
-        # Recent history
-        hist = self.store.state.task_history[-8:][::-1]
-        if hist:
-            lines.append(f"[{theme['accent']}]╠══ History ══════════════════════════════╣[/]")
-            for h in hist:
-                icon = "✓" if h["result"] == "done" else "✗" if h["result"] == "failed" else "—"
-                col = theme["ok"] if h["result"] == "done" else theme["err"] if h["result"] == "failed" else theme["dim"]
-                lines.append(f"  [{col}]{icon}[/] [{theme['dim']}]{h['label'][:32]:32s}[/] [{theme['dim']}]{h['harness']}[/]")
-        lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
-        lines.append(f"[{theme['dim']}]Commands: run <h> <prompt> · tier <cheap|standard|premium>[/]")
-        return "\n".join(lines)
-
     def _desktop_panel(self, theme: dict) -> str:
-        """Agentic OS desktop — jarvis_ai-inspired numbered panels, KV rows."""
+        """Clean desktop: status bar + wokspace dock + context widget."""
         from .gauges import hbar, core_grid
+        from ..context import ContextRouter
         items = self.store._current_items()
         data = items[0].get("data", {}) if items else {}
         a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
-        sep = f"[{a}]╌" + "╌" * 48 + "[/]"
+        ctx = ContextRouter().resolve(self.store)
+        domain = ctx.domain.value
+        UL, UR, HL, H, V = "┌", "┐", "┬", "─", "│"
+        sep = f"[{a}]" + "─" * 50 + "[/]"
         p = []
 
-        # ─── 01 STATUS ────────────────────────────────────────────────────
+        ws_icons = {"desktop":"⬡","models":"◈","tasks":"▤","agent":"✦",
+                    "vault":"📓","system":"🖥","term":"▣","settings":"⚙"}
+        ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+
         cpu = data.get("cpu_pct", 0); ram = data.get("ram_pct", 0)
         disk = data.get("disk_pct", 0)
-        nd = (data.get("net_down") or "0")[:6]
-        nu = (data.get("net_up") or "0")[:6]
         tr = data.get("tasks_running", 0); td = data.get("tasks_done", 0)
-        tf = data.get("tasks_failed", 0)
-        sw = data.get("swarm_working", 0)
         cc = er if cpu > 80 else wa if cpu > 50 else ok_
         rc = er if ram > 80 else wa if ram > 50 else ok_
         dc = er if disk > 80 else wa if disk > 50 else ok_
-        p.append(f" {sep}")
-        p.append(f" [{a}]01 STATUS[/]")
-        p.append(f" [{di}]CPU[/][{cc}] {cpu:2.0f}%[/]  [{di}]RAM[/][{rc}] {ram:2.0f}%[/]  [{di}]DSK[/][{dc}] {disk:2.0f}%[/]")
-        p.append(f" [{di}]NET[/] ▼{nd} ▲{nu}")
-        p.append(f" [{ok_}]●[/]{tr} running  [{ok_}]✓[/]{td} done  [{er}]✗[/]{tf} failed" + (f"  [{wa}]⚇[/]{sw} working" if sw else ""))
 
-        # ─── 02 LAUNCHER ─────────────────────────────────────────────────
-        p.append(f" [{a}]02 LAUNCHER[/]")
-        launcher = data.get("launcher", [])
-        if launcher:
-            row = []
-            for app_ in launcher:
-                cl = ok_ if app_["available"] else di
-                mark = "▸" if app_["available"] else "·"
-                row.append(f"[{cl}]{mark}{app_['id']}[/]")
-            p.append(" " + "  ".join(row))
-            p.append(f" [{di}]Ctrl-K: app <name> [args] · apps for detail[/]")
-        else:
-            p.append(f" [{di}](registry empty)[/]")
+        # ┌── STATUS BAR ─────────────────────────────────────────────────┐
+        p.append(f" [{a}]{UL}{H*3} STATUS {H*35}{UR}[/]")
+        p.append(f" [{a}]{V}[/]"
+                 f"[{di}]CPU[/][{cc}] {cpu:2.0f}%[/]"
+                 f"  [{di}]RAM[/][{rc}] {ram:2.0f}%[/]"
+                 f"  [{di}]DSK[/][{dc}] {disk:2.0f}%[/]"
+                 f"  [{di}]TASKS[/] [{ok_}]●{tr}[/] [{ok_}]✓{td}[/]"
+                 f"  [{di}]{ctx.icon} {ctx.label}[/]"
+                 f"  [{a}]{V}[/]")
 
-        # ─── 03 TODO ─────────────────────────────────────────────────────
-        openc = data.get("todos_open", 0)
-        p.append(f" [{a}]03 TODO[/]" + (f" [{wa}]{openc} open[/]" if openc else ""))
+        # ┌── WORKSPACE DOCK ─────────────────────────────────────────────┐
+        p.append(f" [{a}]{H*50}[/]")
+        row1 = []
+        for w in ws_ids[:4]:
+            ic = ws_icons.get(w, "·")
+            row1.append(f"[{a}]{ic}[/] [{di}]{w[:6]}[/]")
+        p.append(f" [{a}]{V}[/]  {'  '.join(row1)}         [{a}]{V}[/]")
+        row2 = []
+        for w in ws_ids[4:]:
+            ic = ws_icons.get(w, "·")
+            row2.append(f"[{a}]{ic}[/] [{di}]{w[:6]}[/]")
+        p.append(f" [{a}]{V}[/]  {'  '.join(row2)}         [{a}]{V}[/]")
+
+        # ┌── WIDGETS ───────────────────────────────────────────────────┐
+        context_blocks = []
+
+        # Projects (always)
+        proj = data.get("projects", [])
+        if proj:
+            block = [f"[{a}]PROJECTS[/]"]
+            for pr in proj[:3]:
+                name = pr.get("name", pr.get("id", "?"))[:18]
+                dirty = pr.get("dirty", 0)
+                branch = pr.get("branch", "")
+                badges = f"{f' ~{dirty}' if dirty else ''}{f' @{branch}' if branch else ''}"
+                block.append(f" [{ok_}]⬢[/] [{di}]{name}{badges}[/]")
+            context_blocks.append("\n".join(block))
+
+        # Todos (always)
         todos = data.get("todos", [])
         if todos:
-            for t in todos[:5]:
+            block = [f"[{a}]TODOS[/]"]
+            for t in todos[:3]:
                 ic, cl = ("✓", di) if t["done"] else ("○", wa)
-                p.append(f" [{cl}]{ic}[/] [{di if t['done'] else a}]#{t['n']} {t['text'][:40]}[/]")
-        else:
-            p.append(f" [{di}](empty · Ctrl-K: todo <text>)[/]")
+                block.append(f" [{cl}]{ic}[/] [{di}]{t['text'][:40]}[/]")
+            context_blocks.append("\n".join(block))
 
-        # ─── 04 SESSIONS ─────────────────────────────────────────────────
-        p.append(f" [{a}]04 SESSIONS[/]")
+        # Active tasks + AI sessions (always)
         active = [t for t in data.get("active_tasks", [])
                   if t["state"] in ("running", "pending")]
-        if active:
-            for t in active[:4]:
+        sessions = data.get("recent_sessions", [])
+        interrupted = data.get("interrupted_tasks", [])
+        if active or sessions or interrupted:
+            block = [f"[{a}]SESSIONS[/]"]
+            for t in active[:2]:
                 ic = "⏸" if t.get("paused") else "●"
-                p.append(f" [{wa}]{ic}[/] [{di}]{t['harness'][:8]}[/] {t['label'][:22]}"
-                         f" {hbar(t['progress'], 8, wa)} {int(t['progress']*100)}%")
-        else:
-            p.append(f" [{di}](no running session)[/]")
-        hist = data.get("task_history", [])
-        ended = [t for t in data.get("active_tasks", [])
-                 if t["state"] in ("done", "failed", "cancelled", "interrupted")]
-        for h in (hist[-3:] if hist else ended[:3]):
-            res = h.get("result", h.get("state", "?"))
-            ic = "✓" if res == "done" else "✗"
-            cl = ok_ if res == "done" else er
-            p.append(f" [{cl}]{ic}[/] [{di}]{h['label'][:28]} · {res}[/]")
+                harness = t['harness'][:6]
+                label = t['label'][:18]
+                block.append(f" [{wa}]{ic}[/] [{di}]{harness}[/] {label}"
+                             f" {hbar(t['progress'], 6, wa)}")
+            for s in sessions[:4]:
+                s_ic = {"running": "●", "ended": "✓", "zombie": "⊘"}.get(s["status"], "?")
+                s_cl = {"running": wa, "ended": ok_, "zombie": er}.get(s["status"], di)
+                repo = s.get("repo", "")[:8]
+                model = s["model"][:16]
+                block.append(f" [{s_cl}]{s_ic}[/] [{di}]{repo:8s}[/] {model}"
+                             f"  [{s_cl}]{s['status']}[/]")
+            for t in interrupted[:2]:
+                block.append(f" [{er}]⊘[/] [{di}]{t['harness'][:6]}[/] {t['label'][:18]} [{er}]interrupted[/]")
+            if not active and not sessions and not interrupted:
+                block.append(f" [{di}](idle)[/]")
+            context_blocks.append("\n".join(block))
 
-        # ─── 05 DATA ─────────────────────────────────────────────────────
-        p.append(f" [{a}]05 DATA[/]")
-        prof = data.get("profile") or {}
-        if prof.get("scopes"):
-            from ..profile import human_size, tracker_line
-            p.append(f" [{di}]scope:[/] [{a}]{' '.join(prof['scopes'])}[/]")
-            for t in prof.get("trackers", [])[:5]:
-                p.append(f" [{ok_}]▹[/] [{di}]{tracker_line(t)}[/]")
-            top = prof.get("disk", [])[:3]
-            if top:
-                p.append(" " + "  ".join(
-                    f"[{di}]{d['name']}[/] {human_size(d['size'])}" for d in top))
-        else:
-            p.append(f" [{wa}]no profile — what do you use this computer for?[/]")
-            p.append(f" [{di}]Ctrl-K: setup dev writing media data comms finance[/]")
-            p.append(f" [{di}](scans disk, generates live trackers)[/]")
+        if context_blocks:
+            p.append(f" [{a}]{H*50}[/]")
+            for b in context_blocks:
+                for line in b.split("\n"):
+                    p.append(f" [{a}]{V}[/] {line}")
 
-        # ─── 06 SYSTEM ────────────────────────────────────────────────────
-        p.append(f" [{a}]06 SYSTEM[/]")
-        ru = data.get("ram_used_gb", 0); rt = data.get("ram_total_gb", 16)
-        per_core = data.get("cpu_per_core", [])
-        if per_core:
-            cg = core_grid(per_core, group=4, color=ok_)
-            p.append(f" [{di}]CPU[/] {cg}")
-        p.append(f" [{di}]RAM[/] {hbar(ram/100, 10, rc)} {ru:.1f}/{rt:.0f}GB")
-        p.append(f" [{di}]DSK[/] {hbar(disk/100, 10, dc)}")
-        gpu = data.get("gpu_util", -1)
-        if gpu >= 0:
-            gc = er if gpu > 80 else wa if gpu > 50 else ok_
-            p.append(f" [{di}]GPU[/] [{gc}]{gpu:.0f}%[/] {data.get('gpu_mem_mb',0):.0f}MB")
-        vn = data.get("vault_notes", 0); mn = data.get("mem_count", 0)
-        extra = [f"📓{vn}" for vn in [vn] if vn] + [f"◎{mn}" for mn in [mn] if mn]
-        if extra: p.append(f" {' '.join(extra)}")
+        # ┌── VIZ ─────────────────────────────────────────────────────────┐
+        from .visualizers import pulse_radar
+        st = self.store.state.stats
+        sys_ = st.get("system") or {}
+        cpu = (sys_.get("cpu") or {}).get("total_pct", 0) / 100.0
+        mem = (sys_.get("mem") or {}).get("pct", 0) / 100.0
+        running_count = sum(1 for t in self.store.registry.tasks.values()
+                            if t.state.value in ("running", "pending"))
+        _rings = [
+            {"label": "CPU", "value": cpu,
+             "items": ["■"] * int(cpu * 12)},
+            {"label": "RAM", "value": mem,
+             "items": ["■"] * int(mem * 12)},
+            {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
+             "items": ["●"] * min(running_count, 12)},
+        ]
+        _viz = pulse_radar(_rings, self._viz_tick, size=10)
+        _viz_lines = _viz.split("\n")
+        p.append(f" [{a}]{H*3} VIZ {H*40}'┐[/]".replace("'┐", "┐"))
+        for line in _viz_lines:
+            p.append(f" [{a}]{V}[/] {line}")
 
-        # ─── 07 AGENTS ────────────────────────────────────────────────────
-        p.append(f" [{a}]07 AGENTS[/]")
-        m = data.get("token_models", [])
-        if m:
-            for x in m[:2]:
-                nm = x["model"].split("/")[-1][:12]
-                t = x.get("tot", 0)
-                p.append(f" [{di}]{nm}[/] {hbar(min(t/1e5,1), 8, ok_)} {t/1000:.0f}k")
-        sw_ag = data.get("swarm_agents", [])
-        if sw_ag:
-            for x in sw_ag[:2]:
-                ic = {"idle":"○","working":"●","done":"✓","failed":"✗","blocked":"⊘"}.get(x.get("status","idle"),"?")
-                cl = ok_ if x["status"]=="done" else wa if x["status"]=="working" else di
-                p.append(f" [{cl}]{ic}[/] [{di}]{x['name'][:12]} {x.get('goal','')[:20]}[/]")
-        if not m and not sw_ag:
-            p.append(f" [{di}]no agent data yet[/]")
-
-        # ─── 08 ACTIVITY ─────────────────────────────────────────────────
-        p.append(f" [{a}]08 ACTIVITY[/]")
-        sugg = self.store.state.suggestions
-        if sugg:
-            top = sugg[0]
-            # show top Jarvis suggestion; if actionable, reveal the 'a' key
-            hint = f" [a]a→{top.action}[/]" if top.action else ""
-            p.append(f" [{wa}]⚡{top.text[:44]}{hint}[/]")
-        feed = data.get("agent_feed", [])
-        if feed:
-            for line in feed[-3:]:
-                p.append(f" [{di}]{line[:46]}[/]")
-        elif not sugg:
-            p.append(f" [{di}](idle)[/]")
-
-        # ─── 06 COMMANDS ─────────────────────────────────────────────────
-        p.append(f" [{a}]09 QUICK[/]")
-        p.append(f" [{di}]Ctrl-K, then say what you want: 'open mail' · 'todo buy milk' · 'watch this' · 'help'[/]")
-
-        p.append(f" {sep}")
+        # ┌── QUICK ──────────────────────────────────────────────────────┐
+        p.append(f" [{a}]{H*3} COMMANDS {H*35}┐[/]")
+        p.append(f" [{a}]{V}[/] [{di}]Ctrl-K: say what you want[/]"
+                 f"  [{a}]{V}[/]")
+        p.append(f" [{a}]{V}[/]"
+                 f" [{di}]'todo <t>' · 'swarm <goal>' · 'compare <q>' · 'agent create <n>'[/]"
+                 f"  [{a}]{V}[/]")
+        p.append(f" [{a}]└" + "─" * 48 + "┘[/]")
         return "\n".join(p)
+
+    def _right_viz_block(self, theme: dict) -> list[str]:
+        """Return animated visualizer lines for the right rail."""
+        from .visualizers import spectrum_eq, task_wave, pulse_radar
+        a = theme["accent"]
+        di = theme["dim"]
+        st = self.store.state.stats
+        sys_ = st.get("system") or {}
+
+        # Pick viz based on tick
+        phase = (self._viz_tick // 10) % 3
+
+        if phase == 0 and sys_.get("ok"):
+            cpu = sys_["cpu"]["total_pct"] / 100.0
+            mem = sys_["mem"]["pct"] / 100.0
+            disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0
+            running_count = sum(1 for t in self.store.registry.tasks.values()
+                                if t.state.value in ("running", "pending"))
+            vals = [cpu, mem, disk_pct, min(running_count / 3.0, 1.0)]
+            labels = ["CPU", "RAM", "DSK", "TASK"]
+            viz = spectrum_eq(vals, self._viz_tick, height=4, labels=labels)
+            header = f"[{a}]◈ SPECTRUM[/]"
+        elif phase == 1:
+            hist = self._task_wave_history[-24:] if self._task_wave_history else [0.0]
+            viz = task_wave(hist, self._viz_tick, width=24, label="ACTIVITY")
+            header = f"[{a}]◈ WAVE[/]"
+        else:
+            running_count = sum(1 for t in self.store.registry.tasks.values()
+                                if t.state.value in ("running", "pending"))
+            sesh_count = len(self.store.state.stats.get("stats", {}).get("agents", []))
+            rings = [
+                {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
+                 "items": [f"t{i}" for i in range(min(running_count, 12))]},
+                {"label": "AGENTS", "value": min(sesh_count / 5.0, 1.0),
+                 "items": [f"s{i}" for i in range(min(sesh_count, 12))]},
+            ]
+            viz = pulse_radar(rings, self._viz_tick, size=12)
+            header = f"[{a}]◈ RADAR[/]"
+
+        out = [header]
+        for line in viz.split("\n"):
+            out.append(f"  {line}")
+        out.append("")
+        return out
 
     def _render_right(self) -> None:
         theme = self.cfg["theme"]
         right = self.query_one("#right", expect_type=VerticalScroll)
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
-        lines = []
+        lines = self._right_viz_block(theme)
         # ---- Observant AI HUD: status of the program in the Term pane ----
         if self.observer.active:
             lines.append(f"[{theme['accent']}]OBSERVER[/]")
@@ -1189,37 +1298,80 @@ class AiOSApp(App):
         self._tour_step = 0
         self.query_one("#help").display = False
 
-    def _help_text(self) -> str:
+    def _help_text(self, extended: bool = False) -> str:
         theme = self.cfg["theme"]
         ws_count = len(self.cfg["workspaces"])
         ws_keys = "/".join(str(i) for i in range(1, ws_count + 1))
-        a, di = theme["accent"], theme["dim"]
+        a, di, ok_, wa = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
+
+        if extended:
+            return (
+                f"[{a}]═ aion MANUAL ════════════════════════════════════════[/]\n"
+                "\n"
+                f"[{a}]WHAT IT IS[/]\n"
+                f" [{di}]aion is an agentic OS cockpit — a split-screen HUD + application [/]\n"
+                f" [{di}]desktop. It runs on your terminal and adapts to what you do.[/]\n"
+                "\n"
+                f"[{a}]WORKSPACES (keys 1-8)[/]\n"
+                f" [{di}]1 ⬡ Desktop[/]   Home hub — status, launcher, context widgets\n"
+                f" [{di}]2 ◈ Subsystems[/] Active harnesses filtered by context\n"
+                f" [{di}]3 ▤ Tasks[/]      Running/finished tasks + kanban boards\n"
+                f" [{di}]4 ✦ Agent[/]     Agents, swarm, chat (context picks mode)\n"
+                f" [{di}]5 📓 Vault[/]    Note graph + memory facts\n"
+                f" [{di}]6 🖥 System[/]   Detailed computer + health + physis gauges\n"
+                f" [{di}]7 ▣ Term[/]     Embedded terminal (btop, shell, etc)\n"
+                f" [{di}]8 ⚙ Settings[/] API providers + installed skills\n"
+                "\n"
+                f"[{a}]CTRL-K COMMANDS[/]\n"
+                f" [{di}]todo <t>[/]     add to-do item\n"
+                f" [{di}]done <n>[/]     mark to-do #n done\n"
+                f" [{di}]swarm <goal>[/] create a multi-agent swarm\n"
+                f" [{di}]compare <q>[/]  side-by-side model comparison\n"
+                f" [{di}]agent create <n>[/] create persistent agent entity\n"
+                f" [{di}]agent list[/]   show all agents\n"
+                f" [{di}]board create <t>[/] create kanban board\n"
+                f" [{di}]board add <t>[/] add card to board\n"
+                f" [{di}]setup <scopes>[/] profile scan (dev,writing,data...)\n"
+                f" [{di}]goto <ws>[/]     jump to workspace\n"
+                f" [{di}]help manual[/]  this manual\n"
+                f" [{di}]tour[/]         walkthrough\n"
+                f" [{di}]mode <name>[/]  switch mode (focus/deep/monitor/stealth/demo)\n"
+                f" [{di}]note <text>[/]  quick memory note\n"
+                f" [{di}]observe ai[/]   AI observer on terminal output\n"
+                f" [{di}]search <q>[/]   search vault notes\n"
+                f" [{di}]run <h> <t>[/]  run harness with label\n"
+                "\n"
+                f"[{a}]KEYS[/]\n"
+                f"  {ws_keys}  switch workspace  ↑↓/jk select item\n"
+                f"  Enter/Space activate   ←→/hl switch ws\n"
+                f"  p pause  x cancel  r re-run  ? help\n"
+                f"  v voice toggle   Ctrl-K command palette\n"
+                "\n"
+                f"[{a}]CONTEXT ADAPTATION[/]\n"
+                f" [{di}]The desktop and subsystems workspaces adapt to your current [/]\n"
+                f" [{di}]context (dev/system/agent/tasks/health) based on which [/]\n"
+                f" [{di}]workspace is active and the last command you typed.[/]\n"
+                "\n"
+                f"[{a}]TIP: just type what you want in Ctrl-K[/]"
+            )
+
         return (
-            f"[{a}]aion — just say what you want[/]\n"
+            f"[{a}]aion — quick reference[/]\n"
             "\n"
-            f"[{a}]Ctrl-K opens the palette. Type plain language:[/]\n"
-            "  open mail            launch your email program\n"
-            "  edit plan.md         open the editor on a file\n"
-            "  spreadsheet          open visidata / sc-im\n"
-            "  todo buy milk        add to the TODO panel\n"
-            "  done 1               check off TODO #1\n"
-            "  i use this for coding and writing\n"
-            "                       first-run setup: scans disk, builds live trackers\n"
-            "  watch this           AI observer describes what the app is doing\n"
-            "  go to vault          jump to a workspace\n"
-            "  help                 show examples in the activity feed\n"
-            f"[{di}]Power users: canonical commands (app/todo/setup/scan/observe/goto/run)\n"
-            "still work exactly as typed — the AI layer only kicks in when needed.[/]\n"
+            f"[{a}]Ctrl-K palette:[/] just type what you want\n"
+            "  'todo buy milk' · 'agent create Alice' · 'swarm research'\n"
+            "  'compare explain recursion' · 'goto vault' · 'setup dev'\n"
             "\n"
-            f"[{a}]Keys[/]\n"
-            f"  {ws_keys}  workspaces · ←→ h/l switch · ↑↓ j/k select\n"
-            "  Enter/Space activate · p pause · x cancel · r re-run\n"
-            "  v voice · ? this help · Ctrl-K palette\n"
+            f"[{a}]Keys[/]  {ws_keys}:workspaces  ↑↓/jk:select  Enter:activate\n"
+            f"  p pause  x cancel  r re-run  v voice  ? help\n"
+            f"  Ctrl-K: command palette     manual: extended reference\n"
             "\n"
-            f"[{a}]More[/]\n"
-            "  memory: note <fact> · mem <query>   vault: notes graph\n"
-            "  hermes: kanban · gateway            skills: skill <name> <prompt>\n"
-            "  deck: joy2=navigate · MODE=gamepad  voice: 'go to models', 'stop'")
+            f"[{a}]Workspaces[/]\n"
+            "  1⬡ Desktop  2◈ Subsystems  3▤ Tasks  4✦ Agent\n"
+            "  5📓 Vault   6🖥 System     7▣ Term   8⚙ Settings\n"
+            "\n"
+            f"[{a}]More:[/] type 'help manual' in Ctrl-K for full reference"
+        )
 
 
 def main() -> None:

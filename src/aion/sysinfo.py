@@ -54,6 +54,42 @@ def _gpu_probe() -> dict[str, Any]:
     return out
 
 
+def _thermal_probe() -> dict[str, Any]:
+    """Best-effort CPU/thermal sensor readings via psutil."""
+    out: dict[str, Any] = {}
+    if psutil is None:
+        return out
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            cpu_temps = []
+            for name, entries in temps.items():
+                for entry in entries:
+                    if entry.current is not None:
+                        label = entry.label or name
+                        lower = label.lower()
+                        # CPU-related: core, package, tctl, tdie, cpu, k10temp, zen
+                        if any(k in lower for k in ("core", "package", "cpu", "tctl", "tdie", "k10temp", "zen", "edge")):
+                            cpu_temps.append({"label": label, "current": entry.current, "high": entry.high, "critical": entry.critical})
+            if cpu_temps:
+                out["cpu"] = cpu_temps
+                out["max_cpu_c"] = max(t["current"] for t in cpu_temps)
+            # Also include other sensors (gpu, nvme, etc.) if present
+            other = []
+            for name, entries in temps.items():
+                for entry in entries:
+                    if entry.current is not None:
+                        label = entry.label or name
+                        lower = label.lower()
+                        if not any(k in lower for k in ("core", "package", "cpu", "tctl", "tdie", "k10temp", "zen", "edge")):
+                            other.append({"label": label, "current": entry.current, "high": entry.high, "critical": entry.critical})
+            if other:
+                out["other"] = other
+    except Exception:
+        pass
+    return out
+
+
 class SystemReader:
     def __init__(self, disk_paths: list[str] | None = None) -> None:
         self.disk_paths = disk_paths or self._default_disks()
@@ -133,4 +169,32 @@ class SystemReader:
         }
         # ---- GPU ----
         snap["gpu"] = _gpu_probe()
+        # ---- Thermal ----
+        snap["thermal"] = _thermal_probe()
+        # ---- processes ----
+        snap["processes"] = self.processes()
         return snap
+
+    def processes(self, top_n: int = 10) -> list[dict[str, Any]]:
+        if psutil is None:
+            return []
+        out: list[dict[str, Any]] = []
+        try:
+            procs = []
+            for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info", "status"]):
+                try:
+                    info = p.info
+                    procs.append({
+                        "pid": info["pid"],
+                        "name": info["name"] or "?",
+                        "cpu_pct": round(info["cpu_percent"] or 0.0, 1),
+                        "mem_mb": round((info["memory_info"].rss if info["memory_info"] else 0) / (1024 * 1024), 1),
+                        "status": info["status"] or "?",
+                    })
+                except Exception:
+                    continue
+            procs.sort(key=lambda x: x["cpu_pct"], reverse=True)
+            out = procs[:top_n]
+        except Exception:
+            pass
+        return out

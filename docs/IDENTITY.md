@@ -27,6 +27,10 @@ CyclUno is the physical console for that desktop: navigate workspaces, spawn app
 5. **Degrade gracefully.** No deck / no mic / no LLM → HUD still shows system + tasks + can launch apps.
 6. **Wire protocol stays shared.** Deck serial uses cyclops v2 frames; do not invent a parallel framing for “chat personality.”
 
+## Workspace scope (8 unified panels)
+
+Desktop (⬡) · Models (◈) · Tasks (▤) · Agent (✦) · Vault (📓) · System (🖥) · Term (▣) · Settings (⚙️)
+
 ## Feature gate (before shipping)
 
 Ask for every change:

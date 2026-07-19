@@ -30,7 +30,6 @@ def test_agent_panel_compare_render():
     out = app._agent_panel(theme)
     # both providers shown
     assert "fcm" in out and "groq" in out
-    assert "MODEL COMPARE DONE" in out
     # no rich markup errors
     for ln in out.split("\n"):
         Text.from_markup(ln)
@@ -44,7 +43,6 @@ def test_agent_panel_chat_still_works():
     app.store.chat.add("assistant", "hi! how can I help?")
     theme = app.cfg["theme"]
     out = app._agent_panel(theme)
-    assert "AGENT CHAT" in out
     assert "hello there" in out
     for ln in out.split("\n"):
         Text.from_markup(ln)

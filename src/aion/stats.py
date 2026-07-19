@@ -65,6 +65,7 @@ class StatsSnapshot:
     total_cost_usd: float = 0.0
     models: list[ModelUsage] = field(default_factory=list)   # sorted desc
     live_agents: list[LiveAgent] = field(default_factory=list)
+    recent_sessions: list[dict] = field(default_factory=list)
     generated_at: float = field(default_factory=time.time)
 
     @property
@@ -85,6 +86,7 @@ class StatsSnapshot:
             "reasoning": self.total_reasoning,
             "cost_usd": round(self.total_cost_usd, 4),
             "live": self.live_count,
+            "recent_sessions": self.recent_sessions,
             "models": [
                 {"model": m.model, "in": m.input_tokens, "out": m.output_tokens,
                  "tot": m.total_tokens, "cost": round(m.cost_usd, 4),
@@ -197,6 +199,7 @@ class StatsReader:
             total_cost_usd=sum(m.cost_usd for m in models),
         )
         snap.live_agents = self._live_agents(conn)
+        snap.recent_sessions = self.recent_sessions(hours=24, conn=conn)
         return snap
 
     def _live_agents(self, conn: sqlite3.Connection) -> list[LiveAgent]:
@@ -224,6 +227,53 @@ class StatsReader:
                 repo=repo, messages=r["msgs"], age_s=now - r["started_at"],
             ))
         return out
+
+    def recent_sessions(self, hours: int = 24, conn: sqlite3.Connection | None = None) -> list[dict]:
+        """All sessions from last N hours with status: running|ended|zombie."""
+        close = conn is None
+        if conn is None:
+            conn = self._connect()
+        if conn is None:
+            return []
+        try:
+            now = time.time()
+            cutoff = now - hours * 3600
+            rows = conn.execute(
+                """
+                SELECT id, COALESCE(model, '') AS model,
+                       COALESCE(git_branch, '') AS branch,
+                       COALESCE(git_repo_root, '') AS repo,
+                       COALESCE(message_count, 0) AS msgs,
+                       started_at, ended_at,
+                       COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) AS tokens
+                FROM sessions
+                WHERE started_at >= ?
+                ORDER BY started_at DESC
+                LIMIT 20
+                """,
+                (cutoff,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                status = "running"
+                if r["ended_at"] is not None:
+                    status = "ended"
+                elif r["started_at"] < now - LIVE_WINDOW_S:
+                    status = "zombie"
+                repo = r["repo"].rsplit("/", 1)[-1] if r["repo"] else ""
+                out.append({
+                    "id": r["id"][:8], "model": r["model"][:20],
+                    "branch": r["branch"][:12], "repo": repo[:12],
+                    "msgs": r["msgs"], "tokens": r["tokens"],
+                    "status": status,
+                    "age_s": int(now - r["started_at"]),
+                })
+            return out
+        except sqlite3.Error:
+            return []
+        finally:
+            if close:
+                conn.close()
 
 
 def human_tokens(n: int) -> str:

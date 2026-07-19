@@ -211,7 +211,7 @@ class VoiceInput(InputDevice):
         self._vad_thresh = 0.012    # RMS energy gate
         self._silence_chunks = 0
         self._max_silence = 18      # ~0.3s @ 16k/512 — end of utterance
-        self.ws_map = {"models": 0, "tasks": 1, "agent": 2, "memory": 3}
+        self.ws_map = {"models": 1, "tasks": 2, "agent": 3, "vault": 4, "system": 5, "term": 6, "settings": 7}
 
     async def start(self) -> None:
         self.available = True   # enabled on demand via toggle

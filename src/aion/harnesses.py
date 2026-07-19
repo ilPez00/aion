@@ -40,10 +40,18 @@ class HarnessConfig:
     max_steps: int | None = None     # lesson #4: safe-run guard
     remote: str | None = None        # lesson #6: "host:port" of a remote kernel
     command: str = ""
+    context_tags: tuple[str, ...] = ("system",)
     extra: dict = None  # type: ignore
 
     @classmethod
     def from_dict(cls, d: dict) -> "HarnessConfig":
+        tags = d.get("context_tags", None)
+        if isinstance(tags, list):
+            tags = tuple(tags)
+        elif tags is None:
+            tags = ("system",)
+        else:
+            tags = (tags,)
         return cls(
             id=d["id"], type=d["type"], name=d.get("name", d["id"]),
             enabled=d.get("enabled", True), vram_mb=d.get("vram_mb", 0),
@@ -51,9 +59,11 @@ class HarnessConfig:
             max_steps=d.get("max_steps"),
             remote=d.get("remote"),
             command=d.get("command", ""),
+            context_tags=tags,
             extra={k: v for k, v in d.items()
                    if k not in {"id", "type", "name", "enabled", "vram_mb",
-                                "tier", "max_steps", "remote", "command"}},
+                                "tier", "max_steps", "remote", "command",
+                                "context_tags"}},
         )
 
 
@@ -869,6 +879,174 @@ class PhysisHarness(Harness):
             await asyncio.sleep(float(self.cfg.extra.get("interval", 5.0)))
 
 
+class AgentEntityHarness(Harness):
+    """Persistent agent entity harness with peripheral health context.
+
+    Polls the agent store for each registered agent, checks the task
+    registry for any running task assigned to that agent, and publishes
+    agent status on TOPIC_STATS under harness id "agent_entity".
+    Also reads peripheral health data (Cyclops/CyclUno) and injects
+    health snapshots into agent memory so agents are aware of user
+    health state.
+    No task needed — call .start() once at boot.
+
+    Config extras:
+      interval: seconds between polls (default 3.0)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.interval = float(extra.get("interval", 3.0))
+        self.health_path = extra.get("health_path")
+        self._task: asyncio.Task | None = None
+        self._agent_store = None
+        self._health_reader = None
+        self._last_health_date: str = ""
+
+    def _ensure_store(self):
+        if self._agent_store is None:
+            from .agents import AgentStore
+            self._agent_store = AgentStore()
+        return self._agent_store
+
+    def _ensure_health_reader(self):
+        if self._health_reader is None:
+            from .health import HealthReader
+            self._health_reader = HealthReader(path=self.health_path)
+        return self._health_reader
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        return
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def poll_once(self) -> dict:
+        store = self._ensure_store()
+        agents = store.list_all()
+
+        # peripheral health context for agents
+        reader = self._ensure_health_reader()
+        summary = await asyncio.to_thread(reader.summary)
+        health_context = {}
+        if summary.get("ok"):
+            latest = summary.get("latest") or {}
+            av = summary.get("avg_7d", {})
+            health_context = {
+                "steps": latest.get("steps", 0),
+                "heart_rate": latest.get("heart_rate", 0),
+                "sleep_hours": latest.get("sleep_hours", 0),
+                "active_calories": latest.get("active_calories", 0),
+                "avg_steps_7d": av.get("steps", 0),
+                "avg_sleep_7d": av.get("sleep_hours", 0),
+            }
+            # inject health snapshot into each agent's memory once per day
+            today = latest.get("date", "")
+            if today and today != self._last_health_date:
+                self._last_health_date = today
+                snapshot = (f"Health snapshot {today}: "
+                            f"{latest.get('steps',0)} steps, "
+                            f"{latest.get('heart_rate',0)} bpm, "
+                            f"{latest.get('sleep_hours',0)}h sleep, "
+                            f"{latest.get('active_calories',0)} kcal")
+                for a in agents:
+                    store.add_memory(a.id, snapshot, kind="health")
+
+        items = []
+        for a in agents:
+            task_status = "idle"
+            task_label = ""
+            task_progress = 0.0
+            if a.current_task_id and a.current_task_id in self.registry.tasks:
+                t = self.registry.tasks[a.current_task_id]
+                task_status = t.state.value
+                task_label = t.label
+                task_progress = t.progress
+            items.append({
+                "id": a.id,
+                "name": a.name,
+                "status": a.status.value,
+                "goal": a.goal,
+                "capabilities": a.capabilities,
+                "mem_count": len(a.memory_entries),
+                "task_status": task_status,
+                "task_label": task_label,
+                "task_progress": task_progress,
+                "assigned_board": a.assigned_board,
+            })
+        metrics = {"ok": True, "agents": items, "count": len(items),
+                   "health_context": health_context}
+        await self._stat(**metrics)
+        return metrics
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
+class BoardHarness(Harness):
+    """Board (kanban) poller.
+
+    Reads the board store and publishes board + card data on TOPIC_STATS
+    under harness id "board". The board workspace renders from it.
+    No task needed — .start() once at boot.
+
+    Config extras:
+      interval: seconds between polls (default 5.0)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.interval = float(extra.get("interval", 5.0))
+        self._task: asyncio.Task | None = None
+        self._board_store = None
+
+    def _ensure_store(self):
+        if self._board_store is None:
+            from .board import BoardStore
+            self._board_store = BoardStore()
+        return self._board_store
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        return
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def poll_once(self) -> dict:
+        store = self._ensure_store()
+        boards = store.list_all()
+        items = []
+        for b in boards:
+            columns = {}
+            for col in b.columns:
+                columns[col] = [c.as_dict() for c in b.cards_in_column(col)]
+            items.append({
+                "id": b.id,
+                "title": b.title,
+                "columns": b.columns,
+                "column_data": columns,
+                "card_count": len(b.cards),
+            })
+        metrics = {"ok": True, "boards": items, "count": len(items)}
+        await self._stat(**metrics)
+        return metrics
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
 HARNESS_TYPES = {
     "demo": DemoHarness,
     "shell": ShellHarness,
@@ -886,6 +1064,8 @@ HARNESS_TYPES = {
     "health": HealthHarness,
     "vault": VaultHarness,
     "physis": PhysisHarness,
+    "agent_entity": AgentEntityHarness,
+    "board": BoardHarness,
 }
 
 

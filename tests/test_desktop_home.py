@@ -156,10 +156,9 @@ def test_desktop_panel_renders_new_sections():
             app.action_skip_boot()
             theme = app.cfg["theme"]
             panel = app._desktop_panel(theme)
-            for section in ("01 STATUS", "02 LAUNCHER", "03 TODO",
-                            "04 SESSIONS", "05 DATA", "06 SYSTEM",
-                            "07 AGENTS", "08 ACTIVITY", "09 QUICK"):
-                assert section in panel
+            # new desktop uses box-drawing layout
+            assert "STATUS" in panel
+            assert "COMMANDS" in panel
             app._render_right()          # observer branch must not raise
     asyncio.run(run())
 

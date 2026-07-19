@@ -16,8 +16,9 @@ push live task progress + stats through an async bus.
 
 ```
 ┌─ HEADER: app · active harness · voice mode · clock ────────────┐
-├─ LEFT RAIL (fixed):  ◈ Models  ▤ Tasks  ✦ Agent               │
-├─ CENTER (active workspace): list / console                    │
+├─ LEFT RAIL (fixed): ⬡ Desktop  ◈ Models  ▤ Tasks  ✦ Agent    │
+│                     📓 Vault    🖥 System  ▣ Term  ⚙️ Settings │
+├─ CENTER (active workspace): list / console / HUD              │
 ├─ RIGHT RAIL (global): live tasks with progress bars           │
 └─ BOTTOM: command palette (Ctrl-K) + history ticker ───────────┘
 ```
@@ -230,10 +231,11 @@ command instead (`run demo hello`, `tier cheap`, `theme matrix`), it runs that.
 
 ## Workspaces
 
-13 panels: Models · Tasks · Agent · Memory · Vault · System · Hermes · Skills ·
-Projects · Term · Swarm · Settings. The **Tasks** workspace (`✓`) shows a full
-progress dashboard: active tasks with bars (sorted by progress) + recent history
-(done/failed/cancelled).
+8 unified panels: Desktop · Models · Tasks · Agent · Vault · System · Term ·
+Settings. The **Tasks** workspace shows tasks + kanban boards. **Agent** unifies
+agent entity cards, swarm orchestration, and LLM chat. **System** combines
+system HUD, health data, and coherence brain. **Vault** merges notes graph and
+memory facts. **Settings** shows providers, installed skills, and Hermes status.
 
 ## Customizing
 
