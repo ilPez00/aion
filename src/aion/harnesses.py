@@ -190,21 +190,47 @@ class ShellHarness(Harness):
 
 
 class RemoteHarness(Harness):
-    """Stub for lesson #6: a harness that runs work on a remote AIOS kernel
-    (AIOS's ARM/AUM split). Talks over a socket to a remote runtime. The
-    local side only relays progress/stats it receives. Wire transport here."""
+    """lesson #6: runs work on a remote AIOS kernel (aion's ARM/AUM
+    split). Opens a line socket to `remote` (host:port), sends the
+    prompt, and relays every line it gets back as progress/stats/log
+    until the remote side closes. Real transport, not a stub."""
 
     async def run(self, task: Task, prompt: str = "") -> None:
+        import socket
         self._running.add(task.id)
         self.registry.set_state(task, TaskState.RUNNING)
         target = self.cfg.remote or "localhost:8765"
-        self.registry.log(task, f"[remote] would dispatch to {target}: {prompt[:50]}")
-        await self._stat(target=target, dispatched=True)
-        # TODO: open websocket/socket to target, stream its task events back
-        # into self.registry.set_progress / set_state / log.
-        await asyncio.sleep(0.3)
-        self.registry.set_progress(task, 1.0)
-        self.registry.set_state(task, TaskState.DONE)
+        host, _, port = target.partition(":")
+        self.registry.log(task, f"[remote] dispatch -> {target}: {prompt[:50]}")
+        try:
+            with socket.create_connection((host, int(port or 8765)), timeout=10) as s:
+                s.sendall((prompt + "\n").encode())
+                buf = b""
+                steps = 0
+                while True:
+                    if self._killed(task):
+                        self.registry.set_state(task, TaskState.CANCELLED)
+                        break
+                    if not await self._wait_if_paused(task):
+                        self.registry.set_state(task, TaskState.CANCELLED)
+                        break
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    text = buf.decode(errors="replace")
+                    lines = text.splitlines()
+                    if lines:
+                        self.registry.log(task, lines[-1][:120])
+                    steps += 1
+                    self.registry.set_progress(task, min(0.99, steps / max(1, self.cfg.max_steps or 20)))
+                    self._stat(target=target, recv=len(buf))
+                else:
+                    self.registry.set_progress(task, 1.0)
+                    self.registry.set_state(task, TaskState.DONE)
+        except Exception as e:  # noqa: BLE001
+            self.registry.log(task, f"[remote] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
         self._finish(task)
 
 
@@ -803,6 +829,46 @@ class SkillHarness(Harness):
         self._finish(task)
 
 
+class PhysisHarness(Harness):
+    """The coherence brain, surfaced as a live HUD panel.
+
+    Polls the running physis_pro engine (:19876) for embedder health
+    and the reconstructed holarchy graph, publishing on TOPIC_PHYSIS so
+    the `physis` workspace renders it. No task needed — call
+    .start() once at boot like the other pollers. Soft-fails if
+    physis is down (publishes a degraded marker, never throws)."""
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        self._task: asyncio.Task | None = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    async def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.ensure_future(self._poll())
+
+    async def _poll(self) -> None:
+        from .core import TOPIC_PHYSIS
+        from .physis import get_client
+        client = get_client()
+        while True:
+            try:
+                health = client.embedder_health()
+                recon = client.reconstruct() or {}
+                await self.bus.publish(TOPIC_PHYSIS, {
+                    "action": "snapshot",
+                    "degraded": bool(health.get("degraded")),
+                    "kind": health.get("kind", "unknown"),
+                    "semantic": bool(health.get("semantic")),
+                    "graph": recon,
+                })
+            except Exception as e:  # noqa: BLE001
+                await self.bus.publish(TOPIC_PHYSIS, {"action": "error", "detail": str(e)[:160]})
+            await asyncio.sleep(float(self.cfg.extra.get("interval", 5.0)))
+
+
 HARNESS_TYPES = {
     "demo": DemoHarness,
     "shell": ShellHarness,
@@ -819,6 +885,7 @@ HARNESS_TYPES = {
     "system": SystemHarness,
     "health": HealthHarness,
     "vault": VaultHarness,
+    "physis": PhysisHarness,
 }
 
 

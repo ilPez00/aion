@@ -36,7 +36,7 @@ def test_fallback_reports_all_down(monkeypatch):
     monkeypatch.setattr(llm, "_groq_chat", lambda m, timeout=30: "⚠️ Groq 403")
     monkeypatch.setattr(llm, "_openrouter_chat", lambda m, timeout=30: "⚠️ HTTP 401")
     out = llm.chat_send(ChatSession(), "hi")
-    assert out.startswith("⚠️ LLM unavailable (tried FCM, Groq, OpenRouter)")
+    assert out.startswith("⚠️ LLM unavailable (tried OmniRoute, FCM, Groq, OpenRouter)")
 
 
 def test_chat_send_multi_supports_openrouter(monkeypatch):

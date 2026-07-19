@@ -25,7 +25,7 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
@@ -157,7 +157,8 @@ class AiOSApp(App):
         # all background HUD pollers (Jarvis HUD + Iron Man panels)
         for h in self.harnesses.values():
             if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness,
-                              SystemHarness, HealthHarness, VaultHarness)):
+                              SystemHarness, HealthHarness, VaultHarness,
+                              PhysisHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
@@ -598,6 +599,8 @@ class AiOSApp(App):
             return self._sys_panel(theme)
         if ws == "swarm":
             return self._swarm_panel(theme)
+        if ws == "physis":
+            return self._physis_panel(theme)
         if ws == "desktop":
             return self._desktop_panel(theme)
         if ws == "tasks":
@@ -776,6 +779,35 @@ class AiOSApp(App):
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
         lines.append(f"[{theme['accent']}]╚══════════════════════════════════════╝[/]")
         lines.append(f"[{theme['dim']}]Commands: swarm create|add <name> <goal>|run|status|stop[/]")
+        return "\n".join(lines)
+
+    def _physis_panel(self, theme: dict) -> str:
+        """Render the physis_pro coherence brain (live holarchy snapshot)."""
+        items = self.store._current_items()
+        if not items or items[0].get("type") == "empty":
+            return (f"[{theme['dim']}]physis engine offline.[/]\n"
+                    f"  Start it: physis-pro-web (default :19876)\n"
+                    f"  {items[0].get('label','') if items else ''}")
+        it = items[0]
+        a, di, ok, warn = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
+        degraded = it.get("degraded", False)
+        kind = it.get("kind", "?")
+        semantic = it.get("semantic", False)
+        lines = [f"[{a}]╔══ PHYSIS · COHERENCE BRAIN ═════════════╗[/]"]
+        status = f"[{warn}]DEGRADED[/]" if degraded else f"[{ok}]LIVE[/]"
+        lines.append(f"  engine: {status}  embedder: [{a}]{kind}[/]  "
+                     f"semantic: {'yes' if semantic else 'no'}")
+        g = it.get("graph", {}) or {}
+        nodes = g.get("nodes", []) if isinstance(g, dict) else []
+        edges = g.get("edges", []) if isinstance(g, dict) else []
+        if nodes:
+            lines.append(f"[{di}]╠══ Holarchy ({len(nodes)} nodes · {len(edges)} edges) ═════╣[/]")
+            for n in nodes[:14]:
+                label = n.get("label", n.get("id", "?")) if isinstance(n, dict) else str(n)
+                lines.append(f"  [{a}]•[/] {label[:40]}")
+        else:
+            lines.append(f"[{di}]  (no nodes ingested yet — run a harness to classify)[/]")
+        lines.append(f"[{a}]╚════════════════════════════════════════╝[/]")
         return "\n".join(lines)
 
     def _agent_panel(self, theme: dict) -> str:

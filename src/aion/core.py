@@ -94,6 +94,7 @@ TOPIC_VOICE = "voice"    # payload: {"text": str, "event": str}
 TOPIC_HERMES = "hermes"  # payload: {"action": str, "data": dict}
 TOPIC_SKILL = "skill"    # payload: {"action": str, "name": str, "data": dict}
 TOPIC_SETTINGS = "settings"  # payload: {"action": str, "key": str, "value": any}
+TOPIC_PHYSIS = "physis"   # payload: {"action": str, "kind": str, "graph": dict}
 
 
 class Bus:
@@ -128,6 +129,7 @@ class Task:
     id: str
     label: str
     harness: str
+    domain: str = ""            # physis semiotic label, e.g. "CONSTRUCT/REST"
     state: TaskState = TaskState.PENDING
     progress: float = 0.0          # 0.0 .. 1.0
     eta: float | None = None       # seconds remaining (estimate)
@@ -139,6 +141,7 @@ class Task:
     def as_dict(self) -> dict:
         return {
             "id": self.id, "label": self.label, "harness": self.harness,
+            "domain": self.domain,
             "state": self.state.value, "progress": round(self.progress, 3),
             "eta": self.eta, "log": self.log[-50:],
         }
@@ -223,6 +226,7 @@ class SessionStore:
                     st = TaskState.INTERRUPTED
                 out.append(Task(
                     id=d["id"], label=d["label"], harness=d["harness"],
+                    domain=d.get("domain", ""),
                     state=st, progress=d.get("progress", 0.0),
                     log=d.get("log", []),
                 ))

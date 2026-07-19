@@ -18,7 +18,7 @@ from typing import Any
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore,
     Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS,
-    TOPIC_INTENT, load_config,
+    TOPIC_INTENT, TOPIC_PHYSIS, load_config,
 )
 from .memory import MemoryStore
 from .voice.persona import Persona
@@ -26,6 +26,8 @@ from .llm import ChatSession, format_conversation, chat_send
 from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
 from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
 from .dashboard import collect_dashboard
+from .physis import get_client as _get_physis  # coherence brain (soft-fails if down)
+
 
 
 @dataclass
@@ -85,6 +87,7 @@ class Store:
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill)
         self.bus.subscribe(TOPIC_SETTINGS, self._on_settings)
+        self.bus.subscribe(TOPIC_PHYSIS, self._on_physis)
         # restore interrupted tasks from a previous crash
         for t in self.store.load():
             self.registry.ingest(t)
@@ -182,6 +185,14 @@ class Store:
             if s:
                 return [{"type": "dashboard", "data": s}]
             return [{"type": "empty", "label": "No active swarm. Use 'swarm create <goal>' to start."}]
+        if ws == "physis":
+            ph = self.state.stats.get("physis")
+            if ph:
+                return [{"type": "physis", "degraded": ph.get("degraded", False),
+                         "kind": ph.get("kind", "?"),
+                         "semantic": ph.get("semantic", False),
+                         "graph": ph.get("graph", {})}]
+            return [{"type": "empty", "label": "physis engine offline — start physis-pro-web (:19876)."}]
         return []
 
     def _maybe_rescan_profile(self, profile: dict) -> None:
@@ -323,6 +334,17 @@ class Store:
             return
         task = self.registry.create(f"{h.name}: {prompt[:30]}", h.id)
         self._task_prompts[task.id] = prompt
+        # physis brain: classily the goal so it gets a semiotic cell
+        # (what DOMAIN of work it is). Soft-fail: if physis is down
+        # we just lose the tag, the task still runs.
+        client = _get_physis()
+        res = client.classify(prompt)
+        if res.top:
+            task.domain = res.label()  # e.g. "CONSTRUCT/REST"
+            await self.bus.publish("physis",
+                {"action": "classify", "task": task.id,
+                 "label": res.label(), "cells": [c.__dict__ for c in res.cells]})
+            _ = client.register(f"task:{task.id}", 1.0, edge_to=res.label())
         asyncio.create_task(h.run(task, prompt))
 
     async def _respawn(self, old: Task) -> None:
@@ -737,6 +759,24 @@ class Store:
         elif msg.get("mode") == "deck_app":
             self.state.deck_app = msg["active"]
 
+    async def _on_physis(self, msg: dict) -> None:
+        if msg.get("action") == "snapshot":
+            self.state.stats["physis"] = {
+                "degraded": msg.get("degraded", False),
+                "kind": msg.get("kind", "?"),
+                "semantic": msg.get("semantic", False),
+                "graph": msg.get("graph", {}),
+            }
+        elif msg.get("action") == "classify":
+            # surface per-task physis labels (shown in Tasks workspace)
+            t = self.registry.tasks.get(msg.get("task", ""))
+            if t is not None and msg.get("label"):
+                t.domain = msg["label"]
+        elif msg.get("action") == "error":
+            self.state.stats["physis"] = {
+                "degraded": True, "kind": "offline",
+                "semantic": False, "error": msg.get("detail", ""),
+            }
     async def _on_hermes(self, msg: dict) -> None:
         action = msg.get("action", "")
         data = msg.get("data", {})
