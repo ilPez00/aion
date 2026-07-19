@@ -43,12 +43,13 @@
     {"id": "vault",    "title": "Vault",    "icon": "📓"},
     {"id": "system",   "title": "System",   "icon": "🖥"},
     {"id": "term",     "title": "Term",     "icon": "▣"},
-    {"id": "settings", "title": "Settings", "icon": "⚙️"}
+    {"id": "settings", "title": "Settings", "icon": "⚙️"},
+    {"id": "net",      "title": "Network",  "icon": "🌐"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {
     "workspace_1": "1", "workspace_2": "2", "workspace_3": "3", "workspace_4": "4",
-    "workspace_5": "5", "workspace_6": "6", "workspace_7": "7", "workspace_8": "8",
+    "workspace_5": "5", "workspace_6": "6", "workspace_7": "7",     "workspace_8": "8", "workspace_9": "9",
     "nav_up": ["up", "k"], "nav_down": ["down", "j"],
     "nav_left": ["left", "h"], "nav_right": ["right", "l"],
     "activate": ["enter", "space"], "back": ["escape", "b"],
@@ -74,5 +75,9 @@
     {"id": "physis",  "type": "physis",  "name": "Coherence Brain", "context_tags": ["system","agent"], "enabled": true, "vram_mb": 0,   "tier": "standard", "extra": {"interval": 5.0}},
     {"id": "agent_entity","type": "agent_entity","name": "Agent Entities","context_tags": ["agent"], "enabled": true, "vram_mb": 0, "tier": "standard", "interval": 3.0},
     {"id": "board",   "type": "board",   "name": "Board",         "context_tags": ["tasks","agent"], "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 5.0}
+  ],
+  "remote_nodes": [
+    {"id": "raspberry-pi", "host": "192.168.1.100", "port": 8765, "label": "Pi 5 Cluster"},
+    {"id": "workstation",  "host": "192.168.1.50",  "port": 8765, "label": "Dev Workstation"}
   ]
 }

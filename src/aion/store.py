@@ -75,6 +75,7 @@ class Store:
         self._prev_task_states: dict[str, TaskState] = {}
         self._task_prompts: dict[str, str] = {}  # task id -> last prompt (for rerun)
         self._loop = None  # captured event loop (set in _chat for agent tools)
+        self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.memory = MemoryStore()
         from .todos import TodoStore
         self.todos = TodoStore()
@@ -463,6 +464,28 @@ class Store:
             self.state.logs = self.state.logs[-50:]
             return
         if parts[0] in ("setup", "scan"):
+            if parts[0] == "setup" and len(parts) >= 2 and parts[1] == "wizard":
+                return
+            if parts[0] == "setup" and len(parts) >= 4 and parts[1] == "set":
+                key = parts[2].upper()
+                val = parts[3]
+                env_path = Path.home() / ".env"
+                lines = []
+                found = False
+                if env_path.exists():
+                    for line in env_path.read_text().splitlines():
+                        stripped = line.strip()
+                        if "=" in stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() == key:
+                            lines.append(f"{key}={val}")
+                            found = True
+                            continue
+                        lines.append(line)
+                if not found:
+                    lines.append(f"{key}={val}")
+                env_path.write_text("\n".join(lines) + "\n")
+                self.state.logs.append(f"setup: {key} written to ~/.env")
+                self.state.logs = self.state.logs[-50:]
+                return
             from .profile import SCOPES, load, scan, save
             prev = load()
             if parts[0] == "setup":
@@ -550,6 +573,15 @@ class Store:
             return
         if parts[0] == "board" and len(parts) >= 2:
             await self._board_command(text)
+            return
+        if parts[0] == "remote":
+            if self.remote_callback:
+                result = await self.remote_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append("remote: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "swarm" and len(parts) >= 2:
             await self._swarm_command(text)

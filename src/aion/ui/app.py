@@ -14,6 +14,7 @@ The command palette is optional, searchable, and shows completions.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +139,18 @@ class AiOSApp(App):
         self._jarvis_tick = 0           # proactive jarvis poll counter
         self._viz_tick = 0              # visualizer animation frame
         self._task_wave_history: list[float] = []  # recent task counts
+        # remote instance control
+        from ..remotes import RemoteServer, RemoteClient, RemoteNode
+        self._remote_server = RemoteServer(port=8765)
+        self._remote_client = RemoteClient()
+        self._remote_nodes: dict[str, RemoteNode] = {}
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
+        self._wizard_active = False
+        self._wizard_step = 0
+        self._wizard_data: dict[str, str] = {}
+        self._wizard_install_status: dict[int, str] = {}
+        self._wizard_install_output: str = ""
 
     # ----- compose: STABLE tree (built once) ----------------------------
     def compose(self) -> ComposeResult:
@@ -179,6 +190,37 @@ class AiOSApp(App):
                 pass
         self.router.register(JoystickInput())
         asyncio.create_task(self.router.start_all())
+
+        # ── Remote server + nodes ─────────────────────────────────────────
+        from ..remotes import RemoteNode
+        self._remote_server.on_status = lambda: {
+            "hostname": __import__("socket").gethostname(),
+            "version": self.cfg.get("app_name", "aion"),
+            "active_harness": self.store.state.active_harness,
+            "running_count": sum(1 for t in self.store.registry.tasks.values()
+                                 if t.state.value in ("running", "pending")),
+            "tasks": [{"id": t.id, "label": t.label, "state": t.state.value,
+                       "progress": t.progress}
+                      for t in self.store.registry.tasks.values()][:20],
+            "stats": {k: v for k, v in self.store.state.stats.items()
+                      if k in ("system", "stats")},
+        }
+        self._remote_server.on_run = lambda p, h: (
+            self.store.handle.__wrapped__(Intent.command(p)) if hasattr(self.store.handle, '__wrapped__')
+            else self.store.handle(Intent.command(p)) or {"task_id": "?"}
+        )
+        self._remote_server.on_cancel = lambda tid: (
+            self.store.registry.cancel(tid) or {}
+        )
+        asyncio.create_task(self._remote_server.start())
+        for rn in self.cfg.get("remote_nodes", []):
+            self._remote_nodes[rn["id"]] = RemoteNode(
+                id=rn["id"], host=rn["host"], port=rn.get("port", 8765),
+                label=rn.get("label", ""),
+            )
+
+        self.store.remote_callback = self._handle_remote_command
+
         self.title = self.cfg["app_name"]
         self.sub_title = f"multi-harness · stats visualizer · mode: {self.store.state.active_mode}"
         # route bus -> store (store is the brain, app just re-renders)
@@ -199,6 +241,11 @@ class AiOSApp(App):
                       if t.state.value in ("running", "pending"))
         self._task_wave_history.append(running / max(1, running + 1))
         self._task_wave_history = self._task_wave_history[-40:]
+
+        # poll remote nodes every 3 ticks
+        if self._viz_tick % 3 == 0 and self._remote_nodes:
+            for node in self._remote_nodes.values():
+                asyncio.create_task(self._remote_client.fetch_status(node))
 
         self._render_header()
         self._render_right()   # live HUD (tokens/agents) refresh without input
@@ -365,6 +412,18 @@ class AiOSApp(App):
             event.prevent_default()
             return
         if self.query_one("#palette").display:
+            if self._wizard_active:
+                if event.key == "escape":
+                    self._wizard_close()
+                    event.prevent_default()
+                elif event.key == "enter":
+                    p = self.query_one("#palette", expect_type=Input)
+                    text = p.value.strip()
+                    p.value = ""
+                    self.query_one("#palette").display = False
+                    self._wizard_next(text)
+                    event.prevent_default()
+                return
             if event.key == "escape":
                 self.query_one("#palette").display = False
                 self.set_focus(None)
@@ -380,6 +439,8 @@ class AiOSApp(App):
                     # compare command: "compare <prompt>" -> multi-model side-by-side
                     if text.lower().startswith("compare "):
                         asyncio.create_task(self.router.emit(Intent.compare(text[8:].strip())))
+                    elif text.lower().replace("  ", " ").startswith("setup wizard"):
+                        self._start_wizard()
                     elif text.lower().startswith("tour"):
                         self.action_tour()
                     elif text.lower() in ("manual", "help manual") or text.lower().startswith("manual "):
@@ -396,6 +457,17 @@ class AiOSApp(App):
                     self._tour_close()
                 elif event.key in ("enter", "space"):
                     self._tour_next()
+                return
+            if self._wizard_active:
+                if event.key == "escape":
+                    self._wizard_close()
+                elif event.key in ("enter", "space"):
+                    step = self.WIZARD_STEPS[self._wizard_step]
+                    if step["type"] == "env":
+                        self.query_one("#palette").display = True
+                        self.query_one("#palette").focus()
+                    else:
+                        self._wizard_next("")
                 return
             if event.key == "escape" or event.key in ("?", "/"):
                 self.query_one("#help").display = False
@@ -607,6 +679,8 @@ class AiOSApp(App):
                 return (f"[{col}]{f}◎ #{it['n']} {it['text']}[/]  "
                         f"[{theme['dim']}]{it['when']}{head}[/]")
             return self._vault_line(it, focused, theme)
+        if ws == "net":
+            return self._net_panel(theme)
         if ws in ("system", "sys"):
             return self._sys_panel(theme)
         if ws == "desktop":
@@ -981,7 +1055,7 @@ class AiOSApp(App):
         p = []
 
         ws_icons = {"desktop":"⬡","models":"◈","tasks":"▤","agent":"✦",
-                    "vault":"📓","system":"🖥","term":"▣","settings":"⚙"}
+                    "vault":"📓","system":"🖥","term":"▣","settings":"⚙","net":"🌐"}
         ws_ids = [w["id"] for w in self.cfg["workspaces"]]
 
         cpu = data.get("cpu_pct", 0); ram = data.get("ram_pct", 0)
@@ -1100,6 +1174,84 @@ class AiOSApp(App):
                  f" [{di}]'todo <t>' · 'swarm <goal>' · 'compare <q>' · 'agent create <n>'[/]"
                  f"  [{a}]{V}[/]")
         p.append(f" [{a}]└" + "─" * 48 + "┘[/]")
+        return "\n".join(p)
+
+    async def _handle_remote_command(self, text: str) -> str:
+        """Handle 'remote run|cancel|add|list' palette commands."""
+        parts = text.split(maxsplit=2)
+        if len(parts) < 2:
+            return "usage: remote run <id> <prompt> | remote cancel <tid> | remote add <id> <host:port> | remote list"
+        sub = parts[1]
+        if sub == "list":
+            if not self._remote_nodes:
+                return "no remote nodes configured"
+            return "\n".join(
+                f"  {'●' if n.alive else '○'} {n.id:14s} {n.host}:{n.port}  "
+                f"{'running' if n.running_count else 'idle'}"
+                for n in self._remote_nodes.values()
+            )
+        if sub == "add" and len(parts) >= 3:
+            rest = parts[2]
+            rid, _, addr = rest.partition(" ")
+            host, _, port_str = addr.partition(":")
+            port = int(port_str) if port_str else 8765
+            self._remote_nodes[rid] = RemoteNode(id=rid, host=host, port=port, label=rid)
+            return f"remote '{rid}' added ({host}:{port})"
+        if sub == "run" and len(parts) >= 3:
+            rest = parts[2]
+            node_id, _, prompt = rest.partition(" ")
+            node = self._remote_nodes.get(node_id)
+            if not node:
+                return f"unknown remote '{node_id}' (try: remote list)"
+            result = await self._remote_client.run_task(node, prompt)
+            if result:
+                return f"dispatched to {node_id}: {result.get('task_id', 'ok')}"
+            return f"remote '{node_id}' unreachable"
+        if sub == "cancel" and len(parts) >= 3:
+            tid = parts[2]
+            for node in self._remote_nodes.values():
+                if node.alive:
+                    result = await self._remote_client.cancel_task(node, tid)
+                    if result:
+                        return f"cancelled {tid} on {node.id}"
+            return f"task '{tid}' not found on any alive remote"
+        return f"unknown remote subcommand: {sub}"
+
+    def _net_panel(self, theme: dict) -> str:
+        """Render the Network workspace — remote aion instances."""
+        from ..remotes import RemoteNode
+        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        p = [f"[{a}]╔══ NETWORK  (port {getattr(self._remote_server, 'port', 8765)}) ═══════════════════╗[/]"]
+        p.append(f"[{a}]║[/]  [{di}]Listening for incoming — configured remotes below[/]  [{a}]║[/]")
+        p.append(f"[{a}]╠" + "═" * 54 + "╣[/]")
+
+        if not self._remote_nodes:
+            p.append(f"[{a}]║[/]  [{di}](no remotes configured — add to config/remote_nodes)[/]  [{a}]║[/]")
+
+        for node in self._remote_nodes.values():
+            age = node.age_s()
+            alive = node.alive and age < 30
+            status_ch = "●" if alive else "○"
+            status_cl = ok_ if alive else er if node.alive else di
+            hostname_s = node.hostname or node.host
+            tasks_s = ""
+            if node.running_count:
+                tasks_s = f"  [{wa}]●{node.running_count} running[/]"
+            elif alive:
+                tasks_s = f"  [{di}](idle)[/]"
+            p.append(f"[{a}]║[/]  [{status_cl}]{status_ch}[/] [{a}]{node.id:14s}[/]"
+                     f"[{di}]{hostname_s}:{node.port}[/]{tasks_s}")
+            if alive and node.tasks:
+                for t in node.tasks[:3]:
+                    st = t.get("state", "?")
+                    sc = ok_ if st == "done" else wa if st in ("running","pending") else er
+                    p.append(f"[{a}]║[/]      ▸ [{di}]{t.get('label','?')[:30]}[/]  [{sc}]{st}[/]")
+            age_s = f"{age:.0f}s ago" if not alive else ""
+            p.append(f"[{a}]║[/]  [{di}]{'─' * 50}[/]")
+
+        p.append(f"[{a}]╚" + "═" * 54 + "╝[/]")
+        p.append(f"[{di}]Ctrl-K: 'remote run <node> <prompt>' · 'remote cancel <node>' · "
+                 f"'remote add <id> <host>:<port>'[/]")
         return "\n".join(p)
 
     def _right_viz_block(self, theme: dict) -> list[str]:
@@ -1241,6 +1393,87 @@ class AiOSApp(App):
         ("Proactive Jarvis", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
     ]
 
+    WIZARD_STEPS = [
+        {"title": "Welcome to aion", "type": "info",
+         "body": "aion is a split-screen HUD + application desktop — a mission-control\n"
+                 "center for your terminal.\n\n"
+                 "It can:\n"
+                 "  • Monitor system health (CPU, RAM, disk)\n"
+                 "  • Run AI tasks via LLMs\n"
+                 "  • Manage kanban boards & notes\n"
+                 "  • Control remote aion instances\n"
+                 "  • Connect to physical hardware decks\n\n"
+                 "The rest of this wizard covers what you need to get started.\n\n"
+                 "Press Enter to continue."},
+        {"title": "Workspaces", "type": "info",
+         "body": "Nine workspaces, each for a different task:\n\n"
+                 " 1 ⬡ Desktop    — Home hub + status overview\n"
+                 " 2 ◈ Subsystems — Active AI harnesses\n"
+                 " 3 ▤ Tasks      — Task list + kanban boards\n"
+                 " 4 ✦ Agent      — AI chat + model comparison\n"
+                 " 5 📓 Vault     — Notes & memory facts\n"
+                 " 6 🖥 System    — Detailed health gauges\n"
+                 " 7 ▣ Term       — Embedded terminal (btop)\n"
+                 " 8 ⚙ Settings   — Provider keys & configuration\n"
+                 " 9 🌐 Net       — Remote aion node control\n\n"
+                 "Press 1-9 or ←→ to switch. Press Enter to continue."},
+        {"title": "Dependencies", "type": "info",
+         "body": "aion uses several external tools for AI inference.\n\n"
+                 "The next steps will detect what's installed and offer to\n"
+                 "install anything that's missing.\n\n"
+                 "All tools are optional — skip any you don't need.\n\n"
+                 "Press Enter to continue."},
+        {"title": "OmniRoute", "type": "install",
+         "binary": "omniroute",
+         "label": "OmniRoute model router",
+         "pkg": "@omniroute/cli",
+         "body": "OmniRoute is a local AI gateway that routes your requests to\n"
+                 "236+ providers through one endpoint.\n\n"
+                 "It comes with free tiers — no API key needed to start.\n"},
+        {"title": "FCM (free-coding-models)", "type": "install",
+         "binary": "free-coding-models",
+         "label": "FCM free models daemon",
+         "pkg": "free-coding-models",
+         "body": "FCM is a local daemon that finds & routes to free LLM models.\n\n"
+                 "Runs on localhost:19280. aion uses it as the default backend\n"
+                 "when cloud providers aren't configured.\n"},
+        {"title": "OpenCode", "type": "install",
+         "binary": "opencode",
+         "label": "OpenCode coding agent",
+         "pkg": "opencode-ai",
+         "body": "OpenCode is an agentic CLI for software engineering tasks.\n\n"
+                 "aion can delegate coding work to it via the opencode harness.\n"},
+        {"title": "Hermes Agent", "type": "install",
+         "binary": "hermes",
+         "label": "Hermes Agent framework",
+         "install_cmd": ["sh", "-c", "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"],
+         "body": "Hermes is Nous Research's self-improving AI agent.\n\n"
+                 "aion reads its memory, kanban boards, and can spawn it as\n"
+                 "a subprocess for complex multi-step tasks.\n"},
+        {"title": "Groq API key", "type": "env", "env_var": "GROQ_API_KEY",
+         "body": "Groq provides fast inference on open-source models.\n"
+                 "A free key is enough to start.\n\n"
+                 "1. Go to https://console.groq.com/keys\n"
+                 "2. Create a free API key\n"
+                 "3. Paste it below (or press Enter to skip)\n\n"
+                 "Without any cloud keys, aion falls back to FCM (local)."},
+        {"title": "OpenRouter API key", "type": "env", "env_var": "OPENROUTER_API_KEY",
+         "body": "OpenRouter gives access to 200+ models.\n\n"
+                 "1. Go to https://openrouter.ai/keys\n"
+                 "2. Create a key and copy it\n"
+                 "3. Paste it below (or press Enter to skip)"},
+        {"title": "All set", "type": "info",
+         "body": "Setup is complete.\n\n"
+                 "Quick tips:\n"
+                 "  • Ctrl-K         — command palette (try 'todo buy milk')\n"
+                 "  • ? or /         — help reference\n"
+                 "  • w              — interactive tour\n"
+                 "  • setup set <K> <V> — write any env key\n\n"
+                 "Keys 1-9 switch workspaces. ↑↓/jk select items. Enter activates.\n\n"
+                 "You can rerun this wizard anytime: Ctrl-K → 'setup wizard'\n\n"
+                 "Press Enter to finish."},
+    ]
+
     def action_skip_boot(self) -> None:
         """Skip the cinematic boot sequence (any key during boot)."""
         if self._boot_tick < self.BOOT_TICKS:
@@ -1298,6 +1531,197 @@ class AiOSApp(App):
         self._tour_step = 0
         self.query_one("#help").display = False
 
+    # ---- setup wizard ---------------------------------------------------
+
+    def _start_wizard(self) -> None:
+        """Launch the setup wizard with onboarding + install + env config."""
+        env_path = Path.home() / ".env"
+        existing = {}
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+        self._wizard_data = {"env": existing}
+        self._wizard_install_status = {}
+        self._wizard_install_output = ""
+        self._wizard_active = True
+        self._wizard_step = 0
+        self._wizard_render()
+
+    def _wizard_render(self) -> None:
+        """Render the current wizard step."""
+        a = self.cfg["theme"]["accent"]
+        di, ok_, er, wa = (self.cfg["theme"][k] for k in ("dim", "ok", "err", "warn"))
+        step = self.WIZARD_STEPS[self._wizard_step]
+        t = step["type"]
+        n = len(self.WIZARD_STEPS)
+        h = self.query_one("#help")
+        p = self.query_one("#palette")
+
+        if t == "install":
+            idx = self._wizard_step
+            status = self._wizard_install_status.get(idx, "")
+            found = shutil.which(step["binary"]) is not None
+
+            if not status and found:
+                self._wizard_install_status[idx] = "found"
+                status = "found"
+            elif not status:
+                self._wizard_install_status[idx] = "missing"
+                status = "missing"
+
+            suffix = ""
+            if status == "found":
+                suffix = f"[{ok_}]✓ {step['label']} is ready[/]"
+                footer = f"[{di}]Enter: next · Esc: cancel[/]"
+            elif status == "missing":
+                suffix = f"[{wa}]○ {step['label']} not detected[/]"
+                if "install_cmd" in step:
+                    cmd = "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
+                else:
+                    cmd = f"npm install -g {step['pkg']}"
+                suffix += f"\n[{di}]Install: {cmd}[/]"
+                footer = f"[{di}]Enter: install · Esc: skip[/]"
+            elif status == "installing":
+                suffix = f"[{wa}]⟳ Installing {step['label']}...[/]"
+                if self._wizard_install_output:
+                    lines = self._wizard_install_output.strip().split("\n")[-6:]
+                    suffix += "\n" + "\n".join(f"[{di}]  {l}[/]" for l in lines)
+                footer = f"[{di}]Waiting...[/]"
+            elif status == "failed":
+                err = self._wizard_install_output.strip().split("\n")[-3:]
+                suffix = f"[{er}]✗ Install failed[/]\n" + "\n".join(f"[{di}]  {l}[/]" for l in err)
+                footer = f"[{di}]Enter: skip · Esc: cancel[/]"
+            elif status == "skipped":
+                suffix = f"[{di}]○ Skipped[/]"
+                footer = f"[{di}]Enter: next · Esc: cancel[/]"
+
+            body = step["body"] + "\n\n" + suffix
+            p.display = False
+
+        elif t == "env":
+            var_name = step["env_var"]
+            current = self._wizard_data.get("env", {}).get(var_name)
+            if current:
+                preview = current[:8] + "..." + current[-4:]
+                body = step["body"] + f"\n\n[{di}]Current value: {preview}[/]"
+            else:
+                body = step["body"]
+            footer = f"[{di}]Type value and press Enter · Esc: cancel[/]"
+            placeholder = f"{var_name}=" + ("(set)" if current else "(Enter to skip)")
+            p.placeholder = placeholder
+            p.value = ""
+            p.display = True
+            p.focus()
+
+        else:  # info
+            body = step["body"]
+            footer = f"[{di}]Enter: next · Esc: cancel[/]"
+            p.display = False
+
+        h.update(
+            f"[{a}]◆ SETUP {self._wizard_step+1}/{n}: {step['title']}[/]\n\n"
+            f"[{di}]{body}[/]\n\n"
+            f"{footer}"
+        )
+        h.display = True
+
+    def _wizard_next(self, raw: str) -> None:
+        """Advance or trigger install for the current step."""
+        if not self._wizard_active:
+            return
+        step = self.WIZARD_STEPS[self._wizard_step]
+
+        if step["type"] == "install":
+            idx = self._wizard_step
+            status = self._wizard_install_status.get(idx, "")
+            found = shutil.which(step["binary"]) is not None
+
+            if found or status in ("found", "skipped", "failed"):
+                self._wizard_step += 1
+                if self._wizard_step >= len(self.WIZARD_STEPS):
+                    self._wizard_finish()
+                else:
+                    self._wizard_render()
+                return
+
+            if status == "missing":
+                self._wizard_install_status[idx] = "installing"
+                self._wizard_install_output = ""
+                self._wizard_render()
+                asyncio.create_task(self._wizard_run_install(step, idx))
+                return
+
+            # installing: ignore Enter
+            return
+
+        if step["type"] == "env" and raw:
+            self._wizard_data["env"][step["env_var"]] = raw
+
+        self._wizard_step += 1
+        if self._wizard_step >= len(self.WIZARD_STEPS):
+            self._wizard_finish()
+        else:
+            self._wizard_render()
+
+    async def _wizard_run_install(self, step: dict, idx: int) -> None:
+        """Install a dependency asynchronously."""
+        import subprocess
+        cmd = step.get("install_cmd", ["npm", "install", "-g", step["pkg"]])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            output = out.decode("utf-8", errors="replace") if out else ""
+            self._wizard_install_output = output
+            if proc.returncode == 0 and shutil.which(step["binary"]):
+                self._wizard_install_status[idx] = "found"
+            else:
+                self._wizard_install_status[idx] = "failed"
+        except FileNotFoundError:
+            self._wizard_install_output = f"'{cmd[0]}' not found — is npm/node installed?"
+            self._wizard_install_status[idx] = "failed"
+        except Exception as e:
+            self._wizard_install_output = str(e)
+            self._wizard_install_status[idx] = "failed"
+        self._wizard_render()
+
+    def _wizard_finish(self) -> None:
+        """Write collected env vars to ~/.env and close."""
+        collected = {k: v for k, v in self._wizard_data.get("env", {}).items() if v}
+        if collected:
+            env_path = Path.home() / ".env"
+            lines = []
+            seen = set()
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    stripped = line.strip()
+                    if "=" in stripped and not stripped.startswith("#"):
+                        key = stripped.split("=", 1)[0].strip()
+                        if key in collected:
+                            lines.append(f"{key}={collected[key]}")
+                            seen.add(key)
+                            continue
+                    lines.append(line)
+            for key, val in collected.items():
+                if key not in seen:
+                    lines.append(f"{key}={val}")
+            env_path.write_text("\n".join(lines) + "\n")
+        self._wizard_close()
+
+    def _wizard_close(self) -> None:
+        self._wizard_active = False
+        self._wizard_step = 0
+        self._wizard_data = {}
+        self._wizard_install_status = {}
+        self._wizard_install_output = ""
+        self.query_one("#help").display = False
+        self.query_one("#palette").display = False
+
     def _help_text(self, extended: bool = False) -> str:
         theme = self.cfg["theme"]
         ws_count = len(self.cfg["workspaces"])
@@ -1312,7 +1736,7 @@ class AiOSApp(App):
                 f" [{di}]aion is an agentic OS cockpit — a split-screen HUD + application [/]\n"
                 f" [{di}]desktop. It runs on your terminal and adapts to what you do.[/]\n"
                 "\n"
-                f"[{a}]WORKSPACES (keys 1-8)[/]\n"
+                f"[{a}]WORKSPACES (keys 1-9)[/]\n"
                 f" [{di}]1 ⬡ Desktop[/]   Home hub — status, launcher, context widgets\n"
                 f" [{di}]2 ◈ Subsystems[/] Active harnesses filtered by context\n"
                 f" [{di}]3 ▤ Tasks[/]      Running/finished tasks + kanban boards\n"
@@ -1321,6 +1745,7 @@ class AiOSApp(App):
                 f" [{di}]6 🖥 System[/]   Detailed computer + health + physis gauges\n"
                 f" [{di}]7 ▣ Term[/]     Embedded terminal (btop, shell, etc)\n"
                 f" [{di}]8 ⚙ Settings[/] API providers + installed skills\n"
+                f" [{di}]9 🌐 Net[/]      Remote aion nodes + live status\n"
                 "\n"
                 f"[{a}]CTRL-K COMMANDS[/]\n"
                 f" [{di}]todo <t>[/]     add to-do item\n"
@@ -1331,6 +1756,8 @@ class AiOSApp(App):
                 f" [{di}]agent list[/]   show all agents\n"
                 f" [{di}]board create <t>[/] create kanban board\n"
                 f" [{di}]board add <t>[/] add card to board\n"
+                f" [{di}]setup wizard[/]   full interactive onboarding\n"
+                f" [{di}]setup set <K> <V>[/] write env key to ~/.env\n"
                 f" [{di}]setup <scopes>[/] profile scan (dev,writing,data...)\n"
                 f" [{di}]goto <ws>[/]     jump to workspace\n"
                 f" [{di}]help manual[/]  this manual\n"
@@ -1360,7 +1787,7 @@ class AiOSApp(App):
             "\n"
             f"[{a}]Ctrl-K palette:[/] just type what you want\n"
             "  'todo buy milk' · 'agent create Alice' · 'swarm research'\n"
-            "  'compare explain recursion' · 'goto vault' · 'setup dev'\n"
+            "  'compare recursion' · 'setup wizard' · 'setup dev'\n"
             "\n"
             f"[{a}]Keys[/]  {ws_keys}:workspaces  ↑↓/jk:select  Enter:activate\n"
             f"  p pause  x cancel  r re-run  v voice  ? help\n"
@@ -1368,7 +1795,7 @@ class AiOSApp(App):
             "\n"
             f"[{a}]Workspaces[/]\n"
             "  1⬡ Desktop  2◈ Subsystems  3▤ Tasks  4✦ Agent\n"
-            "  5📓 Vault   6🖥 System     7▣ Term   8⚙ Settings\n"
+            "  5📓 Vault   6🖥 System     7▣ Term   8⚙ Settings  9🌐 Net\n"
             "\n"
             f"[{a}]More:[/] type 'help manual' in Ctrl-K for full reference"
         )
