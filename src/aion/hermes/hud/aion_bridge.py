@@ -17,8 +17,14 @@ from .collectors.sessions import collect_sessions
 
 
 def _oneline(text: str) -> str:
-    """Collapse whitespace so multi-line prompts render on one HUD row."""
-    return re.sub(r"\s+", " ", (text or "").strip())
+    """Collapse whitespace and neutralize Textual markup brackets.
+
+    Prompt/correction text is arbitrary user content; a stray '[' or ']' is
+    parsed as a markup tag and raises MarkupError in the render. Swap the
+    square brackets for round ones so the HUD stays readable and safe.
+    """
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    return text.replace("[", "(").replace("]", ")")
 
 
 def collect_mind(hermes_dir: str | None = None) -> dict:
