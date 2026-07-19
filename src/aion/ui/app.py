@@ -1112,6 +1112,13 @@ class AiOSApp(App):
                 lines.append(f"[{theme['ok']}]{self.observer.ai_line}[/]")
             elif not self.store.state.observer_ai:
                 lines.append(f"[{theme['dim']}]Ctrl-K: observe ai[/]")
+            # agent-event alerts (rate-limit / usage / waiting-for-input)
+            if self.observer.attention_line:
+                lines.append(f"[{theme['err']}]{self.observer.attention_line}[/]")
+            if self.observer.alert_line:
+                acol = theme["err"] if self.observer.alert_kind == "exhausted" \
+                    else theme["warn"]
+                lines.append(f"[{acol}]{self.observer.alert_line}[/]")
             lines.append("")
         lines.append(f"[{theme['accent']}]LIVE TASKS[/]")
         if not running:
