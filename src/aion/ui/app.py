@@ -269,7 +269,7 @@ class AiOSApp(App):
             if term_h is None:
                 term_h = TermHarness(
                     HarnessConfig.from_dict({"id": "term", "type": "term",
-                                             "command": desired_cmd or "btop"}),
+                                             "command": desired_cmd or os.environ.get("SHELL", "bash")}),
                     self.bus, self.store.registry)
             term_h.ensure_running()
             self._term_pane = TermPane(term_h, id="termpane")
@@ -624,6 +624,9 @@ class AiOSApp(App):
                 desc = it.get("description", "")[:60]
                 return (f"[{col}]{f}{it.get('name','?')}[/]  "
                         f"[{theme['dim']}]{desc}[/]")
+            if it.get("type") == "env_hint":
+                return (f"[{theme['dim']}]{f} {it.get('text','')}[/]\n"
+                        f"  [{theme['warn']}]{it.get('hint','')}[/]")
             ep = it.get("endpoint", "")
             key = it.get("key_preview", "")
             return (f"[{col}]{f}{it['id']}[/]\n"

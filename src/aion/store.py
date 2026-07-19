@@ -121,22 +121,48 @@ class Store:
 
     async def _load_settings_data(self) -> None:
         try:
-            from .hermes.env import parse_provider_env
-            self.state.settings_providers = dict(parse_provider_env())
+            env_path = Path.home() / ".env"
+            providers: dict[str, dict] = {}
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    preview = v[:8] + "…" + v[-4:] if len(v) > 16 else v
+                    providers[k] = {"endpoint": "", "key_preview": preview}
+            self.state.settings_providers = providers
             await self.bus.publish(TOPIC_SETTINGS, {
                 "action": "providers",
-                "data": self.state.settings_providers,
+                "data": providers,
             })
         except Exception:
             pass
 
     async def _load_skills_data(self) -> None:
         try:
-            from .hermes import SkillLoader
-            skills = SkillLoader().list_all()
-            data = [{"name": s.name, "description": s.description, "source": s.source}
-                    for s in skills]
-            await self.bus.publish(TOPIC_SKILL, {"action": "list", "data": data})
+            tools = []
+            for binary, name in [("opencode", "OpenCode"), ("hermes", "Hermes"),
+                                 ("agy", "Antigravity"), ("omniroute", "OmniRoute"),
+                                 ("claude", "Claude Code"), ("free-coding-models", "FCM"),
+                                 ("codex", "Codex CLI")]:
+                if shutil.which(binary) is not None:
+                    tools.append({"name": name, "description": f"`{binary}` found", "source": "PATH"})
+            # scan known skill dirs
+            skill_dirs = [
+                Path.home() / ".config" / "opencode" / "skills",
+                Path.home() / ".claude" / "skills",
+                Path.home() / ".agents" / "skills",
+            ]
+            for sd in skill_dirs:
+                if sd.exists():
+                    for p in sd.iterdir():
+                        if p.is_dir() and (p / "SKILL.md").exists():
+                            tools.append({"name": p.name, "description": "installed skill", "source": str(sd)})
+            self.state.skills = tools
+            await self.bus.publish(TOPIC_SKILL, {"action": "list", "data": tools})
         except Exception:
             pass
 
@@ -231,7 +257,12 @@ class Store:
                        "description": s.get("description", ""),
                        "source": s.get("source", "")}
                       for s in self.state.skills]
-            return providers + skills
+            items = providers + skills
+            if not items:
+                items = [{"type": "env_hint", "id": "setup",
+                          "text": "No env vars or skills found.",
+                          "hint": "Ctrl-K: 'setup wizard' to configure providers"}]
+            return items
         if ws == "vault":
             v = self.state.stats.get("vault")
             items = []
