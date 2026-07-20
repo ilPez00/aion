@@ -95,6 +95,7 @@ class SessionInfo:
     reasoning_tokens: int = 0
     estimated_cost_usd: float = 0.0
     model: Optional[str] = None
+    node: str = "local"          # which machine this session ran on
 
     @property
     def total_tokens(self) -> int:
@@ -121,6 +122,11 @@ class SessionsState:
     sessions: list[SessionInfo] = field(default_factory=list)
     daily_stats: list[DailyStats] = field(default_factory=list)
     tool_usage: dict[str, int] = field(default_factory=dict)  # tool_name -> count
+    node: str = "local"          # which machine these sessions came from
+    # True when a remote node's state.db could not be fetched. Distinguishes
+    # "node is down" from "node has no sessions" — an empty list means the
+    # latter only when this is False.
+    unreachable: bool = False
 
     @property
     def total_sessions(self) -> int:

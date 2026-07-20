@@ -877,6 +877,9 @@ def build_harnesses(cfgs: list[dict], bus: Bus, registry: TaskRegistry,
             # lazy import to avoid a circular import (term <-> harnesses)
             from .term import TermHarness
             cls = TermHarness
+        elif cfg.type == "remote-term":
+            from .term import RemoteTermHarness
+            cls = RemoteTermHarness
         else:
             cls = HARNESS_TYPES.get(cfg.type, DemoHarness)
         out[cfg.id] = cls(cfg, bus, registry, store)

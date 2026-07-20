@@ -32,11 +32,14 @@ def test_fallback_skips_to_openrouter_when_fcm_groq_down(monkeypatch):
 
 
 def test_fallback_reports_all_down(monkeypatch):
+    # OmniRoute is the first backend in the chain; it must be stubbed too or
+    # this test passes/fails depending on whether the local router is up.
+    monkeypatch.setattr(llm, "_omniroute_chat", lambda m, timeout=30: "⚠️ ORT down")
     monkeypatch.setattr(llm, "_fcm_chat", lambda m, timeout=30: "⚠️ FCM down")
     monkeypatch.setattr(llm, "_groq_chat", lambda m, timeout=30: "⚠️ Groq 403")
     monkeypatch.setattr(llm, "_openrouter_chat", lambda m, timeout=30: "⚠️ HTTP 401")
     out = llm.chat_send(ChatSession(), "hi")
-    assert out.startswith("⚠️ LLM unavailable (tried FCM, Groq, OpenRouter)")
+    assert out.startswith("⚠️ LLM unavailable (tried OmniRoute, FCM, Groq, OpenRouter)")
 
 
 def test_chat_send_multi_supports_openrouter(monkeypatch):

@@ -1,4 +1,12 @@
-"""Collect live agent processes, cron agents, and recent session activity."""
+"""Collect live agent processes, cron agents, and recent session activity.
+
+Runs against any machine in the node registry. The local node keeps its fast
+path — direct /proc reads, one pgrep per binary — because it costs nothing.
+A remote node cannot afford that: /proc is thousands of tiny reads and each
+pgrep would be its own ssh round trip. So remote scanning is a *single* `ps`
+listing the whole process table, filtered in Python here. One round trip per
+node instead of one per process.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ....nodes import LOCAL, Node, NodeRegistry
 from .utils import parse_timestamp, default_hermes_dir, safe_get
 
 
@@ -32,6 +41,7 @@ class AgentProcess:
     tty: Optional[str] = None
     tmux_pane: Optional[str] = None
     tmux_jump_hint: Optional[str] = None
+    node: str = "local"         # which machine this process is on
 
 
 @dataclass
@@ -44,6 +54,7 @@ class RecentSession:
     tool_call_count: int = 0
     model: Optional[str] = None
     duration_minutes: Optional[float] = None
+    node: str = "local"
 
 
 @dataclass
@@ -59,6 +70,12 @@ class TmuxPane:
     agent_pid: Optional[int] = None
     jump_hint: Optional[str] = None
     preview_lines: list[str] = field(default_factory=list)
+    node: str = "local"
+
+    @property
+    def target(self) -> str:
+        """Where to send keys: 'forge:%3' for remote, '%3' for local."""
+        return self.pane_id if self.node == "local" else f"{self.node}:{self.pane_id}"
 
 
 @dataclass
@@ -69,6 +86,7 @@ class OperatorAlert:
     summary: str
     jump_hint: Optional[str] = None
     detected_at: datetime = field(default_factory=datetime.now)
+    node: str = "local"
 
 
 @dataclass
@@ -77,6 +95,10 @@ class AgentsState:
     recent_sessions: list[RecentSession] = field(default_factory=list)
     tmux_panes: list[TmuxPane] = field(default_factory=list)
     operator_alerts: list[OperatorAlert] = field(default_factory=list)
+    node: str = "local"
+    # Set when a remote node did not answer. An empty process list means
+    # "no agents running" only when this is False.
+    unreachable: bool = False
 
     @property
     def live_count(self) -> int:
@@ -128,9 +150,113 @@ _ALERT_PATTERNS = [
 ]
 
 
-def _shorten_home_path(path: str) -> str:
-    home = os.path.expanduser("~")
+def _shorten_home_path(path: str, home: str | None = None) -> str:
+    home = home or os.path.expanduser("~")
     return "~" + path[len(home):] if path.startswith(home) else path
+
+
+# --------------------------------------------------------------------------
+# remote scanning: one ps for the whole node
+# --------------------------------------------------------------------------
+# Our own probe shows up in the remote process table (ssh runs it there) and
+# `ps` matches its own args. Drop anything that is one of our commands, or we
+# report a phantom "hermes" for every node we look at.
+_PROBE_MARKERS = ("ps -eo", "ps -Ao", "tmux list-panes", "readlink /proc")
+
+
+def _parse_ps_line(line: str) -> Optional[tuple[int, float, int, str, str]]:
+    """Parse one `ps -eo pid=,rss=,etime=,tty=,args=` row.
+
+    Returns (pid, mem_mb, uptime_seconds, tty, args) or None.
+    """
+    parts = line.split(None, 4)
+    if len(parts) < 5:
+        return None
+    pid_s, rss_s, etime_s, tty_s, args = parts
+    try:
+        pid = int(pid_s)
+    except ValueError:
+        return None
+    try:
+        mem_mb = round(int(rss_s) / 1024, 1)
+    except ValueError:
+        mem_mb = 0.0
+    tty = "" if tty_s in ("?", "??", "-") else tty_s
+    return pid, mem_mb, _parse_etime(etime_s), tty, args
+
+
+def _scan_processes_remote(node: Node) -> tuple[list[AgentProcess], bool]:
+    """Scan a remote node's whole process table in one ps call.
+
+    Returns (processes, unreachable). Every configured agent gets an entry so
+    the HUD can render "idle" rows exactly as it does locally.
+    """
+    res = node.run(["ps", "-eo", "pid=,rss=,etime=,tty=,args="], timeout=15)
+    if not res.ok:
+        if res.unreachable:
+            return [], True
+        # ps ran and failed (odd but survivable): report every agent idle.
+        return [AgentProcess(name=n, binary=b, running=False, node=node.label)
+                for n, b in AGENT_PROCESSES], False
+
+    found: list[AgentProcess] = []
+    seen_pids: set[int] = set()
+    for line in res.stdout.splitlines():
+        parsed = _parse_ps_line(line)
+        if parsed is None:
+            continue
+        pid, mem_mb, uptime_s, tty, args = parsed
+        if any(marker in args for marker in _PROBE_MARKERS):
+            continue
+        for name, binary in AGENT_PROCESSES:
+            # `pgrep -f` semantics: match anywhere in the full command line.
+            if binary not in args or pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            found.append(AgentProcess(
+                name=name, binary=binary, running=True, pid=pid,
+                uptime_seconds=uptime_s, uptime=_format_uptime(uptime_s),
+                cmdline=args[:77] + "..." if len(args) > 80 else args,
+                mem_mb=mem_mb, tty=tty or None, node=node.label,
+            ))
+            break
+
+    # Agents with no live process still need a row, same as the local path.
+    live_names = {a.name for a in found}
+    for name, binary in AGENT_PROCESSES:
+        if name not in live_names:
+            found.append(AgentProcess(name=name, binary=binary,
+                                      running=False, node=node.label))
+    _fill_remote_cwds(node, found)
+    return found, False
+
+
+def _fill_remote_cwds(node: Node, agents: list[AgentProcess]) -> None:
+    """Resolve cwd for every live remote agent in one extra round trip.
+
+    /proc/<pid>/cwd is a symlink per process; readlink-ing them individually
+    would be one ssh call each. Batch into a single shell loop instead. Best
+    effort: unreadable links (other users' processes) just stay None.
+    """
+    pids = [a.pid for a in agents if a.running and a.pid is not None]
+    if not pids:
+        return
+    script = "; ".join(
+        f'echo "{p} $(readlink /proc/{p}/cwd 2>/dev/null)"' for p in pids)
+    res = node.run(["sh", "-c", script], timeout=15)
+    if not res.ok:
+        return
+    cwds: dict[int, str] = {}
+    for line in res.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].strip():
+            try:
+                cwds[int(parts[0])] = parts[1].strip()
+            except ValueError:
+                continue
+    for agent in agents:
+        if agent.pid in cwds:
+            agent.cwd = _shorten_home_path(cwds[agent.pid], node.home)
 
 
 def _get_process_info_linux(name: str, binary: str) -> list[AgentProcess]:
@@ -323,66 +449,63 @@ def _get_tty_for_pid(pid: int) -> Optional[str]:
     return ttys.get(pid)
 
 
-def _get_ttys_for_pids(pids: list[int]) -> dict[int, str]:
+def _get_ttys_for_pids(pids: list[int], node: Node = LOCAL) -> dict[int, str]:
     """Return a {pid: tty} map for multiple PIDs in one ps call."""
     if not pids:
         return {}
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
-            capture_output=True, text=True, timeout=3,
-        )
-        if result.returncode != 0:
-            return {}
-        mapping: dict[int, str] = {}
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] != "?":
-                try:
-                    mapping[int(parts[0])] = parts[1]
-                except ValueError:
-                    pass
-        return mapping
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    result = node.run(
+        ["ps", "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
+        timeout=8)
+    if not result.ok:
         return {}
-
-
-def _list_tmux_panes() -> list[TmuxPane]:
-    """Discover all tmux panes across all sessions. Returns [] if tmux unavailable."""
-    fmt = "#{pane_id}\t#{pane_tty}\t#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}\t#{pane_pid}"
-    try:
-        result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", fmt],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        panes = []
-        for line in result.stdout.strip().split("\n"):
-            parts = line.split("\t")
-            if len(parts) != 7:
-                continue
-            pane_id, tty, session, win_idx, pane_idx, cmd, pane_pid = parts
+    mapping: dict[int, str] = {}
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] != "?":
             try:
-                panes.append(TmuxPane(
-                    pane_id=pane_id,
-                    session_name=session,
-                    window_index=int(win_idx),
-                    pane_index=int(pane_idx),
-                    tty=tty,
-                    current_command=cmd,
-                    pane_pid=int(pane_pid),
-                ))
-            except (ValueError, IndexError):
-                continue
-        return panes
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                mapping[int(parts[0])] = parts[1]
+            except ValueError:
+                pass
+    return mapping
+
+
+def _list_tmux_panes(node: Node = LOCAL) -> list[TmuxPane]:
+    """Discover all tmux panes on `node`. Returns [] if tmux is unavailable.
+
+    tmux is what makes remote control possible at all: an agent TUI running
+    in a bare ssh session cannot be attached to after the fact, but a pane
+    can be captured and sent keys from anywhere.
+    """
+    fmt = "#{pane_id}\t#{pane_tty}\t#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}\t#{pane_pid}"
+    result = node.run(["tmux", "list-panes", "-a", "-F", fmt], timeout=8)
+    if not result.ok or not result.stdout.strip():
         return []
+    panes = []
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split("\t")
+        if len(parts) != 7:
+            continue
+        pane_id, tty, session, win_idx, pane_idx, cmd, pane_pid = parts
+        try:
+            panes.append(TmuxPane(
+                pane_id=pane_id,
+                session_name=session,
+                window_index=int(win_idx),
+                pane_index=int(pane_idx),
+                tty=tty,
+                current_command=cmd,
+                pane_pid=int(pane_pid),
+                node=node.label,
+            ))
+        except (ValueError, IndexError):
+            continue
+    return panes
 
 
 def _match_processes_to_panes(
     processes: list[AgentProcess],
     panes: list[TmuxPane],
+    node: Node = LOCAL,
 ) -> None:
     """Match running AgentProcesses to TmuxPanes via TTY. Mutates both lists."""
     # pane_tty is e.g. "/dev/pts/3"; ps returns "pts/3" — normalize to the shorter form
@@ -391,13 +514,16 @@ def _match_processes_to_panes(
         normalized = pane.tty[5:] if pane.tty.startswith("/dev/") else pane.tty
         tty_to_pane[normalized] = pane
 
-    running_pids = [a.pid for a in processes if a.running and a.pid is not None]
-    pid_to_tty = _get_ttys_for_pids(running_pids)
+    # The remote scan already carried tty out of its single ps; only ask for
+    # the ones still missing, so a remote node costs zero extra round trips.
+    need_tty = [a.pid for a in processes
+                if a.running and a.pid is not None and not a.tty]
+    pid_to_tty = _get_ttys_for_pids(need_tty, node) if need_tty else {}
 
     for agent in processes:
         if not agent.running or agent.pid is None:
             continue
-        tty = pid_to_tty.get(agent.pid)
+        tty = agent.tty or pid_to_tty.get(agent.pid)
         if not tty:
             continue
         agent.tty = tty
@@ -410,18 +536,32 @@ def _match_processes_to_panes(
             pane.jump_hint = jump
 
 
-def _capture_pane_preview(pane_id: str, lines: int = 5) -> list[str]:
-    """Capture the last N lines of a tmux pane. Returns [] on failure."""
-    try:
-        result = subprocess.run(
-            ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", f"-{lines}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return [ln for ln in result.stdout.split("\n") if ln.strip()]
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+def _capture_pane_preview(pane_id: str, lines: int = 5,
+                          node: Node = LOCAL) -> list[str]:
+    """Capture the last N lines of a tmux pane on `node`. [] on failure."""
+    result = node.run(
+        ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", f"-{lines}"],
+        timeout=8)
+    if result.ok:
+        return [ln for ln in result.stdout.split("\n") if ln.strip()]
     return []
+
+
+def send_keys(pane_id: str, keys: str, node: Node = LOCAL,
+              enter: bool = True) -> bool:
+    """Type into a live agent pane on `node`. The control half of the seam.
+
+    This is how one aion drives a session on another machine: answer an
+    approval prompt, unstick a waiting agent, send a follow-up. `keys` goes
+    through tmux's literal flag so it is never parsed as a key name.
+    """
+    argv = ["tmux", "send-keys", "-t", pane_id, "-l", keys]
+    if not node.run(argv, timeout=8).ok:
+        return False
+    if enter:
+        return node.run(["tmux", "send-keys", "-t", pane_id, "Enter"],
+                        timeout=8).ok
+    return True
 
 
 def _find_alert_in_lines(lines: list[str]) -> Optional[tuple[str, str]]:
@@ -462,6 +602,7 @@ def _detect_operator_alerts(
                 alert_type=alert_type,
                 summary=summary,
                 jump_hint=pane.jump_hint,
+                node=pane.node,
             ))
         elif not pane.preview_lines and agent.uptime_seconds > 300:
             alerts.append(OperatorAlert(
@@ -470,14 +611,19 @@ def _detect_operator_alerts(
                 alert_type="stuck",
                 summary="no recent output",
                 jump_hint=pane.jump_hint,
+                node=pane.node,
             ))
 
     return alerts
 
 
-def _get_recent_sessions(hermes_dir: str, limit: int = 10) -> list[RecentSession]:
-    """Get recent sessions from state.db."""
-    db_path = Path(hermes_dir) / "state.db"
+def _get_recent_sessions(hermes_dir: str, limit: int = 10,
+                         node: Node = LOCAL) -> list[RecentSession]:
+    """Get recent sessions from state.db on `node` (copied local first)."""
+    fetched = node.fetch(str(Path(hermes_dir) / "state.db"))
+    if fetched is None:
+        return []
+    db_path = fetched
     if not db_path.exists():
         return []
 
@@ -522,6 +668,7 @@ def _get_recent_sessions(hermes_dir: str, limit: int = 10) -> list[RecentSession
                     tool_call_count=safe_get(row, "tool_count", 0),
                     model=safe_get(row, "model"),
                     duration_minutes=duration,
+                    node=node.label,
                 ))
             except Exception:
                 continue
@@ -533,14 +680,53 @@ def _get_recent_sessions(hermes_dir: str, limit: int = 10) -> list[RecentSession
     return sessions
 
 
-def collect_agents(hermes_dir: str | None = None) -> AgentsState:
-    """Collect all agent data."""
+def collect_agents(hermes_dir: str | None = None,
+                   node: Node = LOCAL) -> AgentsState:
+    """Collect all agent data from `node` (default: this machine)."""
     if hermes_dir is None:
-        hermes_dir = default_hermes_dir(hermes_dir)
+        # HERMES_HOME describes *our* box; a remote node resolves ~ its way.
+        hermes_dir = default_hermes_dir(None) if node.is_local else "~/.hermes"
 
-    # Scan for agent processes
-    processes = []
-    seen_pids = set()
+    if node.is_local:
+        processes = _scan_processes_local()
+        unreachable = False
+    else:
+        processes, unreachable = _scan_processes_remote(node)
+        if unreachable:
+            # Don't spend more round trips on a node that just failed to answer.
+            return AgentsState(node=node.label, unreachable=True)
+
+    # tmux discovery
+    panes = _list_tmux_panes(node)
+    if panes:
+        _match_processes_to_panes(processes, panes, node)
+        matched = [p for p in panes if p.agent_pid is not None]
+        if matched:
+            with ThreadPoolExecutor(max_workers=min(len(matched), 4)) as pool:
+                previews = pool.map(
+                    lambda pid: _capture_pane_preview(pid, node=node),
+                    (p.pane_id for p in matched))
+            for pane, preview in zip(matched, previews):
+                pane.preview_lines = preview
+
+    alerts = _detect_operator_alerts(panes, processes) if panes else []
+
+    recent_sessions = _get_recent_sessions(hermes_dir, node=node)
+
+    return AgentsState(
+        processes=processes,
+        recent_sessions=recent_sessions,
+        tmux_panes=panes,
+        operator_alerts=alerts,
+        node=node.label,
+        unreachable=unreachable,
+    )
+
+
+def _scan_processes_local() -> list[AgentProcess]:
+    """The original local scan: one pgrep per binary, /proc for the details."""
+    processes: list[AgentProcess] = []
+    seen_pids: set[int] = set()
 
     for name, binary in AGENT_PROCESSES:
         found = _get_process_info(name, binary)
@@ -556,26 +742,37 @@ def collect_agents(hermes_dir: str | None = None) -> AgentsState:
                     continue
 
             processes.append(agent)
+    return processes
 
-    # tmux discovery
-    panes = _list_tmux_panes()
-    if panes:
-        _match_processes_to_panes(processes, panes)
-        matched = [p for p in panes if p.agent_pid is not None]
-        if matched:
-            with ThreadPoolExecutor(max_workers=min(len(matched), 4)) as pool:
-                previews = pool.map(_capture_pane_preview, (p.pane_id for p in matched))
-            for pane, preview in zip(matched, previews):
-                pane.preview_lines = preview
 
-    alerts = _detect_operator_alerts(panes, processes) if panes else []
+def collect_agents_multi(registry: NodeRegistry,
+                         hermes_dir: str | None = None,
+                         ) -> dict[str, AgentsState]:
+    """Agent state from every enabled node, keyed by node label.
 
-    # Get recent sessions
-    recent_sessions = _get_recent_sessions(hermes_dir)
+    Nodes are polled in parallel: a box that is asleep must not hold the HUD
+    hostage behind its ssh ConnectTimeout while the others have answers.
+    """
+    nodes = registry.all()
+    if len(nodes) == 1:
+        return {nodes[0].label: collect_agents(hermes_dir, nodes[0])}
 
-    return AgentsState(
-        processes=processes,
-        recent_sessions=recent_sessions,
-        tmux_panes=panes,
-        operator_alerts=alerts,
-    )
+    with ThreadPoolExecutor(max_workers=min(len(nodes), 8)) as pool:
+        states = pool.map(lambda n: collect_agents(hermes_dir, n), nodes)
+    return {n.label: s for n, s in zip(nodes, states)}
+
+
+def merge_agent_states(states: dict[str, AgentsState]) -> AgentsState:
+    """Flatten per-node states into one, for panels that render a single list.
+
+    Everything inside already carries its own `node`, so the merged view stays
+    unambiguous. `unreachable` is deliberately not merged: it is per-node, and
+    a single dead box must not make the whole fleet look down.
+    """
+    merged = AgentsState(node="all")
+    for state in states.values():
+        merged.processes.extend(state.processes)
+        merged.recent_sessions.extend(state.recent_sessions)
+        merged.tmux_panes.extend(state.tmux_panes)
+        merged.operator_alerts.extend(state.operator_alerts)
+    return merged

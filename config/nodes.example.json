@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Copy to config/nodes.json. The 'local' node is built in — do not list it.",
+    "host should be an overlay address (Tailscale/WireGuard), not a LAN IP,",
+    "so the same config works from any network.",
+    "'home' lets aion resolve ~/.hermes/state.db without a remote shell."
+  ],
+  "nodes": [
+    {
+      "name": "forge",
+      "host": "forge.tail-scale-net.ts.net",
+      "transport": "ssh",
+      "user": "gio",
+      "home": "/home/gio",
+      "enabled": true
+    },
+    {
+      "name": "relay",
+      "host": "100.64.0.12",
+      "transport": "ssh",
+      "user": "gio",
+      "home": "/home/gio",
+      "identity": "~/.ssh/id_ed25519",
+      "enabled": true
+    },
+    {
+      "name": "deck",
+      "host": "deck.tail-scale-net.ts.net",
+      "transport": "ssh",
+      "user": "root",
+      "home": "/data/data/com.termux/files/home",
+      "port": 8022,
+      "enabled": false
+    }
+  ]
+}
