@@ -154,9 +154,16 @@ class AiOSApp(App):
         self._task_wave_history: list[float] = []  # recent task counts
         # remote instance control
         from ..remotes import RemoteServer, RemoteClient, RemoteNode
-        self._remote_server = RemoteServer(port=8765)
+        from .. import fleet as _fleet
+        # port is derived from the instance name, so a second cockpit on this
+        # box gets its own listener instead of losing the bind race on 8765
+        self._heartbeat = _fleet.Heartbeat()
+        self._remote_server = RemoteServer(port=self._heartbeat.port)
         self._remote_client = RemoteClient()
         self._remote_nodes: dict[str, RemoteNode] = {}
+        # per-node running-task history, feeds the Fleet sparklines
+        self._fleet_history: dict[str, list[float]] = {}
+        self._local_peers: list = []    # refreshed on a timer, not per render
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
         self._wizard_active = False
@@ -192,6 +199,7 @@ class AiOSApp(App):
 
         # ── Remote server + nodes ─────────────────────────────────────────
         from ..remotes import RemoteNode
+        from .. import fleet as _fleet
         self._remote_server.on_status = lambda: {
             "hostname": __import__("socket").gethostname(),
             "version": self.cfg.get("app_name", "aion"),
@@ -211,7 +219,12 @@ class AiOSApp(App):
         self._remote_server.on_cancel = lambda tid: (
             self.store.registry.cancel(tid) or {}
         )
-        asyncio.create_task(self._remote_server.start())
+        asyncio.create_task(self._start_remote_server())
+        # advertise this instance to same-host peers + keep the beat going
+        self._beat()
+        self.set_interval(_fleet.HEARTBEAT_INTERVAL_S, self._beat)
+        self._refresh_local_peers()
+        self.set_interval(_fleet.HEARTBEAT_INTERVAL_S, self._refresh_local_peers)
         for rn in self.cfg.get("remote_nodes", []):
             self._remote_nodes[rn["id"]] = RemoteNode(
                 id=rn["id"], host=rn["host"], port=rn.get("port", 8765),
@@ -1226,42 +1239,98 @@ class AiOSApp(App):
             return f"task '{tid}' not found on any alive remote"
         return f"unknown remote subcommand: {sub}"
 
-    def _net_panel(self, theme: dict) -> str:
-        """Render the Network workspace — remote aion instances."""
-        from ..remotes import RemoteNode
-        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
-        p = [f"[{a}]╔══ NETWORK  (port {getattr(self._remote_server, 'port', 8765)}) ═══════════════════╗[/]"]
-        p.append(f"[{a}]║[/]  [{di}]Listening for incoming — configured remotes below[/]  [{a}]║[/]")
-        p.append(f"[{a}]╠" + "═" * 54 + "╣[/]")
+    def on_unmount(self) -> None:
+        """Withdraw our heartbeat so peers do not have to time us out.
 
-        if not self._remote_nodes:
-            p.append(f"[{a}]║[/]  [{di}](no remotes configured — add to config/remote_nodes)[/]  [{a}]║[/]")
+        Best-effort only: discover_local() reaps meta.json by dead pid, so a
+        SIGKILL that skips this is handled too.
+        """
+        try:
+            self._heartbeat.clear()
+        except OSError:
+            pass
 
+    # ── Fleet: this instance, its same-host siblings, and remote nodes ─────
+    async def _start_remote_server(self) -> None:
+        """Start the listener, and say so when the port is taken.
+
+        This used to be a bare create_task: a second cockpit on the same box
+        lost the bind race, the exception vanished into the task, and remote
+        control was silently dead for the rest of the session.
+        """
+        try:
+            await self._remote_server.start()
+        except OSError as e:
+            self.store.state.logs.append(
+                f"fleet: port {self._remote_server.port} unavailable ({e.strerror}) — "
+                f"remote control off. Set AION_INSTANCE to claim a different port."
+            )
+
+    def _running_count(self) -> int:
+        return sum(1 for t in self.store.registry.tasks.values()
+                   if t.state.value in ("running", "pending"))
+
+    def _beat(self) -> None:
+        """Publish our heartbeat so sibling instances can see us."""
+        try:
+            self._heartbeat.beat(
+                active_harness=self.store.state.active_harness,
+                running_count=self._running_count(),
+            )
+        except OSError:
+            pass    # a missing ~/.aion is not worth killing the cockpit over
+
+    def _refresh_local_peers(self) -> None:
+        """Scan for sibling instances. On a timer — never inside a render."""
+        from .. import fleet as _fleet
+        try:
+            self._local_peers = _fleet.discover_local()
+        except OSError:
+            self._local_peers = []
+        for peer in self._local_peers:
+            self._push_fleet_history(peer.id, peer.running_count)
         for node in self._remote_nodes.values():
-            age = node.age_s()
-            alive = node.alive and age < 30
-            status_ch = "●" if alive else "○"
-            status_cl = ok_ if alive else er if node.alive else di
-            hostname_s = node.hostname or node.host
-            tasks_s = ""
-            if node.running_count:
-                tasks_s = f"  [{wa}]●{node.running_count} running[/]"
-            elif alive:
-                tasks_s = f"  [{di}](idle)[/]"
-            p.append(f"[{a}]║[/]  [{status_cl}]{status_ch}[/] [{a}]{node.id:14s}[/]"
-                     f"[{di}]{hostname_s}:{node.port}[/]{tasks_s}")
-            if alive and node.tasks:
-                for t in node.tasks[:3]:
-                    st = t.get("state", "?")
-                    sc = ok_ if st == "done" else wa if st in ("running","pending") else er
-                    p.append(f"[{a}]║[/]      ▸ [{di}]{t.get('label','?')[:30]}[/]  [{sc}]{st}[/]")
-            age_s = f"{age:.0f}s ago" if not alive else ""
-            p.append(f"[{a}]║[/]  [{di}]{'─' * 50}[/]")
+            self._push_fleet_history(node.id, node.running_count)
 
-        p.append(f"[{a}]╚" + "═" * 54 + "╝[/]")
-        p.append(f"[{di}]Ctrl-K: 'remote run <node> <prompt>' · 'remote cancel <node>' · "
-                 f"'remote add <id> <host>:<port>'[/]")
-        return "\n".join(p)
+    def _push_fleet_history(self, node_id: str, running: int) -> None:
+        """Normalise task load to 0..1 and keep the last 16 samples."""
+        hist = self._fleet_history.setdefault(node_id, [])
+        hist.append(running / max(1.0, running + 1.0))
+        del hist[:-16]
+
+    def _net_panel(self, theme: dict) -> str:
+        """Render the Fleet workspace — every aion instance, local and remote."""
+        from .. import fleet as _fleet
+        from .fleet_panel import FleetRow, render_fleet
+
+        rows: list[FleetRow] = []
+        for peer in self._local_peers:
+            rows.append(FleetRow(
+                id=peer.id,
+                addr=f"{peer.host}:{peer.port}",
+                health=_fleet.node_health(bool(peer.updated_at), peer.age_s(), local=True),
+                local=True,
+                is_self=peer.is_self,
+                running=peer.running_count,
+                harness=peer.active_harness,
+                age_s=peer.age_s(),
+                history=self._fleet_history.get(peer.id, []),
+            ))
+        for node in self._remote_nodes.values():
+            rows.append(FleetRow(
+                id=node.id,
+                addr=f"{node.hostname or node.host}:{node.port}",
+                health=_fleet.node_health(bool(node.last_seen), node.age_s(), local=False),
+                local=False,
+                running=node.running_count,
+                harness=node.active_harness,
+                age_s=node.age_s(),
+                history=self._fleet_history.get(node.id, []),
+                tasks=node.tasks,
+            ))
+        return render_fleet(rows, theme, tick=self._viz_tick,
+                            listen_port=self._remote_server.port,
+                            listen_host=self._remote_server.host)
 
     def _render_right(self) -> None:
         theme = self.cfg["theme"]
@@ -1766,6 +1835,11 @@ class AiOSApp(App):
 
 
 def main() -> None:
+    from .. import fleet as _fleet
+    moved = _fleet.migrate_legacy()
+    if moved:
+        print(f"[aion] moved {len(moved)} file(s) into the shared/instance "
+              f"layout: {', '.join(moved)}")
     AiOSApp().run()
 
 
