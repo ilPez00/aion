@@ -204,13 +204,17 @@ class SessionStore:
     """
 
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or (Path.home() / ".aion" / "session.json"))
+        from .fleet import instance_path
+        # per-instance: a task belongs to the process that spawned it, so two
+        # cockpits on one machine must not share this file
+        self.path = Path(path or instance_path("session.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def save(self, tasks: dict[str, Task]) -> None:
+        from .fleet import write_json_atomic
         try:
             data = [t.as_dict() for t in tasks.values()]
-            self.path.write_text(json.dumps(data, indent=2))
+            write_json_atomic(self.path, data)
         except Exception as e:  # noqa: BLE001
             print(f"[session] save failed: {e}")
 

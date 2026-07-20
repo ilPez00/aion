@@ -13,7 +13,8 @@ from pathlib import Path
 
 
 def vault_root() -> Path:
-    return Path.home() / ".aion" / "vault"
+    from .fleet import shared_path
+    return shared_path("vault")
 
 
 def write_note(path: str, content: str, *, root: Path | None = None,

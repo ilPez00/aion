@@ -111,7 +111,8 @@ class Board:
 
 class BoardStore:
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or (Path.home() / ".aion" / "boards.json"))
+        from .fleet import shared_path
+        self.path = Path(path or shared_path("boards.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._boards: dict[str, Board] = {}
         self._load()

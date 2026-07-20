@@ -439,7 +439,8 @@ class HealthHarness(Harness):
         super().__init__(cfg, bus, registry, store)
         extra = cfg.extra or {}
         self.source = extra.get("source", "json")
-        self.path = extra.get("path") or str(Path.home() / ".aion" / "health.json")
+        from .fleet import shared_path
+        self.path = extra.get("path") or str(shared_path("health.json"))
         self.interval = float(extra.get("interval", 30.0))
         self._task: asyncio.Task | None = None
         self._reader = None
@@ -521,13 +522,13 @@ class VaultHarness(Harness):
         self._task = asyncio.create_task(self._poll())
 
     def _reader_setup_done(self) -> bool:
-        from pathlib import Path as _P
-        flag = _P.home() / ".aion" / "vault_setup_done"
+        from .fleet import shared_path
+        flag = shared_path("vault_setup_done")
         return flag.exists()
 
     def _prompt_storage_setup(self) -> None:
-        from pathlib import Path as _P
-        flag = _P.home() / ".aion" / "vault_setup_done"
+        from .fleet import shared_path
+        flag = shared_path("vault_setup_done")
         print("\n[VAULT SETUP] Choose your notes vault (Obsidian-style storage):")
         print(f"  [Enter] keep default: {self.root}")
         print("  or type an absolute path to a markdown vault (e.g. ~/Obsidian):")

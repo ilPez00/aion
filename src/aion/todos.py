@@ -15,13 +15,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DEFAULT_PATH = Path.home() / ".aion" / "todos.md"
+def default_path() -> Path:
+    """Resolved lazily: importing a module should not create directories."""
+    from .fleet import shared_path
+    return shared_path("todos.md")
 _LINE = re.compile(r"^- \[( |x)\] (.*)$")
 
 
 class TodoStore:
     def __init__(self, path: Path | str | None = None):
-        self.path = Path(path) if path else DEFAULT_PATH
+        self.path = Path(path) if path else default_path()
 
     def _read(self) -> list[dict]:
         if not self.path.exists():

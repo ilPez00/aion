@@ -83,7 +83,8 @@ class AgentEntity:
 
 class AgentStore:
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or (Path.home() / ".aion" / "agents.json"))
+        from .fleet import shared_path
+        self.path = Path(path or shared_path("agents.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._agents: dict[str, AgentEntity] = {}
         self._load()

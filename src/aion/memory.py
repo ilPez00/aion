@@ -20,7 +20,8 @@ from pathlib import Path
 
 class MemoryStore:
     def __init__(self, path: str | Path | None = None) -> None:
-        self.path = Path(path or (Path.home() / ".aion" / "memory.json"))
+        from .fleet import shared_path
+        self.path = Path(path or shared_path("memory.json"))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.facts: list[dict] = self._load()
         self.query: str = ""          # active filter shown by the workspace
