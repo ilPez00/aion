@@ -118,6 +118,9 @@ class AiOSApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = load_config()
+        # before any store is built: this decides the state root and the port
+        from .. import fleet as _fleet_boot
+        _fleet_boot.configure(self.cfg.get("fleet"))
         self.bus = Bus()
         from ..core import SessionStore
         self.store_fs = SessionStore()
@@ -221,10 +224,11 @@ class AiOSApp(App):
         )
         asyncio.create_task(self._start_remote_server())
         # advertise this instance to same-host peers + keep the beat going
+        beat_s = _fleet.settings().heartbeat_s
         self._beat()
-        self.set_interval(_fleet.HEARTBEAT_INTERVAL_S, self._beat)
+        self.set_interval(beat_s, self._beat)
         self._refresh_local_peers()
-        self.set_interval(_fleet.HEARTBEAT_INTERVAL_S, self._refresh_local_peers)
+        self.set_interval(beat_s, self._refresh_local_peers)
         for rn in self.cfg.get("remote_nodes", []):
             self._remote_nodes[rn["id"]] = RemoteNode(
                 id=rn["id"], host=rn["host"], port=rn.get("port", 8765),
@@ -232,6 +236,7 @@ class AiOSApp(App):
             )
 
         self.store.remote_callback = self._handle_remote_command
+        self.store.fleet_callback = self._handle_fleet_command
 
         self.title = self.cfg["app_name"]
         self.sub_title = f"multi-harness · stats visualizer · mode: {self.store.state.active_mode}"
@@ -658,6 +663,22 @@ class AiOSApp(App):
                     f"  [{scol}]{st}{' (paused)' if it.get('paused') else ''}[/] "
                     f"{bar(it['progress'])} [{theme['dim']}]{eta}{note}[/]")
         if ws == "settings":
+            if it.get("type") == "fleet_header":
+                return (f"[{theme['accent']}]FLEET[/]  "
+                        f"[{theme['dim']}]Ctrl-K: 'fleet set <key> <value>'[/]\n"
+                        f"  [{theme['dim']}]state    {it.get('instance_root','')}[/]\n"
+                        f"  [{theme['dim']}]shared   {it.get('shared_root','')}[/]")
+            if it.get("type") == "fleet_setting":
+                # an env override cannot be changed from here -- show why
+                locked = it.get("source", "").startswith("env")
+                vcol = theme["warn"] if locked else theme["ok"]
+                note = ""
+                if locked:
+                    note = f"  [{theme['warn']}]{it.get('source')}[/]"
+                elif it.get("restart"):
+                    note = f"  [{theme['dim']}]restart to apply[/]"
+                return (f"[{col}]{f}{it.get('key','?'):18s}[/]"
+                        f"[{vcol}]{it.get('value','')}[/]{note}")
             if it.get("type") == "skill":
                 desc = it.get("description", "")[:60]
                 return (f"[{col}]{f}{it.get('name','?')}[/]  "
@@ -1197,6 +1218,65 @@ class AiOSApp(App):
                  f"  [{a}]{V}[/]")
         p.append(f" [{a}]└" + "─" * 48 + "┘[/]")
         return "\n".join(p)
+
+    async def _handle_fleet_command(self, text: str) -> str:
+        """Handle 'fleet show|set|token' palette commands."""
+        from .. import fleet as _fleet
+        from ..core import save_config_section
+
+        parts = text.split(maxsplit=3)
+        sub = parts[1] if len(parts) > 1 else "show"
+
+        if sub == "show":
+            rows = [f"  {d['key']:18s} {str(d['value']):10s} "
+                    f"({d['source']}{', restart' if d['restart'] else ''})"
+                    for d in _fleet.describe_settings()]
+            return "fleet settings:\n" + "\n".join(rows)
+
+        if sub == "token":
+            action = parts[2] if len(parts) > 2 else "show"
+            if action == "show":
+                return f"fleet token: {_fleet.load_or_create_token()}\n" \
+                       f"copy to every machine: scp {_fleet.token_path()} <host>:~/.aion/token"
+            if action == "rotate":
+                # every other node stops being able to reach this one until the
+                # new secret is copied across -- say so rather than surprise you
+                _fleet.token_path().unlink(missing_ok=True)
+                _fleet.load_or_create_token()
+                return ("fleet token rotated. Every other node is now locked out "
+                        f"until you copy {_fleet.token_path()} to it.")
+            return "usage: fleet token show | fleet token rotate"
+
+        if sub == "set" and len(parts) >= 4:
+            key, raw = parts[2], parts[3].strip()
+            if key not in _fleet.FleetSettings.FIELDS:
+                return (f"unknown fleet setting '{key}' "
+                        f"(try: {', '.join(_fleet.FleetSettings.FIELDS)})")
+            if key in ("instance", "listen"):
+                value: object = raw
+                if key == "listen" and raw not in ("local", "lan"):
+                    return "fleet set listen local | lan"
+            else:
+                try:
+                    value = float(raw)
+                except ValueError:
+                    return f"fleet set {key} expects a number of seconds"
+
+            current = {**_fleet.settings().as_dict(), key: value}
+            applied = _fleet.configure(current)
+            save_config_section("fleet", applied.as_dict())
+            self.cfg["fleet"] = applied.as_dict()
+
+            shown = getattr(applied, key)
+            note = ""
+            if shown != value:
+                note = f" (clamped from {value}: stale must stay under offline)"
+            if key in _fleet.FleetSettings.RESTART_KEYS:
+                note += " — takes effect on restart"
+            return f"fleet {key} = {shown}{note}"
+
+        return ("usage: fleet show | fleet set <key> <value> | "
+                "fleet token show|rotate")
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""

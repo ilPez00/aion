@@ -26,4 +26,8 @@ def isolate_aion_home(tmp_path, monkeypatch):
     monkeypatch.delenv("AION_INSTANCE", raising=False)
     # never bind a real port or reach the network from a test
     monkeypatch.delenv("AION_LISTEN", raising=False)
+    # fleet settings are module-global; reset so one test cannot configure
+    # thresholds for the next
+    fleet.configure({})
     yield
+    fleet.configure({})

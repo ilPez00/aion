@@ -39,13 +39,95 @@ HEARTBEAT_INTERVAL_S = 5.0
 HEARTBEAT_STALE_S = 15.0
 
 
+# ── Settings ─────────────────────────────────────────────────────────────────
+# Precedence: environment > config/layout.json "fleet" block > these defaults.
+# The environment wins because it is the per-launch, most explicit signal:
+#   AION_INSTANCE=hud AION_LISTEN=lan ./aion.sh
+@dataclass
+class FleetSettings:
+    instance: str = DEFAULT_INSTANCE
+    listen: str = "local"           # "local" (loopback) or "lan" (0.0.0.0)
+    heartbeat_s: float = 5.0
+    local_stale_s: float = 15.0
+    local_offline_s: float = 30.0
+    remote_stale_s: float = 20.0
+    remote_offline_s: float = 60.0
+
+    # Editable from Settings; the first two only take effect on restart because
+    # they decide the state root and the listening socket at boot.
+    RESTART_KEYS = ("instance", "listen")
+    FIELDS = ("instance", "listen", "heartbeat_s", "local_stale_s",
+              "local_offline_s", "remote_stale_s", "remote_offline_s")
+
+    def normalised(self) -> "FleetSettings":
+        """Clamp to values that cannot produce a nonsensical panel.
+
+        A stale threshold above the offline one would make "stale" unreachable
+        and nodes would jump straight from live to offline, so ordering is
+        enforced rather than trusted.
+        """
+        inst = "".join(c for c in self.instance.strip() if c.isalnum() or c in "-_")
+        listen = self.listen.strip().lower()
+        heartbeat = max(1.0, float(self.heartbeat_s))
+        l_stale = max(heartbeat, float(self.local_stale_s))
+        r_stale = max(1.0, float(self.remote_stale_s))
+        return FleetSettings(
+            instance=inst or DEFAULT_INSTANCE,
+            listen="lan" if listen == "lan" else "local",
+            heartbeat_s=heartbeat,
+            local_stale_s=l_stale,
+            local_offline_s=max(l_stale + 1.0, float(self.local_offline_s)),
+            remote_stale_s=r_stale,
+            remote_offline_s=max(r_stale + 1.0, float(self.remote_offline_s)),
+        )
+
+    def as_dict(self) -> dict:
+        return {f: getattr(self, f) for f in self.FIELDS}
+
+
+_settings = FleetSettings()
+
+
+def configure(block: dict | None) -> FleetSettings:
+    """Apply the config/layout.json "fleet" block. Call once, early in boot."""
+    global _settings
+    known = {k: v for k, v in (block or {}).items() if k in FleetSettings.FIELDS}
+    _settings = FleetSettings(**{**FleetSettings().as_dict(), **known}).normalised()
+    return _settings
+
+
+def settings() -> FleetSettings:
+    return _settings
+
+
+def describe_settings() -> list[dict]:
+    """Current effective values plus where each one came from — the Settings
+    workspace shows the source so an env override is never a mystery."""
+    s = settings()
+    env_backed = {"instance": "AION_INSTANCE", "listen": "AION_LISTEN"}
+    out = []
+    for key in FleetSettings.FIELDS:
+        env_var = env_backed.get(key)
+        from_env = bool(env_var and os.environ.get(env_var, "").strip())
+        value = {"instance": instance_id(),
+                 "listen": "lan" if listen_host() == "0.0.0.0" else "local"}.get(
+            key, getattr(s, key))
+        out.append({
+            "key": key,
+            "value": value,
+            "source": f"env {env_var}" if from_env else "config",
+            "restart": key in FleetSettings.RESTART_KEYS,
+        })
+    return out
+
+
 # ── Identity & paths ─────────────────────────────────────────────────────────
 def instance_id() -> str:
     """This process's instance name. `AION_INSTANCE=hud ./aion.sh` to split."""
     raw = os.environ.get("AION_INSTANCE", "").strip()
     # keep it filesystem-safe: it becomes a directory name
     cleaned = "".join(c for c in raw if c.isalnum() or c in "-_")
-    return cleaned or DEFAULT_INSTANCE
+    return cleaned or settings().instance
 
 
 def shared_root() -> Path:
@@ -177,7 +259,10 @@ def listen_host() -> str:
     Binding 0.0.0.0 by default meant every aion ever started was reachable
     from the whole network. Exposure is now a decision, not an accident.
     """
-    return "0.0.0.0" if os.environ.get("AION_LISTEN", "").lower() == "lan" else "127.0.0.1"
+    env = os.environ.get("AION_LISTEN", "").strip().lower()
+    if env:
+        return "0.0.0.0" if env == "lan" else "127.0.0.1"
+    return "0.0.0.0" if settings().listen == "lan" else "127.0.0.1"
 
 
 # ── Peers ────────────────────────────────────────────────────────────────────
@@ -294,20 +379,23 @@ HEALTH_OFFLINE = "offline"  # was reachable, now is not     -> theme["err"]
 HEALTH_UNKNOWN = "unknown"  # configured, never contacted   -> theme["dim"]
 
 
-# Local peers heartbeat every HEARTBEAT_INTERVAL_S (5s) via an atomic file
-# write -- there is almost nothing to fail, so three missed beats already means
-# something is wrong and six means it is gone.
-LOCAL_STALE_S = 15.0
-LOCAL_OFFLINE_S = 30.0
+# Defaults live on FleetSettings; these names are kept for callers that want
+# the shipped values rather than the configured ones.
+#
+# Local peers heartbeat every heartbeat_s (5s) via an atomic file write -- there
+# is almost nothing to fail, so three missed beats already means something is
+# wrong and six means it is gone. Remote peers are polled over HTTP, where the
+# network is the unreliable part rather than the node, so a dropped packet must
+# not paint the panel red: those thresholds are deliberately more patient.
+LOCAL_STALE_S = FleetSettings.local_stale_s
+LOCAL_OFFLINE_S = FleetSettings.local_offline_s
+REMOTE_STALE_S = FleetSettings.remote_stale_s
+REMOTE_OFFLINE_S = FleetSettings.remote_offline_s
 
-# Remote peers are polled every ~3s over HTTP with a 5s timeout. The network is
-# the unreliable part, not the node, so a dropped packet or a WiFi roam must not
-# paint the panel red -- these are deliberately more patient than the local ones.
-REMOTE_STALE_S = 20.0
-REMOTE_OFFLINE_S = 60.0
 
-
-def node_health(ever_seen: bool, age_s: float, local: bool = False) -> str:
+def node_health(ever_seen: bool, age_s: float, local: bool = False,
+                stale_after: float | None = None,
+                offline_after: float | None = None) -> str:
     """Classify one node into exactly one of the four HEALTH_* constants.
 
     Args:
@@ -323,8 +411,11 @@ def node_health(ever_seen: bool, age_s: float, local: bool = False) -> str:
     """
     if not ever_seen:
         return HEALTH_UNKNOWN
-    stale_after = LOCAL_STALE_S if local else REMOTE_STALE_S
-    offline_after = LOCAL_OFFLINE_S if local else REMOTE_OFFLINE_S
+    s = settings()
+    if stale_after is None:
+        stale_after = s.local_stale_s if local else s.remote_stale_s
+    if offline_after is None:
+        offline_after = s.local_offline_s if local else s.remote_offline_s
     if age_s >= offline_after:
         return HEALTH_OFFLINE
     if age_s >= stale_after:

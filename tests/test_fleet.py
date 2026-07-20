@@ -173,6 +173,68 @@ def test_load_buys_no_grace():
     assert fleet.node_health(True, 45.0, local=True) == fleet.HEALTH_OFFLINE
 
 
+# ── settings ─────────────────────────────────────────────────────────────────
+def test_configure_ignores_unknown_keys():
+    s = fleet.configure({"listen": "lan", "nonsense": 1})
+    assert s.listen == "lan"
+    assert not hasattr(s, "nonsense")
+
+
+def test_configure_clamps_stale_below_offline():
+    """Otherwise 'stale' is unreachable and nodes jump live -> offline."""
+    s = fleet.configure({"remote_stale_s": 45, "remote_offline_s": 10})
+    assert s.remote_stale_s == 45
+    assert s.remote_offline_s > s.remote_stale_s
+
+
+def test_configure_rejects_a_bad_listen_value():
+    assert fleet.configure({"listen": "everywhere"}).listen == "local"
+
+
+def test_configure_sanitises_instance_name():
+    assert "/" not in fleet.configure({"instance": "../evil"}).instance
+
+
+def test_configured_thresholds_drive_node_health():
+    fleet.configure({"remote_stale_s": 5, "remote_offline_s": 10})
+    assert fleet.node_health(True, 6.0) == fleet.HEALTH_STALE
+    assert fleet.node_health(True, 11.0) == fleet.HEALTH_OFFLINE
+
+
+def test_env_beats_config_for_instance_and_listen(monkeypatch):
+    fleet.configure({"instance": "from-config", "listen": "local"})
+    assert fleet.instance_id() == "from-config"
+    assert fleet.listen_host() == "127.0.0.1"
+
+    monkeypatch.setenv("AION_INSTANCE", "from-env")
+    monkeypatch.setenv("AION_LISTEN", "lan")
+    assert fleet.instance_id() == "from-env"
+    assert fleet.listen_host() == "0.0.0.0"
+
+
+def test_describe_settings_names_the_override_source(monkeypatch):
+    fleet.configure({})
+    monkeypatch.setenv("AION_LISTEN", "lan")
+    rows = {d["key"]: d for d in fleet.describe_settings()}
+    assert rows["listen"]["source"] == "env AION_LISTEN"
+    assert rows["listen"]["value"] == "lan"
+    assert rows["heartbeat_s"]["source"] == "config"
+    assert rows["instance"]["restart"] is True
+
+
+def test_save_config_section_preserves_other_sections(tmp_path):
+    import json
+    from aion.core import save_config_section
+    p = tmp_path / "layout.json"
+    p.write_text(json.dumps({"workspaces": ["keep"], "fleet": {"listen": "local"}}))
+
+    save_config_section("fleet", {"listen": "lan"}, path=p)
+
+    data = json.loads(p.read_text())
+    assert data["workspaces"] == ["keep"]
+    assert data["fleet"]["listen"] == "lan"
+
+
 # ── token & exposure ─────────────────────────────────────────────────────────
 def test_token_is_created_once_and_reused():
     first = fleet.load_or_create_token()

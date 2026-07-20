@@ -36,6 +36,37 @@ Files from before this layout are moved on first launch. Migration never
 overwrites: if a destination already exists the old file is left in `~/.aion/`
 for you to sort out by hand.
 
+## Settings
+
+The Settings workspace (`⚙`) opens with a FLEET block listing every value, what
+it currently is, and where it came from. Change one from the palette:
+
+```
+fleet show                        # values + source
+fleet set remote_offline_s 90
+fleet set listen lan
+fleet token show | fleet token rotate
+```
+
+Values persist to the `"fleet"` block of `config/layout.json`. Precedence is
+**environment > config > default**, so `AION_INSTANCE` / `AION_LISTEN` on the
+command line always win for one launch; when they do, Settings shows the value
+in amber and names the variable rather than pretending the config applies.
+
+| key | default | effect |
+|---|---|---|
+| `instance` | `main` | name → state root and port. Restart. |
+| `listen` | `local` | `lan` binds 0.0.0.0. Restart. |
+| `heartbeat_s` | 5 | how often this instance advertises |
+| `local_stale_s` / `local_offline_s` | 15 / 30 | same-machine thresholds |
+| `remote_stale_s` / `remote_offline_s` | 20 / 60 | over-the-network thresholds |
+
+A stale threshold is clamped below its offline threshold — otherwise `stale`
+becomes unreachable and nodes jump straight from live to offline.
+
+`fleet token rotate` locks out every other machine until you copy the new
+secret across, so the command says so rather than leaving you to discover it.
+
 ## Discovery
 
 Each instance writes `instances/<id>/meta.json` every 5s and deletes it on

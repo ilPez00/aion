@@ -274,6 +274,34 @@ DEFAULT_LAYOUT = {
 }
 
 
+def config_path(path: str | Path | None = None) -> Path:
+    if path is not None:
+        return Path(path)
+    # repo layout: .../aion/src/aion/core.py  ->  config at repo root /config
+    return Path(__file__).resolve().parents[2] / "config" / "layout.json"
+
+
+def save_config_section(section: str, values: dict,
+                        path: str | Path | None = None) -> Path:
+    """Merge one section into config/layout.json and write it back.
+
+    Reads first so a section written by another instance is not lost, and
+    writes atomically -- two cockpits can be editing settings at once.
+    """
+    from .fleet import write_json_atomic
+    p = config_path(path)
+    data: dict = {}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text())
+        except Exception:  # noqa: BLE001
+            data = {}
+    merged = {**data.get(section, {}), **values}
+    data[section] = merged
+    write_json_atomic(p, data)
+    return p
+
+
 def load_config(path: str | Path | None = None) -> dict:
     if path is None:
         # repo layout: .../aion/src/aion/core.py  ->  config at repo root /config

@@ -79,6 +79,7 @@ class Store:
         self._task_prompts: dict[str, str] = {}  # task id -> last prompt (for rerun)
         self._loop = None  # captured event loop (set in _chat for agent tools)
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
+        self.fleet_callback = None   # set by app: async fn(text) -> str
         self.memory = MemoryStore()
         from .todos import TodoStore
         self.todos = TodoStore()
@@ -257,7 +258,13 @@ class Store:
                        "description": s.get("description", ""),
                        "source": s.get("source", "")}
                       for s in self.state.skills]
-            items = providers + skills
+            from .fleet import describe_settings, instance_root, shared_root
+            fleet_rows = [{"type": "fleet_setting", "id": d["key"], **d}
+                          for d in describe_settings()]
+            fleet_hdr = [{"type": "fleet_header", "id": "fleet",
+                          "instance_root": str(instance_root()),
+                          "shared_root": str(shared_root())}]
+            items = fleet_hdr + fleet_rows + providers + skills
             if not items:
                 items = [{"type": "env_hint", "id": "setup",
                           "text": "No env vars or skills found.",
@@ -715,6 +722,15 @@ class Store:
             return
         if parts[0] == "board" and len(parts) >= 2:
             await self._board_command(text)
+            return
+        if parts[0] == "fleet":
+            if self.fleet_callback:
+                result = await self.fleet_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append("fleet: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "remote":
             if self.remote_callback:
