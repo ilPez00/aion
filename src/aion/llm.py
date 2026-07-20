@@ -1,9 +1,10 @@
 """
 llm.py — inline LLM chat client for aion's Agent workspace.
 
-Routes messages through the free-coding-models (FCM) local proxy at
-http://localhost:19280/v1 so no API key is needed. Falls back to Groq
-if FCM is unreachable and GROQ_API_KEY is set.
+Backend chain: OmniRoute (local router, agy → Claude Code Pro → free stack) →
+FCM local proxy → Groq → OpenRouter. OmniRoute is tried first when
+OMNIROUTE_API_KEY is set (freerouting env contract); otherwise it's skipped and
+the original FCM-first chain is used unchanged.
 """
 
 from __future__ import annotations
@@ -108,8 +109,8 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     try:
         api_msgs = session.as_api_messages()
         tried: list[str] = []
-        for name, fn in (("FCM", _fcm_chat), ("Groq", _groq_chat),
-                         ("OpenRouter", _openrouter_chat)):
+        for name, fn in (("OmniRoute", _omniroute_chat), ("FCM", _fcm_chat),
+                         ("Groq", _groq_chat), ("OpenRouter", _openrouter_chat)):
             reply = fn(api_msgs, timeout=timeout)
             if _is_ok(reply):
                 session.add("assistant", reply)  # type: ignore[arg-type]
@@ -120,6 +121,53 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
         return f"⚠️ LLM unavailable (tried {', '.join(tried)})."
     finally:
         session.pending = False
+
+
+def _omniroute_chat(messages: list[dict], timeout: int = 30) -> str | None:
+    """Try the local OmniRoute router (agy → Claude Code Pro → free stack).
+
+    Env-driven (freerouting contract): OMNIROUTE_BASE_URL / FREEROUTING_BASE_URL,
+    OMNIROUTE_API_KEY / FREEROUTING_API_KEY, OMNIROUTE_MODEL / FREEROUTING_MODEL
+    (default agy-claude-first). Returns None when unconfigured so the chain falls
+    through to FCM/Groq/OpenRouter unchanged.
+    """
+    import urllib.request
+    import urllib.error
+    base = (os.environ.get("OMNIROUTE_BASE_URL")
+            or os.environ.get("FREEROUTING_BASE_URL")
+            or "http://localhost:20128/v1").rstrip("/")
+    key = (os.environ.get("OMNIROUTE_API_KEY")
+           or os.environ.get("FREEROUTING_API_KEY") or "")
+    model = (os.environ.get("OMNIROUTE_MODEL")
+             or os.environ.get("FREEROUTING_MODEL") or "agy-claude-first")
+    if not key:
+        return None  # not configured → skip to next backend
+    try:
+        data = json.dumps({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.5,
+            "max_tokens": 800,
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            base + "/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+            return body["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        return f"⚠️ OmniRoute HTTP {e.code}"
+    except (urllib.error.URLError, OSError) as e:
+        return f"⚠️ OmniRoute unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (ValueError, KeyError, IndexError) as e:
+        return f"⚠️ OmniRoute bad response: {e}"
 
 
 def _fcm_chat(messages: list[dict], timeout: int = 30) -> str | None:

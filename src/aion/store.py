@@ -73,6 +73,8 @@ class Store:
         from .todos import TodoStore
         self.todos = TodoStore()
         self._profile_scanning = False
+        self._load_inflight: set[str] = set()
+        self._load_last: dict[str, float] = {}
         self.chat = ChatSession()
         self.swarm = SwarmOrchestrator(bus=self.bus)
         self.active_mode_cfg: ModeConfig = get_mode("default") or MODES["default"]
@@ -92,6 +94,39 @@ class Store:
     # ---- helpers --------------------------------------------------------
     def _first_harness(self) -> str:
         return next(iter(self.harnesses), next(iter(self.cfg.get("harnesses", [{}])), {}).get("id", ""))
+
+    # Minimum gap between two loads of the same workspace dataset.
+    LOAD_MIN_INTERVAL_S = 5.0
+
+    def _spawn_load(self, key: str, coro_fn) -> None:
+        """Spawn a workspace data load: never re-entrant, at most once per
+        LOAD_MIN_INTERVAL_S.
+
+        _current_items() runs on *every* render, and each loader publishes on a
+        bus topic the app re-renders from. Spawning the load unguarded closes a
+        render -> load -> event -> render cycle that spins at ~340 iterations a
+        second and starves the event loop (the UI reads as frozen: no ticks, no
+        input). The flag breaks the cycle; the interval keeps a visited
+        workspace from re-reading its source on every frame.
+        """
+        now = time.time()
+        if key in self._load_inflight:
+            return
+        if now - self._load_last.get(key, 0.0) < self.LOAD_MIN_INTERVAL_S:
+            return
+        self._load_last[key] = now
+        self._load_inflight.add(key)
+
+        async def _run() -> None:
+            try:
+                await coro_fn()
+            finally:
+                self._load_inflight.discard(key)
+
+        try:
+            asyncio.create_task(_run())
+        except RuntimeError:      # no running loop (sync tests)
+            self._load_inflight.discard(key)
 
     async def _load_hermes_data(self) -> None:
         try:
@@ -142,12 +177,12 @@ class Store:
         if ws == "memory":
             return self.memory.items()
         if ws == "hermes":
-            asyncio.create_task(self._load_hermes_data())
+            self._spawn_load("hermes", self._load_hermes_data)
             return [{"id": t["id"], "title": t["title"], "status": t["status"],
                      "assignee": t.get("assignee", "")}
                     for t in self.state.hermes_kanban]
         if ws == "skills":
-            asyncio.create_task(self._load_skills_data())
+            self._spawn_load("skills", self._load_skills_data)
             return [{"id": s.get("name", s.get("id", "")), "name": s.get("name", ""),
                      "description": s.get("description", ""), "source": s.get("source", "")}
                     for s in self.state.skills]
@@ -157,7 +192,7 @@ class Store:
                 return list(pj["projects"])
             return []
         if ws == "settings":
-            asyncio.create_task(self._load_settings_data())
+            self._spawn_load("settings", self._load_settings_data)
             return [{"id": k, "endpoint": v.get("endpoint", ""),
                      "key_preview": v.get("key_preview", "")}
                     for k, v in self.state.settings_providers.items()]
@@ -169,6 +204,8 @@ class Store:
                      "preview": v.get("error", "") if v else ""}]
         if ws == "sys":
             return [{"kind": "live"}]  # rendered specially from stats
+        if ws == "mind":
+            return [{"kind": "live"}]  # rendered from stats["mind"]
         if ws == "agent":
             cr = self.state.compare_result
             if cr and cr.get("answers"):

@@ -626,6 +626,49 @@ class ProjectsHarness(Harness):
             await asyncio.sleep(self.interval)
 
 
+class MindHarness(Harness):
+    """`mind` workspace poller: the agent's consciousness HUD.
+
+    Aggregates the vendored hermes-hud collectors (joeynyc/hermes-hud, MIT)
+    over ~/.hermes/ into one dict published on TOPIC_STATS under harness id
+    "mind": config, memory capacity, session/tool totals, task clusters,
+    repeated-prompt skill candidates, tool workflows and correction events.
+    The `mind` workspace renders it. .start() once at boot. All reads run off
+    the event loop (file + sqlite are blocking).
+
+    Config extras:
+      hermes_dir: override ~/.hermes path
+      interval:   seconds between reads   (default 30.0; sqlite scan is heavy)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        extra = cfg.extra or {}
+        self.hermes_dir = extra.get("hermes_dir")
+        self.interval = float(extra.get("interval", 30.0))
+        self._task: asyncio.Task | None = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    async def poll_once(self) -> dict:
+        from .hermes.hud.aion_bridge import collect_mind
+        metrics = await asyncio.to_thread(collect_mind, self.hermes_dir)
+        await self._stat(**metrics)
+        return metrics
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:60])
+            await asyncio.sleep(self.interval)
+
+
 # registry of built-in harness types -> class
 class AppHarness(Harness):
     """Spawns a real program as a task (lesson: Jarvis spawns tools).
@@ -819,6 +862,7 @@ HARNESS_TYPES = {
     "system": SystemHarness,
     "health": HealthHarness,
     "vault": VaultHarness,
+    "mind": MindHarness,
 }
 
 

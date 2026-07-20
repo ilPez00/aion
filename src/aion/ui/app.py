@@ -25,7 +25,7 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, MindHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
 from ..store import Store
@@ -157,7 +157,8 @@ class AiOSApp(App):
         # all background HUD pollers (Jarvis HUD + Iron Man panels)
         for h in self.harnesses.values():
             if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness,
-                              SystemHarness, HealthHarness, VaultHarness)):
+                              SystemHarness, HealthHarness, VaultHarness,
+                              MindHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
@@ -596,6 +597,8 @@ class AiOSApp(App):
             return self._vault_line(it, focused, theme)
         if ws == "sys":
             return self._sys_panel(theme)
+        if ws == "mind":
+            return self._mind_panel(theme)
         if ws == "swarm":
             return self._swarm_panel(theme)
         if ws == "desktop":
@@ -740,6 +743,96 @@ class AiOSApp(App):
             blocks.append(gauge_panel("REAL LIFE",
                          "[#5a6b7b](no health data — source: google/apple/json)[/]",
                          theme["ok"]))
+
+        return "\n\n".join(blocks)
+
+    def _mind_panel(self, theme: dict) -> str:
+        """Consciousness HUD: memory / sessions / task patterns / corrections.
+
+        Renders the MindHarness dict (vendored hermes-hud collectors over
+        ~/.hermes/). Read-only introspection of the live Hermes agent.
+        """
+        from .gauges import hbar, sparkline, metric, gauge_panel
+        a, ok_, warn, err, dim = (theme["accent"], theme["ok"], theme["warn"],
+                                  theme["err"], theme["dim"])
+        m = self.store.state.stats.get("mind")
+        if not m:
+            return f"[{dim}](mind HUD loading — reading ~/.hermes/ …)[/]"
+        if not m.get("ok"):
+            return gauge_panel("MIND", f"[{err}]{m.get('error','unavailable')}[/]", err)
+
+        blocks: list[str] = []
+
+        cfg = m.get("config", {})
+        mem = m.get("memory", {})
+        usr = m.get("user", {})
+        head = (f"[{a}]{cfg.get('provider','?')}/{cfg.get('model','?')}[/]  "
+                f"[{dim}]backend {cfg.get('backend','?')}[/]")
+        mem_line = (metric("memory", f"{mem.get('pct',0)}", "%", a) +
+                    f"  [{dim}]{mem.get('entries',0)} entries · "
+                    f"{mem.get('chars',0)}/{mem.get('max_chars',0)} ch[/]\n  " +
+                    hbar(mem.get("pct", 0) / 100.0, width=20, color=a) +
+                    f"\n  " + metric("profile", f"{usr.get('pct',0)}", "%", dim) +
+                    f"  [{dim}]{usr.get('entries',0)} entries[/]")
+        cats = mem.get("categories", {})
+        if cats:
+            mem_line += "\n  [" + dim + "]" + " · ".join(
+                f"{k}:{v}" for k, v in sorted(cats.items(), key=lambda x: -x[1])) + "[/]"
+        blocks.append(gauge_panel("IDENTITY", head + "\n  " + mem_line, a))
+
+        se = m.get("sessions", {})
+        daily = se.get("daily", [])
+        se_lines = [
+            metric("sessions", str(se.get("total", 0)), "", ok_) + "  " +
+            metric("msgs", str(se.get("messages", 0)), "", a) + "  " +
+            metric("tools", str(se.get("tool_calls", 0)), "", warn),
+        ]
+        if daily:
+            se_lines.append(f"[{dim}]14d msgs[/]  " +
+                            sparkline([c for _, c in daily], width=24))
+        tops = se.get("top_tools", [])
+        if tops:
+            se_lines.append("[" + dim + "]top tools: " +
+                            " · ".join(f"{t}:{c}" for t, c in tops) + "[/]")
+        blocks.append(gauge_panel("ACTIVITY", "\n  ".join(se_lines), ok_))
+
+        clusters = m.get("clusters", [])
+        if clusters:
+            mx = max(c["count"] for c in clusters) or 1
+            cl_lines = []
+            for c in clusters:
+                bar = hbar(c["count"] / mx, width=14, color=warn)
+                cl_lines.append(f"{c['label']:<11} {bar} "
+                                f"[{dim}]{c['count']} · ~{c['avg_tools']} tools[/]")
+            blocks.append(gauge_panel("TASK CLUSTERS", "\n  ".join(cl_lines), warn))
+
+        cand = m.get("skill_candidates", [])
+        wf = m.get("workflows", [])
+        pat_lines = []
+        if cand:
+            pat_lines.append(f"[{ok_}]skill candidates (repeated ≥3×):[/]")
+            for c in cand:
+                pat_lines.append(f"  [{dim}]{c['count']}×[/] {c['pattern'][:52]}")
+        if wf:
+            pat_lines.append(f"[{a}]tool workflows:[/]")
+            for w in wf:
+                pat_lines.append(f"  [{dim}]{w['count']}×[/] " +
+                                 " ▸ ".join(w["seq"]))
+        if pat_lines:
+            blocks.append(gauge_panel("PATTERNS", "\n  ".join(pat_lines), a))
+
+        cor = m.get("corrections", {})
+        recent = cor.get("recent", [])
+        if cor.get("total"):
+            sev = cor.get("by_severity", {})
+            scol = {"critical": err, "major": warn, "minor": dim}
+            co_lines = [f"[{dim}]" + " · ".join(
+                f"{k}:{v}" for k, v in sev.items()) + f" ({cor['total']} total)[/]"]
+            for c in recent:
+                cc = scol.get(c["severity"], dim)
+                co_lines.append(f"[{cc}]▪ {c['severity']}[/] "
+                                f"[{dim}]({c['source']})[/] {c['summary'][:56]}")
+            blocks.append(gauge_panel("CORRECTIONS", "\n  ".join(co_lines), err))
 
         return "\n\n".join(blocks)
 
@@ -1019,6 +1112,13 @@ class AiOSApp(App):
                 lines.append(f"[{theme['ok']}]{self.observer.ai_line}[/]")
             elif not self.store.state.observer_ai:
                 lines.append(f"[{theme['dim']}]Ctrl-K: observe ai[/]")
+            # agent-event alerts (rate-limit / usage / waiting-for-input)
+            if self.observer.attention_line:
+                lines.append(f"[{theme['err']}]{self.observer.attention_line}[/]")
+            if self.observer.alert_line:
+                acol = theme["err"] if self.observer.alert_kind == "exhausted" \
+                    else theme["warn"]
+                lines.append(f"[{acol}]{self.observer.alert_line}[/]")
             lines.append("")
         lines.append(f"[{theme['accent']}]LIVE TASKS[/]")
         if not running:
