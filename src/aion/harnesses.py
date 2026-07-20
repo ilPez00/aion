@@ -234,7 +234,7 @@ class RemoteHarness(Harness):
                         self.registry.log(task, lines[-1][:120])
                     steps += 1
                     self.registry.set_progress(task, min(0.99, steps / max(1, self.cfg.max_steps or 20)))
-                    self._stat(target=target, recv=len(buf))
+                    await self._stat(target=target, recv=len(buf))
                 else:
                     self.registry.set_progress(task, 1.0)
                     self.registry.set_state(task, TaskState.DONE)

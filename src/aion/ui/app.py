@@ -14,6 +14,7 @@ The command palette is optional, searchable, and shows completions.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -226,6 +227,7 @@ class AiOSApp(App):
         self.bus.subscribe(TOPIC_VOICE, self._on_voice)
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes_event)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill_event)
+        asyncio.create_task(self.store._load_hermes_data())
     def _tick(self) -> None:
         self._viz_tick += 1
         # track task count history for wave visualizer
@@ -451,8 +453,15 @@ class AiOSApp(App):
                     else:
                         self._wizard_next("")
                 return
-            if event.key == "escape" or event.key in ("?", "/"):
+            if event.key == "escape":
                 self.query_one("#help").display = False
+                event.prevent_default()
+            return
+        if event.key in ("?", "/"):
+            self.action_help()
+            event.prevent_default()
+            return
+        if event.key in ("enter", "space", "escape"):
             return
         if event.key == "ctrl+k":
             self._toggle_palette()
@@ -460,7 +469,6 @@ class AiOSApp(App):
         if event.key == "v":
             asyncio.create_task(self.voice.toggle())
             return
-        # map key -> Intent via keymap, else let built-in bindings handle it
         intent = self.keymap.resolve(event.key)
         if intent is not None:
             event.prevent_default()

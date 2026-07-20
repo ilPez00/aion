@@ -107,9 +107,12 @@ class Bus:
 
     async def publish(self, topic: str, msg: Any) -> None:
         for cb in list(self._subs.get(topic, ())):
-            result = cb(msg)
-            if asyncio.iscoroutine(result):
-                asyncio.create_task(result)
+            try:
+                result = cb(msg)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            except Exception as e:
+                print(f"[bus] {topic} callback error: {e}")
 
 
 # --------------------------------------------------------------------------
