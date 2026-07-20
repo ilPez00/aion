@@ -11,6 +11,7 @@ Transport: plain HTTP/1.1 JSON. No dependencies beyond stdlib.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import time
 from dataclasses import dataclass, field
@@ -48,8 +49,11 @@ class RemoteNode:
 class RemoteClient:
     """Async HTTP client to talk to a remote aion instance."""
 
-    def __init__(self, timeout: float = 5.0) -> None:
+    def __init__(self, timeout: float = 5.0, token: str | None = None) -> None:
+        from .fleet import load_or_create_token
         self._timeout = timeout
+        # every node in the fleet shares one secret -- copy ~/.aion/token across
+        self._token = token if token is not None else load_or_create_token()
 
     async def fetch_status(self, node: RemoteNode) -> dict | None:
         """GET /status → dict or None on failure."""
@@ -89,7 +93,10 @@ class RemoteClient:
                 timeout=self._timeout,
             )
             req_line = f"{method} {path} HTTP/1.1\r\n"
+            from .fleet import TOKEN_HEADER
             headers = f"Host: {node.host}:{node.port}\r\nContent-Type: application/json\r\n"
+            if self._token:
+                headers += f"{TOKEN_HEADER}: {self._token}\r\n"
             if body:
                 headers += f"Content-Length: {len(body)}\r\n"
             headers += "Connection: close\r\n\r\n"
@@ -110,9 +117,17 @@ class RemoteClient:
             except Exception:
                 pass
 
-            # parse body after headers
+            # parse status line, then body. A 401 body is still valid JSON, so
+            # without this check an unauthorised reply reads as a live node.
             raw = buf.decode(errors="replace")
-            _, _, rest = raw.partition("\r\n\r\n")
+            head, _, rest = raw.partition("\r\n\r\n")
+            status_line = head.split("\r\n", 1)[0]
+            try:
+                code = int(status_line.split(" ")[1])
+            except (IndexError, ValueError):
+                return None
+            if code >= 400:
+                return None
             if rest:
                 return json.loads(rest)
             return None
@@ -130,9 +145,13 @@ class RemoteServer:
       on_cancel(task_id) → dict : cancel a task
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765) -> None:
-        self.host = host
+    def __init__(self, host: str | None = None, port: int = 8765,
+                 token: str | None = None) -> None:
+        from .fleet import listen_host, load_or_create_token
+        # loopback unless AION_LISTEN=lan; /run is arbitrary command execution
+        self.host = host if host is not None else listen_host()
         self.port = port
+        self.token = token if token is not None else load_or_create_token()
         self._server: asyncio.AbstractServer | None = None
         self.on_status = lambda: {}
         self.on_run = lambda p, h: {}
@@ -159,15 +178,23 @@ class RemoteServer:
                 return
             method, path, _ = lines[0].split(" ", 2)
 
-            # read body
+            # read body + headers
             body = ""
             in_body = False
+            headers: dict[str, str] = {}
             for line in lines[1:]:
                 if not line.strip():
                     in_body = True
                     continue
                 if in_body:
                     body += line
+                else:
+                    k, _, v = line.partition(":")
+                    headers[k.strip().lower()] = v.strip()
+
+            if not self._authorised(headers):
+                await self._reply(writer, 401, {"error": "unauthorised"})
+                return
 
             if method == "GET" and path == "/status":
                 result = self.on_status() if callable(self.on_status) else {}
@@ -203,10 +230,19 @@ class RemoteServer:
             except Exception:
                 pass
 
+    def _authorised(self, headers: dict[str, str]) -> bool:
+        """Constant-time token check. An empty configured token disables auth
+        (tests and explicit opt-out only) -- it is never empty by default."""
+        from .fleet import TOKEN_HEADER
+        if not self.token:
+            return True
+        return hmac.compare_digest(headers.get(TOKEN_HEADER, ""), self.token)
+
     async def _reply(self, writer: asyncio.StreamWriter, status: int,
                      data: dict) -> None:
         body = json.dumps(data)
-        reason = {200: "OK", 404: "Not Found", 500: "Internal Server Error"}.get(status, "OK")
+        reason = {200: "OK", 401: "Unauthorized", 404: "Not Found",
+                  500: "Internal Server Error"}.get(status, "OK")
         resp = (
             f"HTTP/1.1 {status} {reason}\r\n"
             f"Content-Type: application/json\r\n"
