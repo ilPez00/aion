@@ -9,6 +9,10 @@ sticks + buttons + SPI TFT) that navigates workspaces one-handed and doubles as
 a Linux gamepad for programs aion spawns. See `docs/DECK.md` and
 `docs/IDENTITY.md`.
 
+Run it more than once — a cockpit and a HUD side by side, or a box in the
+corner you drive over the network — and the **Fleet** workspace shows every
+instance at once. See `docs/FLEET.md`.
+
 The core idea: every input device emits the *same* `Intent` objects; every
 backend is a swappable `Harness` (apps, shells, agents, monitors). The UI
 **renders status and manages processes**; it does not exist to chat. Harnesses

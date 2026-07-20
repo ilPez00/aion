@@ -1,0 +1,94 @@
+# Fleet — many instances, one cockpit
+
+aion can run several times at once: a full-screen cockpit, a half-screen HUD,
+a headless box in the corner. The Fleet workspace (`🌐`, key `9`) shows all of
+them — the one you are looking at, its siblings on this machine, and remote
+nodes over the network.
+
+## Running a second instance
+
+```bash
+./aion.sh                    # instance "main", port 8765
+AION_INSTANCE=hud ./aion.sh  # instance "hud",  port 8801
+```
+
+The name picks the port (`8765 + crc32(name) % 100`), so a peer's port follows
+from its name — no registry, no config entry. `main` keeps 8765 for
+compatibility with existing setups.
+
+## Where state lives
+
+```
+~/.aion/
+  token                     shared secret (0600)
+  shared/                   your data — every instance reads and writes it
+    todos.md  memory.json  boards.json  agents.json  vault/
+  instances/
+    main/  session.json  meta.json
+    hud/   session.json  meta.json
+```
+
+Tasks are per-instance: a task belongs to the process that spawned it, and
+that process cannot resurrect another's coroutines. Everything else is your
+data, so there is one copy and every cockpit sees the same thing.
+
+Files from before this layout are moved on first launch. Migration never
+overwrites: if a destination already exists the old file is left in `~/.aion/`
+for you to sort out by hand.
+
+## Discovery
+
+Each instance writes `instances/<id>/meta.json` every 5s and deletes it on
+exit. Peers read the directory. A SIGKILLed instance can't clean up, so
+whoever notices reaps its file by checking the pid.
+
+Health has four states, not two:
+
+| state | meaning | local | remote |
+|---|---|---|---|
+| `live` | answering promptly | < 15s | < 20s |
+| `stale` | answering, lagging | < 30s | < 60s |
+| `offline` | was reachable, now silent | ≥ 30s | ≥ 60s |
+| `unknown` | configured, never contacted | — | — |
+
+Remote thresholds are more patient because the network is the unreliable part,
+not the node. Load buys no grace: a node too busy to answer is exactly the one
+you want flagged.
+
+## Reaching another machine
+
+`POST /run` executes commands on the receiving box, so the listener is bound to
+loopback and requires a shared token.
+
+1. Opt into network exposure on the machine being controlled:
+
+   ```bash
+   AION_LISTEN=lan ./aion.sh
+   ```
+
+   The Fleet footer reads `LAN` in amber when exposed, `this machine only`
+   otherwise.
+
+2. Copy the secret to every machine in the fleet — one secret, not per-node
+   keys:
+
+   ```bash
+   scp ~/.aion/token other-box:~/.aion/token
+   ```
+
+3. Add the node, from `config/layout.json`:
+
+   ```json
+   "remote_nodes": [{"id": "pi5", "host": "192.168.1.100", "port": 8765}]
+   ```
+
+   or at runtime via `Ctrl-K`:
+
+   ```
+   remote add pi5 192.168.1.100:8765
+   remote run pi5 build the firmware
+   ```
+
+Requests without the token get a 401 and no handler runs. Transport is plain
+HTTP — the token authenticates the caller, it does not encrypt the traffic.
+Treat it as a trusted-LAN feature; do not expose these ports to the internet.
