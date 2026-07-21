@@ -60,10 +60,16 @@ class HarnessConfig:
             remote=d.get("remote"),
             command=d.get("command", ""),
             context_tags=tags,
-            extra={k: v for k, v in d.items()
+            # extra = unknown top-level keys, plus an explicit nested "extra"
+            # block (the convention opencode/factory use). Nested wins so a
+            # config can put harness-specific settings in either place.
+            extra={
+                **{k: v for k, v in d.items()
                    if k not in {"id", "type", "name", "enabled", "vram_mb",
                                 "tier", "max_steps", "remote", "command",
-                                "context_tags"}},
+                                "context_tags", "extra"}},
+                **(d.get("extra") or {}),
+            },
         )
 
 
@@ -371,6 +377,105 @@ class ResearchHarness(Harness):
         await self._stat(rounds=report.rounds, sources=len(report.sources))
         self.registry.set_progress(task, 1.0)
         self.registry.set_state(task, TaskState.DONE)
+        self._finish(task)
+
+
+class FactoryHarness(Harness):
+    """Factory loop: run an agent command over and over until it signals done
+    or the iteration budget (max_steps) runs out — Ralph-style orchestration.
+
+    Config (extra):
+      command:      template run each round; {n} iteration, {p} prompt,
+                    {last} tail of the previous output
+      done_marker:  output substring meaning "finished" (e.g. TASK_COMPLETE)
+      done_command: shell check, exit 0 == finished (e.g. "pytest -q")
+      stop_on_error: end the loop on a non-zero agent exit (default True)
+      per_iter_timeout: seconds per agent run (default 120)
+
+    The loop lives in factory.run_factory; this class supplies the real
+    subprocess runner and bridges the per-iteration callback to task
+    progress/log, honouring kill.
+    """
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        from . import factory
+
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        extra = self.cfg.extra or {}
+        command = extra.get("command") or self.cfg.command
+        if not command:
+            self.registry.log(task, "[factory] no command configured")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+
+        fcfg = factory.FactoryConfig(
+            command=command,
+            max_iters=self.cfg.max_steps or 10,
+            done_marker=extra.get("done_marker", ""),
+            done_command=extra.get("done_command", ""),
+            stop_on_error=extra.get("stop_on_error", True),
+        )
+        timeout = float(extra.get("per_iter_timeout", 120))
+
+        def run_cmd(cmd: str) -> tuple[int, str]:
+            import subprocess
+            try:
+                p = subprocess.run(cmd, shell=True, capture_output=True,
+                                   text=True, timeout=timeout)
+                return p.returncode, (p.stdout or "") + (p.stderr or "")
+            except subprocess.TimeoutExpired:
+                return 124, f"(timed out after {timeout}s)"
+
+        def check_cmd(cmd: str) -> int:
+            import subprocess
+            try:
+                return subprocess.run(cmd, shell=True, capture_output=True,
+                                      text=True, timeout=timeout).returncode
+            except subprocess.TimeoutExpired:
+                return 1
+
+        def report_step(n: int, total: int, exit_code: int, tail: str) -> bool:
+            # Runs off the event loop (to_thread), so mutate task fields
+            # directly and checkpoint to disk — same constraint as research.
+            if self._killed(task):
+                return False
+            task.progress = min(0.99, n / max(1, total))
+            task.eta = max(0, total - n)
+            if tail:
+                task.log.append(f"[factory] iter {n}/{total} (exit {exit_code})")
+                for line in tail.strip().splitlines()[-3:]:
+                    task.log.append(f"  {line[:100]}")
+            if self.store:
+                self.store.save(self.registry.tasks)
+            return True
+
+        try:
+            result = await asyncio.to_thread(
+                factory.run_factory, prompt, fcfg, run_cmd, check_cmd,
+                report_step,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.registry.log(task, f"[factory] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+
+        if result.stopped == factory.STOP_ABORTED or self._killed(task):
+            self.registry.set_state(task, TaskState.CANCELLED)
+            self._finish(task)
+            return
+
+        self.registry.log(task, f"[factory] stopped: {result.stopped} "
+                                f"after {result.count} iteration(s)")
+        await self._stat(iterations=result.count, stopped=result.stopped)
+        self.registry.set_progress(task, 1.0)
+        # a loop that ran out of budget or died is not a success
+        final = TaskState.DONE if result.stopped == factory.STOP_DONE \
+            else TaskState.FAILED if result.stopped == factory.STOP_ERROR \
+            else TaskState.INTERRUPTED
+        self.registry.set_state(task, final)
         self._finish(task)
 
 
@@ -1128,6 +1233,7 @@ HARNESS_TYPES = {
     "opencode": OpenCodeHarness,
     "web": WebHarness,
     "research": ResearchHarness,
+    "factory": FactoryHarness,
     "system": SystemHarness,
     "health": HealthHarness,
     "vault": VaultHarness,
