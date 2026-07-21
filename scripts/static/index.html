@@ -143,11 +143,10 @@ init();
 // ---- sessions ----
 function renderSessions(sessions) {
   const el = document.getElementById('session-list');
-  el.innerHTML = sessions.map(s =>
-    `<div class="session-item${s.id === sessionId ? ' active' : ''}"
-          onclick="loadSession('${s.id}')"
-          title="${s.title}">${escapeHtml(s.title)}</div>`
-  ).join('');
+  el.replaceChildren(...sessions.map(s =>
+    entry('session-item', s.title, () => loadSession(s.id),
+          {title: s.title, active: s.id === sessionId})
+  ));
 }
 
 async function loadSession(sid) {
@@ -174,9 +173,12 @@ async function newSession() {
 // ---- messages ----
 function renderMessages(msgs) {
   const el = document.getElementById('messages');
-  el.innerHTML = msgs.map(m =>
-    `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`
-  ).join('');
+  el.replaceChildren(...msgs.map(m => {
+    const div = document.createElement('div');
+    div.className = 'msg ' + m.role;   // className assignment, not HTML parsing
+    div.textContent = m.content;       // never parsed as markup
+    return div;
+  }));
   el.scrollTop = el.scrollHeight;
 }
 
@@ -372,21 +374,19 @@ async function renderFiles(path) {
   const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
   const data = await res.json();
   const browser = document.getElementById('file-browser');
-  let html = `<div class="file-entry dir" onclick="renderFiles('/home/gio')">📁 ~</div>`;
+  const rows = [entry('file-entry dir', '📁 ~', () => renderFiles('/home/gio'))];
   if (path !== '/home/gio') {
     const parent = path.substring(0, path.lastIndexOf('/'));
-    html += `<div class="file-entry dir" onclick="renderFiles('${parent}')">📁 ..</div>`;
+    rows.push(entry('file-entry dir', '📁 ..', () => renderFiles(parent)));
   }
   for (const n of (data.nodes || []).slice(1)) {  // skip root
     const icon = n.kind === 'dir' ? '📁' : '📄';
     const fullPath = path + '/' + n.id;
-    if (n.kind === 'dir') {
-      html += `<div class="file-entry dir" onclick="renderFiles('${fullPath}')">${icon} ${n.id}</div>`;
-    } else {
-      html += `<div class="file-entry file" onclick="previewFile('${fullPath}')">${icon} ${n.id}</div>`;
-    }
+    const go = n.kind === 'dir' ? () => renderFiles(fullPath)
+                                : () => previewFile(fullPath);
+    rows.push(entry('file-entry ' + n.kind, `${icon} ${n.id}`, go));
   }
-  browser.innerHTML = html;
+  browser.replaceChildren(...rows);
 }
 
 async function previewFile(path) {
@@ -409,12 +409,18 @@ async function renderNotes() {
   const edges = data.edges || [];
 
   // simple text graph
-  let html = '<div style="margin-bottom:8px;"><b>Vault</b></div>';
+  const header = document.createElement('div');
+  header.style.marginBottom = '8px';
+  header.innerHTML = '<b>Vault</b>';
+  const rows = [header];
   for (const n of nodes) {
-    html += `<div class="file-entry note" onclick="loadNote('${n.id}')" style="cursor:pointer;">📝 ${n.label}</div>`;
+    rows.push(entry('file-entry note', `📝 ${n.label}`, () => loadNote(n.id)));
   }
-  html += '<div id="note-content" style="margin-top:8px;background:var(--bg3);padding:8px;border-radius:var(--radius);font-size:12px;white-space:pre-wrap;"></div>';
-  content.innerHTML = html;
+  const noteContent = document.createElement('div');
+  noteContent.id = 'note-content';
+  noteContent.style.cssText = 'margin-top:8px;background:var(--bg3);padding:8px;border-radius:var(--radius);font-size:12px;white-space:pre-wrap;';
+  rows.push(noteContent);
+  content.replaceChildren(...rows);
   loadNote(nodes[0]?.id || 'welcome');
 }
 
@@ -479,6 +485,25 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+// Build a clickable row without ever putting untrusted text into an HTML
+// string. text/title go through textContent + setAttribute (never parsed as
+// markup), and the handler is a real closure (never an onclick attribute), so
+// a filename or title containing quotes or <script> cannot execute.
+function entry(cls, text, onClick, opts) {
+  opts = opts || {};
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = text;
+  if (opts.title != null) div.setAttribute('title', opts.title);
+  if (opts.style) div.style.cssText = opts.style;
+  if (opts.active) div.classList.add('active');
+  if (onClick) {
+    div.style.cursor = div.style.cursor || 'pointer';
+    div.addEventListener('click', onClick);
+  }
+  return div;
 }
 
 // ---- keyboard shortcuts ----
