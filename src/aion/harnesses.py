@@ -308,6 +308,72 @@ class WebHarness(Harness):
         self._finish(task)
 
 
+class ResearchHarness(Harness):
+    """DeepResearch harness: the iterative cousin of WebHarness.
+
+    Where WebHarness does one search + one synthesis, this plans several
+    queries, searches each in its own round, accumulates deduped citations,
+    and stops when the findings cover the question or the round budget
+    (max_steps) runs out. The loop lives in research.run_research; this class
+    only bridges its per-step callback to the task's progress/log and honours
+    pause/kill.
+    """
+
+    async def run(self, task: Task, prompt: str = "") -> None:
+        from . import research
+        from .web import chat, web_search
+
+        self._running.add(task.id)
+        self.registry.set_state(task, TaskState.RUNNING)
+        max_rounds = self.cfg.max_steps or 4
+
+        def report_step(phase: str, detail: str, done: int, total: int) -> bool:
+            # Runs in the to_thread worker, off the event loop, so it cannot use
+            # registry methods (they schedule bus publishes via create_task).
+            # Mutate task fields directly instead -- the UI redraw polls the
+            # registry, so progress is still visible -- and checkpoint straight
+            # to disk (a plain file write, thread-safe). kill/pause are the only
+            # window back into the harness while the sync loop runs.
+            if self._killed(task):
+                return False
+            task.progress = min(0.99, done / max(1, total))
+            task.eta = max(0, total - done)
+            task.log.append(f"[research] {phase}: {detail[:70]}")
+            if self.store:
+                self.store.save(self.registry.tasks)
+            return True
+
+        try:
+            # research.run_research is blocking (requests + LLM); keep the event
+            # loop responsive by running it off-thread.
+            report = await asyncio.to_thread(
+                research.run_research, prompt, web_search, chat,
+                max_rounds, report_step,
+            )
+        except Exception as e:  # noqa: BLE001
+            self.registry.log(task, f"[research] error: {e}")
+            self.registry.set_state(task, TaskState.FAILED)
+            self._finish(task)
+            return
+
+        if report.stopped == "aborted" or self._killed(task):
+            self.registry.set_state(task, TaskState.CANCELLED)
+            self._finish(task)
+            return
+
+        self.registry.log(task, f"[research] {report.rounds} round(s), "
+                                f"{len(report.sources)} source(s), stop: {report.stopped}")
+        for line in report.answer.splitlines():
+            if line.strip():
+                self.registry.log(task, line[:200])
+        for i, s in enumerate(report.sources[:6]):
+            self.registry.log(task, f"  [{i+1}] {s.title[:50]} — {s.url[:60]}")
+        await self._stat(rounds=report.rounds, sources=len(report.sources))
+        self.registry.set_progress(task, 1.0)
+        self.registry.set_state(task, TaskState.DONE)
+        self._finish(task)
+
+
 class TelemetryHarness(Harness):
     """Lesson #5: real per-harness stats from the host.
 
@@ -1061,6 +1127,7 @@ HARNESS_TYPES = {
     "skill": SkillHarness,
     "opencode": OpenCodeHarness,
     "web": WebHarness,
+    "research": ResearchHarness,
     "system": SystemHarness,
     "health": HealthHarness,
     "vault": VaultHarness,

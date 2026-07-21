@@ -105,6 +105,33 @@ def _fcm_chat(messages: list[dict], timeout: int = 20) -> str | None:
     return None
 
 
+def chat(messages: list[dict], model: str = "llama-3.3-70b-versatile",
+         temperature: float = 0.3, max_tokens: int = 600) -> str | None:
+    """One chat completion via Groq, falling back to the local FCM daemon.
+
+    Returns None only when neither backend answers, so callers can pick their
+    own no-LLM fallback. Used by the deepresearch loop for plan/note/reflect/
+    synthesise, each of which degrades on None rather than failing.
+    """
+    import requests
+    _load_env()
+    key = os.environ.get("GROQ_API_KEY", "")
+    if key:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": messages,
+                      "temperature": temperature, "max_tokens": max_tokens},
+                timeout=25,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception:  # noqa: BLE001
+            pass
+    return _fcm_chat(messages)
+
+
 def deepsearch_answer(prompt: str, model: str = "llama-3.3-70b-versatile") -> dict:
     """ReAct-style web answer. Returns {answer, sources, searched}."""
     import json as _json

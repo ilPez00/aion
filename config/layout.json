@@ -68,6 +68,7 @@
     {"id": "projects","type": "projects","name": "Projects",       "context_tags": ["dev"], "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 8.0, "check_prs": false},
     {"id": "term",    "type": "term",    "name": "Term",          "context_tags": ["dev","system"], "enabled": true, "vram_mb": 0,   "tier": "cheap", "command": "btop", "cols": 110, "rows": 32},
     {"id": "web",     "type": "web",     "name": "DeepSearch",     "context_tags": ["dev","agent"], "enabled": true, "vram_mb": 0,   "tier": "cheap"},
+    {"id": "research","type": "research","name": "DeepResearch",   "context_tags": ["dev","agent"], "enabled": true, "vram_mb": 0,   "tier": "standard", "max_steps": 4},
     {"id": "opencode","type": "opencode","name": "OpenCode Agent", "context_tags": ["dev","agent"], "enabled": true, "vram_mb": 0,   "tier": "premium", "extra": {"model": "llm7/codestral-latest", "timeout": 300, "auto": false}},
     {"id": "system",  "type": "system",  "name": "Computer HUD",   "context_tags": ["system","desktop"], "enabled": true, "vram_mb": 0,   "tier": "standard", "interval": 2.0},
     {"id": "health",  "type": "health",  "name": "Life HUD",       "context_tags": ["health","desktop"], "enabled": true, "vram_mb": 0,   "tier": "standard", "source": "json", "interval": 30.0},
