@@ -1464,6 +1464,35 @@ class AiOSApp(App):
                             listen_port=self._remote_server.port,
                             listen_host=self._remote_server.host)
 
+    def _run_detail_lines(self, theme: dict) -> list[str]:
+        """Full detail for the focused run — the right rail follows focus in
+        the Runs workspace so a run shows all its output, not just a preview."""
+        ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+        if ws != "runs":
+            return []
+        task = self.store._focused_task()
+        if task is None:
+            return []
+        a, ok_, wa, er, di = (theme["accent"], theme["ok"], theme["warn"],
+                              theme["err"], theme["dim"])
+        scol = {"running": wa, "done": ok_, "failed": er, "pending": di,
+                "cancelled": di, "interrupted": wa}.get(task.state.value, di)
+        prompt = self.store._task_prompts.get(task.id, "")
+        out = [
+            f"[{a}]◈ RUN {task.id}[/]  [{di}]{task.harness}[/]",
+            f"[{scol}]{task.state.value}[/]"
+            + (f"  [{di}]{int(task.progress*100)}%[/]" if task.state.value == "running" else ""),
+        ]
+        if prompt:
+            out.append(f"[{di}]“{prompt[:60]}”[/]")
+        out.append(f"[{di}]{'─' * 30}[/]")
+        # full output, newest at the bottom (scrolls); cap so the rail stays sane
+        log = task.log[-60:] or ["(no output yet)"]
+        for line in log:
+            out.append(f"[{di}]{line[:44]}[/]")
+        out.append("")
+        return out
+
     def _render_right(self) -> None:
         theme = self.cfg["theme"]
         right = self.query_one("#right", expect_type=VerticalScroll)
@@ -1471,6 +1500,10 @@ class AiOSApp(App):
         running = [t for t in self.store.registry.tasks.values()
                    if t.state.value in ("running", "pending")]
         lines: list[str] = []
+        # Runs workspace: lead the rail with the focused run's full detail.
+        detail = self._run_detail_lines(theme)
+        if detail:
+            lines.extend(detail)
         wf = self.store.state.workflows
         wf_live = [w for w in wf if w.get("stage") not in ("done",)] if wf else []
         # ---- Workflow Pulse (when live workflows exist) ----
