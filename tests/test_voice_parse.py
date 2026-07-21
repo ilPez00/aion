@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion.core import Intent, IntentType
@@ -101,3 +103,51 @@ def test_unknown_target_falls_through_to_command():
 
 def test_empty_workspaces_map_is_empty():
     assert build_ws_map([]) == {}
+
+
+# ── harness verbs (research / factory by voice) ───────────────────────────────
+from aion.input import match_harness_verb
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("research quantum computing", "research quantum computing"),
+    ("deep research rust async", "research rust async"),
+    ("look into the fleet bug", "research the fleet bug"),
+    ("investigate memory leak", "research memory leak"),
+    ("factory build the parser", "factory build the parser"),
+    ("factory loop fix tests until green", "factory fix tests until green"),
+    ("iterate on the readme", "factory the readme"),
+    ("keep building the api", "factory the api"),
+    ("loop on lint", "factory lint"),
+])
+def test_harness_verb_maps_to_canonical_command(spoken, expected):
+    assert match_harness_verb(spoken) == expected
+
+
+def test_bare_verb_without_query_does_not_match():
+    """'research' alone must not spawn an empty research task."""
+    assert match_harness_verb("research") is None
+    assert match_harness_verb("factory") is None
+
+
+def test_unrelated_speech_does_not_match():
+    assert match_harness_verb("what time is it") is None
+
+
+def test_voice_parse_routes_research(monkeypatch):
+    v = VoiceInput(workspaces=WORKSPACES)
+    i = v.parse("Research quantum error correction")   # note casing
+    assert i.type == IntentType.COMMAND
+    assert i.payload["text"] == "research quantum error correction"
+
+
+def test_voice_parse_routes_factory():
+    v = VoiceInput(workspaces=WORKSPACES)
+    i = v.parse("keep building the auth module")
+    assert i.type == IntentType.COMMAND
+    assert i.payload["text"] == "factory the auth module"
+
+
+def test_longer_verb_phrase_wins():
+    """'deep research x' -> research x, not 'research' matching 'deep...'."""
+    assert match_harness_verb("deep research x") == "research x"

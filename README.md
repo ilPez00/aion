@@ -106,7 +106,7 @@ Web deps: `pip install -e ".[web]"` (websockets, pyte, requests, python-dotenv).
 | **v**        | toggle offline voice control (faster-whisper + mic) |
 | trackpad     | click any row                                       |
 | joystick     | axis = navigate, A=activate B=back C=context        |
-| voice        | "go to fleet", "show subsystems", "run demo hello", "stop" |
+| voice        | "go to fleet", "look into <topic>", "keep building <task>", "stop" |
 
 ### The palette speaks plain language
 

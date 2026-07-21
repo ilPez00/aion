@@ -24,6 +24,7 @@ import json
 import os
 import secrets
 import socket
+import tempfile
 import time
 import zlib
 from dataclasses import dataclass, field
@@ -204,19 +205,26 @@ def write_json_atomic(path: str | Path, data: object) -> None:
     which truncates the target before writing the new bytes. Kill the process
     in that window and the file is empty. tmp + os.replace makes the swap
     atomic on POSIX, which also makes concurrent instances safe to interleave.
+
+    The temp file is unique per call (mkstemp), not per pid: several harnesses
+    checkpoint from their own threads at once, and a shared `.tmp<pid>` name
+    let one call's cleanup unlink the file another was about to os.replace,
+    which surfaced as "session.json.tmp... -> session.json (No such file)".
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".",
+                                    suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        with open(tmp, "w") as fh:
+        with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        os.replace(tmp, path)      # atomic; tmp no longer exists after this
     finally:
         try:
-            tmp.unlink()
+            tmp.unlink()           # only runs if os.replace didn't happen
         except FileNotFoundError:
             pass
 

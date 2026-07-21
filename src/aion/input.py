@@ -209,6 +209,33 @@ _WS_ALIASES = {
 }
 
 
+# Spoken verb -> harness id. Every phrase ends in a space so it only matches
+# as a prefix with a query after it ("research x", not the bare word). Sorted
+# longest-first at match time so a more specific phrase wins.
+_HARNESS_VERBS: dict[str, str] = {
+    "research ": "research",
+    "deep research ": "research",
+    "look into ": "research",
+    "investigate ": "research",
+    "factory ": "factory",
+    "factory loop ": "factory",
+    "iterate on ": "factory",
+    "keep building ": "factory",
+    "loop on ": "factory",
+}
+
+
+def match_harness_verb(t: str) -> str | None:
+    """If `t` opens with a harness verb and has a query, return the canonical
+    "<harness> <query>" command; else None. Pure + testable."""
+    for verb in sorted(_HARNESS_VERBS, key=len, reverse=True):
+        if t.startswith(verb):
+            query = t[len(verb):].strip()
+            if query:
+                return f"{_HARNESS_VERBS[verb]} {query}"
+    return None
+
+
 def build_ws_map(workspaces: list[dict]) -> dict[str, int]:
     """Spoken name -> workspace index, from config so it never goes stale.
 
@@ -349,6 +376,12 @@ class VoiceInput(InputDevice):
                     return Intent.switch_workspace(index=idx)
         if t in self.ws_map:
             return Intent.switch_workspace(index=self.ws_map[t])
+        # harness verbs: natural phrasings -> "<harness> <query>", which the
+        # command layer routes to _spawn. Longest phrase first so "deep
+        # research x" beats "research x".
+        hv = match_harness_verb(t)
+        if hv is not None:
+            return Intent.command(text=hv)
         if t.startswith("search ") or t.startswith("web "):
             return Intent.command(text=t)          # -> DeepSearch harness
         if t in ("rerun", "retry"):

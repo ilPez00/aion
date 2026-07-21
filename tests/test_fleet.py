@@ -49,6 +49,35 @@ def test_write_json_atomic_leaves_no_tmp_files(tmp_path):
     assert list(d.iterdir()) == [target]
 
 
+def test_write_json_atomic_survives_concurrent_writers(tmp_path):
+    """Regression: several harnesses checkpoint from their own threads at once.
+    A shared per-pid temp name let one call's cleanup unlink the file another
+    was about to os.replace."""
+    import threading
+    d = tmp_path / "conc"
+    d.mkdir()
+    target = d / "state.json"
+    errors: list[Exception] = []
+
+    def writer(n):
+        try:
+            for _ in range(40):
+                fleet.write_json_atomic(target, {"who": n})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent writes raised: {errors[:3]}"
+    assert json.loads(target.read_text())["who"] in range(6)  # valid, not torn
+    # no leftover temp files
+    assert list(d.iterdir()) == [target]
+
+
 def test_write_json_atomic_preserves_old_file_on_failure(tmp_path):
     """A failed write must not truncate the previous good state."""
     target = tmp_path / "state.json"
