@@ -204,6 +204,7 @@ class JoystickInput(InputDevice):
 _WS_ALIASES = {
     "models": ("subsystems", "models", "backends"),
     "net": ("fleet", "network", "nodes", "instances"),
+    "runs": ("runs", "processes", "results", "jobs", "agent work"),
     "desktop": ("desktop", "home", "dashboard"),
     "term": ("terminal", "term", "shell", "console"),
 }

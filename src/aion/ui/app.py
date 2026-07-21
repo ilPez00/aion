@@ -113,6 +113,7 @@ class AiOSApp(App):
         ("x", "cancel", "Cancel"),
         ("r", "rerun", "Re-run"),
         ("a", "act", "Act on Jarvis"),
+        ("t", "toggle_tab", "Switch tab"),
     ]
 
     def __init__(self) -> None:
@@ -528,6 +529,13 @@ class AiOSApp(App):
     def action_rerun(self) -> None:
         self.store.handle(Intent(IntentType.RERUN))
 
+    def action_toggle_tab(self) -> None:
+        # only the Runs workspace has tabs today
+        ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+        if ws == "runs":
+            self.store.toggle_runs_tab()
+            self._render_center()
+
     def _toggle_palette(self) -> None:
         p = self.query_one("#palette")
         p.display = not p.display
@@ -663,6 +671,8 @@ class AiOSApp(App):
             return (f"[{col}]{f}{it['id']} {it['label']}[/]\n"
                     f"  [{scol}]{st}{' (paused)' if it.get('paused') else ''}[/] "
                     f"{bar(it['progress'])} [{theme['dim']}]{eta}{note}[/]")
+        if ws == "runs":
+            return self._runs_line(it, focused, theme)
         if ws == "settings":
             if it.get("type") == "fleet_header":
                 return (f"[{theme['accent']}]FLEET[/]  "
@@ -1088,7 +1098,7 @@ class AiOSApp(App):
         sep = f"[{a}]" + "─" * 50 + "[/]"
         p = []
 
-        ws_icons = {"desktop":"⬡","models":"◈","tasks":"▤","agent":"✦",
+        ws_icons = {"desktop":"⬡","models":"◈","tasks":"▤","runs":"⟳","agent":"✦",
                     "vault":"📓","system":"🖥","term":"▣","settings":"⚙","net":"🌐"}
         ws_ids = [w["id"] for w in self.cfg["workspaces"]]
 
@@ -1378,6 +1388,47 @@ class AiOSApp(App):
         hist = self._fleet_history.setdefault(node_id, [])
         hist.append(running / max(1.0, running + 1.0))
         del hist[:-16]
+
+    def _runs_line(self, it: dict, focused: bool, theme: dict) -> str:
+        """Render one row of the Runs workspace (tab bar, or a run)."""
+        a, ok_, wa, er, di = (theme["accent"], theme["ok"], theme["warn"],
+                              theme["err"], theme["dim"])
+        f = "▌" if focused else " "
+
+        if it.get("type") == "runs_tabs":
+            tab = it.get("tab", "processes")
+            counts = it.get("counts", {})
+            def chip(name, key):
+                on = tab == key
+                col = a if on else di
+                mark = "▸ " if on else "  "
+                return f"[{col}]{mark}{name} {counts.get(key, 0)}[/]"
+            focus_hint = f"[{a}]⇄[/]" if focused else " "
+            return (f"{focus_hint} {chip('Processes', 'processes')}   "
+                    f"{chip('Results', 'results')}"
+                    f"   [{di}](Enter/t to switch)[/]")
+
+        # a run row
+        st = it["state"]
+        scol = {"running": wa, "done": ok_, "failed": er,
+                "pending": di, "cancelled": di, "interrupted": wa}.get(st, di)
+        hz = f"[{di}]{it['harness']}[/]"
+        head = f"[{a if focused else di}]{f}{it['id']}[/] {hz} [{scol}]{st}[/]"
+        # label, trimmed of the harness prefix the spawn added
+        label = it["label"].split(": ", 1)[-1]
+        head += f"  [{a if focused else di}]{label[:40]}[/]"
+
+        lines = [head]
+        if st in ("running", "pending"):
+            eta = f" eta {int(it['eta'])}s" if it.get("eta") else ""
+            lines.append(f"  {bar(it['progress'])}[{di}]{eta}[/]")
+        else:
+            note = "[Enter: re-run]" if st in ("interrupted", "cancelled", "failed") else ""
+            for ln in it.get("output", [])[-3:]:
+                lines.append(f"  [{di}]{ln[:64]}[/]")
+            if note:
+                lines.append(f"  [{di}]{note}[/]")
+        return "\n".join(lines)
 
     def _net_panel(self, theme: dict) -> str:
         """Render the Fleet workspace — every aion instance, local and remote."""

@@ -44,6 +44,40 @@ fleet", "show network", "nodes". Voice names come from each workspace's id,
 its title, and a small alias list in `input.py`, built from config so a
 workspace added later is spoken-reachable without touching the voice code.
 
+## Runs — watching agent work
+
+The Runs workspace (`⟳`, or voice "go to runs" / "processes" / "results")
+collects every task from an agent-tagged harness (web, research, factory,
+opencode, cyclops) into two tabs:
+
+- **Processes** — what is running now. Progress bars, oldest-first so a
+  long-running loop is at the top. `x` kills a runaway; `p` pauses.
+- **Results** — what finished, newest-first, with the output it produced and
+  a stop reason. `Enter`/`r` re-runs a failed or exhausted one.
+
+Switch tabs with `t`, or `Enter` on the tab bar. A harness joins Runs by
+carrying the `agent` context tag in config — nothing here needs editing.
+
+### Real factory agents
+
+The default `factory` harness drives `claude -p`, telling the agent to end
+with `TASK_COMPLETE` when finished. Point it at any installed agent by editing
+`extra.command` in `config/layout.json` (`{p}` prompt, `{last}` prior output,
+both shell-quoted; `{n}` iteration):
+
+```jsonc
+// objective completion — loop until the tests pass, not until the agent says so
+"extra": {
+  "command": "codex exec 'Fix failing tests. {p}. Last: {last}'",
+  "done_command": "python -m pytest -q",   // exit 0 == done
+  "per_iter_timeout": 300
+}
+```
+
+`done_command` (a shell check that exits 0 when complete) is more trustworthy
+than `done_marker` (a string the agent prints) because it doesn't rely on the
+agent's self-report. `max_steps` caps the loop either way.
+
 ## Settings
 
 The Settings workspace (`⚙`) opens with a FLEET block listing every value, what

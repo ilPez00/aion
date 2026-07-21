@@ -63,6 +63,7 @@ class ViewState:
     last_command: str = ""        # most recent command text (for context routing)
     workflows: list[dict] = field(default_factory=list)   # WorkflowRow dicts for HUD pulse
     workflows_live: int = 0       # count of non-done workflows
+    runs_tab: str = "processes"   # Runs workspace: "processes" | "results"
 
 
 class Store:
@@ -245,6 +246,18 @@ class Store:
             bd = self.state.stats.get("board")
             if bd and bd.get("ok"):
                 items.append({"type": "board", "boards": bd.get("boards", [])})
+            return items
+        if ws == "runs":
+            from . import runs as _runs
+            agent_ids = _runs.agent_harness_ids(self.harnesses)
+            tasks = list(self.registry.tasks.values())
+            counts = _runs.tab_counts(tasks, agent_ids)
+            rows = _runs.collect_runs(tasks, agent_ids, self.state.runs_tab)
+            # item 0 is the tab bar; the rest are runs. Activate on the bar
+            # flips the tab, so focus starting at 0 is a feature.
+            items = [{"type": "runs_tabs", "tab": self.state.runs_tab,
+                      "counts": counts}]
+            items += [r.as_dict() for r in rows]
             return items
         if ws == "settings":
             asyncio.create_task(self._load_settings_data())
@@ -488,11 +501,19 @@ class Store:
     def _focused_task(self) -> Task | None:
         items = self._current_items()
         ws_id = self.cfg["workspaces"][self.state.active_ws]["id"]
-        if ws_id != "tasks" or not items:
+        if ws_id not in ("tasks", "runs") or not items:
             return None
         if self.state.focus >= len(items):
             return None
-        return self.registry.tasks.get(items[self.state.focus]["id"])
+        item = items[self.state.focus]
+        if "id" not in item:        # runs tab-bar row has no task
+            return None
+        return self.registry.tasks.get(item["id"])
+
+    def toggle_runs_tab(self) -> None:
+        from .runs import other_tab
+        self.state.runs_tab = other_tab(self.state.runs_tab)
+        self.state.focus = 0
 
     def _control(self, action: str) -> None:
         task = self._focused_task()
@@ -531,6 +552,19 @@ class Store:
                     h.resume(task)
                 else:
                     h.pause(task)
+        elif ws == "runs":
+            if item.get("type") == "runs_tabs":
+                self.toggle_runs_tab()
+                return
+            task = self.registry.tasks.get(item.get("id", ""))
+            if task is None:
+                return
+            h = self.harnesses.get(task.harness, self.harnesses.get(self.state.active_harness))
+            # results re-run; live processes pause/resume — same as Tasks
+            if task.state.value in ("interrupted", "cancelled", "failed"):
+                asyncio.create_task(self._respawn(task))
+            elif task.state.value == "running" and h is not None:
+                h.resume(task) if task.paused else h.pause(task)
 
     async def _spawn(self, harness_id: str, prompt: str) -> None:
         h = self.harnesses.get(harness_id, self.harnesses.get(self.state.active_harness))
