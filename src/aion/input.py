@@ -199,8 +199,40 @@ class JoystickInput(InputDevice):
 # Everything is local (no API) — important on CGNAT / no public IP.
 # Graceful: if sounddevice/whisper can't load, voice mode just stays off.
 # --------------------------------------------------------------------------
+# Extra spoken names for workspaces whose id/title a person would not say.
+# Keyed by workspace id; every alias here is lowercased at match time.
+_WS_ALIASES = {
+    "models": ("subsystems", "models", "backends"),
+    "net": ("fleet", "network", "nodes", "instances"),
+    "desktop": ("desktop", "home", "dashboard"),
+    "term": ("terminal", "term", "shell", "console"),
+}
+
+
+def build_ws_map(workspaces: list[dict]) -> dict[str, int]:
+    """Spoken name -> workspace index, from config so it never goes stale.
+
+    Every workspace contributes its id, its title, and any aliases, all
+    lowercased. Longer phrases first, so "go to system" cannot be shadowed by
+    a workspace that merely contains "sys". The hardcoded dict this replaces
+    silently omitted every workspace added after it was written -- Fleet
+    included.
+    """
+    pairs: list[tuple[str, int]] = []
+    for i, w in enumerate(workspaces):
+        wid = w.get("id", "")
+        names = {wid, w.get("title", "").lower(), *(_WS_ALIASES.get(wid, ()))}
+        for name in names:
+            name = name.strip().lower()
+            if name:
+                pairs.append((name, i))
+    # longest name wins on overlap
+    return {name: idx for name, idx in sorted(pairs, key=lambda p: len(p[0]))}
+
+
 class VoiceInput(InputDevice):
-    def __init__(self, model_size: str = "tiny") -> None:
+    def __init__(self, model_size: str = "tiny",
+                 workspaces: list[dict] | None = None) -> None:
         super().__init__()
         self.model_size = model_size
         self._running = False
@@ -211,7 +243,7 @@ class VoiceInput(InputDevice):
         self._vad_thresh = 0.012    # RMS energy gate
         self._silence_chunks = 0
         self._max_silence = 18      # ~0.3s @ 16k/512 — end of utterance
-        self.ws_map = {"models": 1, "tasks": 2, "agent": 3, "vault": 4, "system": 5, "term": 6, "settings": 7}
+        self.ws_map = build_ws_map(workspaces or [])
 
     async def start(self) -> None:
         self.available = True   # enabled on demand via toggle
@@ -308,9 +340,15 @@ class VoiceInput(InputDevice):
     def parse(self, text: str) -> Intent:
         """Map spoken text -> Intent. Replace with LLM/grammar later."""
         t = text.lower().strip()
-        for name, idx in self.ws_map.items():
-            if f"go to {name}" in t or f"show {name}" in t:
-                return Intent.switch_workspace(index=idx)
+        # navigation verbs, plus the bare workspace name on its own
+        for verb in ("go to ", "show ", "open ", "switch to "):
+            if t.startswith(verb):
+                target = t[len(verb):].strip()
+                idx = self.ws_map.get(target)
+                if idx is not None:
+                    return Intent.switch_workspace(index=idx)
+        if t in self.ws_map:
+            return Intent.switch_workspace(index=self.ws_map[t])
         if t.startswith("search ") or t.startswith("web "):
             return Intent.command(text=t)          # -> DeepSearch harness
         if t in ("rerun", "retry"):

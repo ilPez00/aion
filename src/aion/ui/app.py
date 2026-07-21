@@ -134,7 +134,8 @@ class AiOSApp(App):
         self.cfg = self.store.cfg
         self.router = Router(self.bus, self.cfg["keybindings"])
         self.keymap = KeyboardMap(self.cfg["keybindings"])
-        self.voice = VoiceInput(model_size="tiny")
+        self.voice = VoiceInput(model_size="tiny",
+                                workspaces=self.cfg["workspaces"])
         self.router.register(self.voice)
         deck_cfg = self.cfg.get("deck", {})
         self.deck = DeckInput(port=deck_cfg.get("port"))

@@ -44,7 +44,7 @@
     {"id": "system",   "title": "System",   "icon": "🖥"},
     {"id": "term",     "title": "Term",     "icon": "▣"},
     {"id": "settings", "title": "Settings", "icon": "⚙️"},
-    {"id": "net",      "title": "Network",  "icon": "🌐"}
+    {"id": "net",      "title": "Fleet",    "icon": "🌐"}
   ],
   "deck": {"enabled": true, "port": null},
   "keybindings": {

@@ -36,6 +36,14 @@ Files from before this layout are moved on first launch. Migration never
 overwrites: if a destination already exists the old file is left in `~/.aion/`
 for you to sort out by hand.
 
+## Getting there
+
+The Fleet workspace is workspace 9 — `9` on the keyboard, positional on a
+joystick or the deck (navigate right along the rail), or by voice: "go to
+fleet", "show network", "nodes". Voice names come from each workspace's id,
+its title, and a small alias list in `input.py`, built from config so a
+workspace added later is spoken-reachable without touching the voice code.
+
 ## Settings
 
 The Settings workspace (`⚙`) opens with a FLEET block listing every value, what
