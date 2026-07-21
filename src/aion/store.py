@@ -22,6 +22,8 @@ from .core import (
     TOPIC_INTENT, TOPIC_PHYSIS, load_config,
 )
 from .memory import MemoryStore
+from .gbrain import BrainStore
+from .credentials import CredentialStore, PROVIDER_PRESETS
 from .voice.persona import Persona
 from .llm import ChatSession, format_conversation, chat_send
 from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
@@ -80,7 +82,8 @@ class Store:
         self._loop = None  # captured event loop (set in _chat for agent tools)
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.fleet_callback = None   # set by app: async fn(text) -> str
-        self.memory = MemoryStore()
+        self.memory = BrainStore()        # gbrain MCP with MemoryStore fallback
+        self.credentials = CredentialStore()  # structured provider profiles
         from .todos import TodoStore
         self.todos = TodoStore()
         self.agent_store = AgentStore()
@@ -122,18 +125,15 @@ class Store:
 
     async def _load_settings_data(self) -> None:
         try:
-            env_path = Path.home() / ".env"
+            profiles = self.credentials.list()
             providers: dict[str, dict] = {}
-            if env_path.exists():
-                for line in env_path.read_text().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip()
-                    preview = v[:8] + "…" + v[-4:] if len(v) > 16 else v
-                    providers[k] = {"endpoint": "", "key_preview": preview}
+            for p in profiles:
+                providers[p["label"]] = {
+                    "endpoint": p["endpoint"],
+                    "key_preview": p["key_preview"],
+                    "kind": p["kind"],
+                    "active": p["active"],
+                }
             self.state.settings_providers = providers
             await self.bus.publish(TOPIC_SETTINGS, {
                 "action": "providers",
@@ -584,17 +584,59 @@ class Store:
             self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "note" and len(parts) == 2:
-            self.memory.add(parts[1])
+            result = self.memory.add(parts[1])
+            src = result.get("source", "memory")
+            self.state.logs.append(f"noted ({src}): {parts[1][:60]}")
+            self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "mem":
-            self.memory.query = parts[1] if len(parts) == 2 else ""
-            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
-            if "vault" in ws_ids:
-                self.state.active_ws = ws_ids.index("vault")
-                self.state.focus = 0
+            if len(parts) == 2:
+                hits = self.memory.search(parts[1], limit=8)
+                if hits:
+                    lines = [f"  {h.get('text','')[:80]}" for h in hits]
+                    self.state.logs.append(f"mem: {len(hits)} result(s) for '{parts[1]}'")
+                    self.state.logs.extend(lines)
+                else:
+                    self.state.logs.append(f"mem: no results for '{parts[1]}'")
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.memory.query = ""
+                ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+                if "vault" in ws_ids:
+                    self.state.active_ws = ws_ids.index("vault")
+                    self.state.focus = 0
             return
         if parts[0] == "forget" and len(parts) == 2 and parts[1].strip().isdigit():
-            self.memory.forget(int(parts[1]))
+            ok = self.memory.forget(int(parts[1]))
+            self.state.logs.append("forgotten" if ok else "bad index")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "think" and len(parts) >= 2:
+            question = parts[1]
+            self.state.logs.append(f"thinking: {question[:60]}…")
+            self.state.logs = self.state.logs[-50:]
+            result = self.memory.think(question)
+            if result and result.get("answer"):
+                self.state.logs.append(f"→ {result['answer'][:200]}")
+                self.state.logs.append(f"  (gap analysis: {result.get('gap_analysis', 'none')})")
+            else:
+                self.state.logs.append("think: gbrain not available")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "gbrain" and len(parts) == 1:
+            from .gbrain import identity
+            info = identity()
+            if "error" in info:
+                self.state.logs.append(f"gbrain: {info['error']}")
+            else:
+                v = info.get("version", "?")
+                pc = info.get("page_count", info.get("total_pages", "?"))
+                cc = info.get("chunk_count", "?")
+                self.state.logs.append(f"gbrain {v}: {pc} pages, {cc} chunks")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "provider":
+            await self._provider_command(text)
             return
         if parts[0] == "todo":
             arg = parts[1].strip() if len(parts) == 2 else ""
@@ -1003,6 +1045,7 @@ class Store:
             compare=lambda q: self._agent_compare_tool(q),
             mem=lambda q: self._agent_mem_tool(q),
             note=lambda f: self._agent_note_tool(f),
+            think=lambda q: self._agent_think_tool(q),
             state=lambda: self._agent_state_tool(),
             vault=lambda p, c: self._agent_vault_tool(p, c),
             swarm=lambda g: self._agent_swarm_tool(g),
@@ -1042,19 +1085,88 @@ class Store:
         return f"comparing models for: {prompt[:60]}"
 
     def _agent_mem_tool(self, query: str) -> str:
-        try:
-            from .hermes import HermesMemoryReader
-            mem = HermesMemoryReader()
-            hits = mem.search(query, limit=3) if hasattr(mem, "search") else []
-            if not hits:
-                return f"no memory hits for '{query}'"
-            return "\n".join(f"- {h.title}: {h.snippet[:80]}" for h in hits)
-        except Exception as e:  # noqa: BLE001
-            return f"memory unavailable: {e}"
+        hits = self.memory.search(query, limit=3)
+        if not hits:
+            return f"no memory hits for '{query}'"
+        return "\n".join(f"- {h.get('text','')[:80]}" for h in hits)
 
     def _agent_note_tool(self, fact: str) -> str:
-        self.memory.add(fact)
-        return f"noted: {fact[:60]}"
+        result = self.memory.add(fact)
+        src = result.get("source", "memory")
+        return f"noted ({src}): {fact[:60]}"
+
+    def _agent_think_tool(self, question: str) -> str:
+        result = self.memory.think(question)
+        if result and result.get("answer"):
+            answer = result["answer"][:200]
+            gap = result.get("gap_analysis", "")
+            return f"{answer}\n{gap}"
+        return "think: gbrain not available"
+
+    async def _provider_command(self, text: str) -> None:
+        """Handle 'provider list|add|rm|use|presets' commands."""
+        parts = text.split()
+        sub = parts[1] if len(parts) > 1 else "list"
+        if sub == "list":
+            profiles = self.credentials.list()
+            if not profiles:
+                self.state.logs.append("No providers configured. 'provider presets' to see available.")
+            else:
+                for p in profiles:
+                    mark = "★" if p.get("active") else " "
+                    self.state.logs.append(
+                        f"{mark} {p.get('label','?')} ({p.get('kind','?')}) "
+                        f"→ {p.get('endpoint','')[:40]} "
+                        f"key: {p.get('key_preview','')}")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if sub == "presets":
+            for p in self.credentials.preset_list():
+                note = " ✓" if p.get("configured") else ""
+                self.state.logs.append(
+                    f"  {p.get('icon','')} {p.get('name','?')} "
+                    f"({p['kind']}){note}")
+            self.state.logs.append("Use 'provider add <kind> <key>' to configure.")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if sub == "add" and len(parts) >= 4:
+            kind = parts[2].lower()
+            api_key = parts[3]
+            endpoint = parts[4] if len(parts) >= 5 else ""
+            from .credentials import PROVIDER_ALIASES
+            resolved = PROVIDER_ALIASES.get(kind)
+            if not resolved:
+                self.state.logs.append(f"unknown provider '{kind}'. Try 'provider presets'")
+                self.state.logs = self.state.logs[-50:]
+                return
+            p = self.credentials.add(resolved, api_key, endpoint=endpoint)
+            self.state.logs.append(f"provider {p.label} ({resolved}) configured")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if sub == "rm" and len(parts) >= 3:
+            kind = parts[2].lower()
+            from .credentials import PROVIDER_ALIASES
+            resolved = PROVIDER_ALIASES.get(kind)
+            if resolved and self.credentials.remove(resolved):
+                self.state.logs.append(f"provider {resolved} removed")
+            else:
+                self.state.logs.append(f"provider '{kind}' not found")
+            self.state.logs = self.state.logs[-50:]
+            return
+        if sub == "use" and len(parts) >= 3:
+            kind = parts[2].lower()
+            from .credentials import PROVIDER_ALIASES
+            resolved = PROVIDER_ALIASES.get(kind)
+            if resolved:
+                self.credentials.set_active(resolved)
+                self.state.logs.append(f"active provider: {resolved}")
+            else:
+                self.state.logs.append(f"unknown provider '{kind}'")
+            self.state.logs = self.state.logs[-50:]
+            return
+        self.state.logs.append(
+            "usage: provider list | presets | add <kind> <key> [endpoint] | rm <kind> | use <kind>")
+        self.state.logs = self.state.logs[-50:]
 
     def _agent_state_tool(self) -> str:
         tasks = list(self.registry.tasks.values())

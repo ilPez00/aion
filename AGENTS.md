@@ -13,11 +13,11 @@ When in doubt:
 
 ## Repo
 
-- Path: `/home/gio/aion` (branch `main`)
+- Path: `/home/gio/dev/aion` (branch `main`; old path `/home/gio/aion` is a symlink)
 - Package: `src/aion/`
 - Config: `config/layout.json`
 - Tests: `tests/` via `.venv/bin/python -m pytest`
-- Deck firmware: separate repo `/home/gio/CyclUno` (shared v2 frame protocol)
+- Deck firmware: separate repo `/home/gio/dev/CyclUno` (shared v2 frame protocol; old path `/home/gio/CyclUno` is a symlink)
 
 ## Architecture map
 
@@ -34,7 +34,7 @@ When in doubt:
 ## Factory gates (every cycle)
 
 ```bash
-cd /home/gio/aion
+cd /home/gio/dev/aion
 .venv/bin/python -m pytest tests/ --ignore=tests/test_term.py -q
 TERM=xterm-256color timeout 6 .venv/bin/python -m aion.ui.app   # boot smoke
 # if deck/protocol touched:
