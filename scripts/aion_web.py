@@ -29,15 +29,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-import psutil
-import websockets
-
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
 AION_DIR = os.path.expanduser("~/.aion")
 WEBUI_DIR = os.path.join(AION_DIR, "webui")
 SESSIONS_DIR = os.path.join(WEBUI_DIR, "sessions")
-NOTES_DIR = os.path.join(ROOT, "notes")
+# share notes dir with the TUI vault (consistent across web and TUI)
+NOTES_DIR = os.path.join(os.path.dirname(ROOT), "notes")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(NOTES_DIR, exist_ok=True)
 
@@ -91,17 +89,18 @@ def _list_sessions() -> list[dict]:
                     "updated": data.get("updated", 0),
                     "msg_count": len(data.get("messages", [])) // 2,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                sys.stderr.write(f"web: corrupt session {fn}: {e}\n")
     return sessions[:50]
 
 # ---------------------------------------------------------------------------
 # Agent / LLM
 # ---------------------------------------------------------------------------
 def _load_env():
+    home = os.path.expanduser("~")
     try:
         from dotenv import load_dotenv
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 try:
                     load_dotenv(f)
@@ -111,7 +110,7 @@ def _load_env():
                             k, v = line.strip().split("=", 1)
                             os.environ.setdefault(k, v)
     except Exception:
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 for line in open(f):
                     if line.startswith(("GROQ_API_KEY=",)):
@@ -169,7 +168,7 @@ def _router(prompt: str) -> str:
 
 def deepsearch_answer(prompt: str) -> dict:
     """Web search + synthesize."""
-    from . import web
+    from aion import web
     return web.deepsearch_answer(prompt)
 
 # ---------------------------------------------------------------------------
@@ -192,6 +191,10 @@ def gpu_load():
     return None
 
 def system_stats():
+    try:
+        import psutil
+    except ImportError:
+        return {"error": "psutil not installed", "time": time.strftime("%H:%M:%S")}
     net = psutil.net_io_counters()
     per_core = psutil.cpu_percent(interval=None, percpu=True)
     disks = []
@@ -584,11 +587,15 @@ async def hub(ws):
         await ws.close()
 
 async def run_ws_async():
+    import websockets
     async with websockets.serve(hub, "127.0.0.1", 8743):
         await asyncio.Future()
 
 def run_ws():
-    asyncio.run(run_ws_async())
+    try:
+        asyncio.run(run_ws_async())
+    except ImportError:
+        sys.stderr.write("web: websockets not installed, WS disabled\n")
 
 # ---------------------------------------------------------------------------
 # Web search (from aion.web)
