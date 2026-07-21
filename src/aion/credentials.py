@@ -64,6 +64,7 @@ DEFAULT_ENDPOINTS: dict[ProviderKind, str] = {
     "perplexity": "https://api.perplexity.ai",
     "deepinfra": "https://api.deepinfra.com/v1/openai",
     "ollama": "http://localhost:11434",
+    "github": "https://models.inference.ai.azure.com",
     "fcm": "http://localhost:19280/v1",
     "hermes": "",
     "generic": "",

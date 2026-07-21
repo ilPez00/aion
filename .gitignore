@@ -6,7 +6,7 @@ __pycache__/
 /build.*
 *.pdf
 notes/
-static/
+/static/
 uv.lock
 server.py
 tests/test_env.py
