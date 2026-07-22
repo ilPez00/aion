@@ -48,6 +48,7 @@
     {"id": "net",      "title": "Fleet",    "icon": "🌐"}
   ],
   "deck": {"enabled": true, "port": null},
+  "ring": {"enabled": true, "address": null},
   "keybindings": {
     "workspace_1": "1", "workspace_2": "2", "workspace_3": "3", "workspace_4": "4",
     "workspace_5": "5", "workspace_6": "6", "workspace_7": "7",     "workspace_8": "8", "workspace_9": "9",

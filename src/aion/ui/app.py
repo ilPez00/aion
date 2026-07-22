@@ -755,7 +755,7 @@ class AiOSApp(App):
     def _sys_panel(self, theme: dict) -> str:
         """Iron Man HUD: computer + real-life stats, rendered as gauges."""
         from .gauges import (hbar, core_grid, sparkline, metric, gauge_panel,
-                             mem_readable, bytes_per_sec)
+                             mem_readable, bytes_per_sec, cyclops_panel)
         from .visualizers import holo_gauge, spectrum_eq
         st = self.store.state.stats
         blocks: list[str] = []
@@ -891,6 +891,14 @@ class AiOSApp(App):
                     label = n.get("label", n.get("id", "?")) if isinstance(n, dict) else str(n)
                     ph_lines.append(f"  [{a}]•[/] {label[:40]}")
             blocks.append(gauge_panel("PHYSIS", "\n  ".join(ph_lines), theme["accent"]))
+
+        # ---- CYCLOPS (wearable + deck link + brain, one glance) ----
+        deck_status = {"available": getattr(getattr(self, "deck", None),
+                                            "link", None) is not None
+                       and self.deck.link.available,
+                       "baud": 115200}
+        blocks.append(cyclops_panel(ring=st.get("ring"), deck=deck_status,
+                                    physis=st.get("physis")))
 
         # ── Spectrum Analyzer ─────────────────────────────────────────────
         sys_ = st.get("system")

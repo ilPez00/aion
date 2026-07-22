@@ -1286,10 +1286,18 @@ class Store:
         self.state.logs = self.state.logs[-200:]
 
     async def _on_mode(self, msg: dict) -> None:
-        if msg.get("mode") == "voice":
+        mode = msg.get("mode")
+        if mode == "voice":
             self.state.voice_active = msg["active"]
-        elif msg.get("mode") == "deck_app":
+        elif mode == "deck_app":
             self.state.deck_app = msg["active"]
+        elif mode == "ring":
+            # Colmi R02 telemetry (battery/heart_rate/spo2) trickles in one
+            # field per notification — merge, don't overwrite the others.
+            ring = self.state.stats.setdefault("ring", {})
+            for k, v in msg.items():
+                if k != "mode":
+                    ring[k] = v
 
     async def _on_physis(self, msg: dict) -> None:
         if msg.get("action") == "snapshot":

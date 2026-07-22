@@ -13,7 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from aion.ui.gauges import sparkline, hbar, core_grid, mem_readable  # noqa: E402
+from aion.ui.gauges import (sparkline, hbar, core_grid, mem_readable,  # noqa: E402
+                            cyclops_panel)
 from aion.vault import VaultReader, render_tree  # noqa: E402
 from aion.health import HealthReader  # noqa: E402
 from aion.core import Bus, TaskRegistry, TOPIC_STATS  # noqa: E402
@@ -50,6 +51,31 @@ def test_core_grid_hot():
     # a hot core (>=80%) renders red-aware; just assert it returns text
     g = core_grid([0, 50, 81, 100])
     assert isinstance(g, str) and len(g) > 0
+
+
+def test_cyclops_panel_empty_is_all_placeholders():
+    p = cyclops_panel()
+    assert "CYCLOPS" in p
+    assert "not paired" in p and "no link" in p and "physis: offline" in p
+
+
+def test_cyclops_panel_shows_ring_biometrics():
+    p = cyclops_panel(ring={"heart_rate": 72, "spo2": 98, "battery": 61})
+    assert "72" in p and "98" in p and "61" in p
+    assert "not paired" not in p
+
+
+def test_cyclops_panel_partial_ring_only_shows_known_fields():
+    # only battery known yet -> HR/SpO2 omitted, no crash, no placeholder
+    p = cyclops_panel(ring={"battery": 61})
+    assert "61" in p and "HR" not in p and "not paired" not in p
+
+
+def test_cyclops_panel_deck_link_and_physis():
+    p = cyclops_panel(deck={"available": True, "baud": 115200},
+                      physis={"degraded": False, "kind": "CONSTRUCT/REST"})
+    assert "UART OK" in p and "115200" in p
+    assert "CONSTRUCT/REST" in p and "offline" not in p
 
 
 def test_mem_readable():

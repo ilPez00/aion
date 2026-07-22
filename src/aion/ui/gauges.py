@@ -93,6 +93,53 @@ def metric(label: str, value: str, unit: str = "", color: str = "#c7d3df") -> st
     return f"[{color}]{label}[/][#5a6b7b]:[/] [{color}]{value}{uv}[/]"
 
 
+def cyclops_panel(ring: dict | None = None, deck: dict | None = None,
+                  physis: dict | None = None) -> str:
+    """One-glance Cyclops HUD: ring biometrics + deck link + brain coherence.
+
+    Pure and defensive: every field is optional so a missing peripheral (no
+    ring paired, deck unplugged, physis down) renders a dim placeholder rather
+    than blowing up. Feeds off state.stats["ring"|"physis"] and a deck-status
+    dict — no I/O here.
+    """
+    ring = ring or {}
+    deck = deck or {}
+    physis = physis or {}
+    rows: list[str] = []
+
+    # ── ring biometrics ──────────────────────────────────────────────────────
+    hr = ring.get("heart_rate", -1)
+    spo2 = ring.get("spo2", -1)
+    batt = ring.get("battery", -1)
+    if hr >= 0 or spo2 >= 0 or batt >= 0:
+        bio = []
+        if hr >= 0:
+            bio.append(metric("HR", str(hr), " bpm", "#ff6b8a"))
+        if spo2 >= 0:
+            bio.append(metric("SpO2", str(spo2), "%", "#5ad1ff"))
+        if batt >= 0:
+            bio.append(metric("ring", str(batt), "%", "#7CFFB2"))
+        rows.append("  ".join(bio))
+    else:
+        rows.append("[#5a6b7b]ring: not paired[/]")
+
+    # ── deck / UART link ─────────────────────────────────────────────────────
+    if deck.get("available"):
+        baud = deck.get("baud", 115200)
+        rows.append(f"[#7CFFB2]▪ UART OK[/] [#5a6b7b]{baud} baud[/]")
+    else:
+        rows.append("[#5a6b7b]▪ deck: no link (keyboard fallback)[/]")
+
+    # ── physis coherence (the brain) ─────────────────────────────────────────
+    if physis and not physis.get("degraded", True):
+        label = physis.get("kind", "?")
+        rows.append(f"[#FFB000]◈ physis[/] [#c7d3df]{label}[/]")
+    else:
+        rows.append("[#5a6b7b]◈ physis: offline[/]")
+
+    return gauge_panel("CYCLOPS", "\n  ".join(rows), color="#00F0FF")
+
+
 def gauge_panel(title: str, body: str, color: str = "#5ad1ff") -> str:
     """Wrap a block of HUD lines under a titled panel header."""
     return f"[{color}]▌ {title}[/]\n  {body}"
