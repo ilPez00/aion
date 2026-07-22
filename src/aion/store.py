@@ -19,8 +19,9 @@ from typing import Any
 from .core import (
     Bus, Intent, IntentType, TaskRegistry, SessionStore,
     Task, TaskState, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS,
-    TOPIC_INTENT, TOPIC_PHYSIS, load_config,
+    TOPIC_INTENT, TOPIC_PHYSIS, TOPIC_HITL, load_config,
 )
+from .hitl import GateBook, RISK_HIGH
 from .memory import MemoryStore
 from .gbrain import BrainStore
 from .credentials import CredentialStore, PROVIDER_PRESETS
@@ -94,6 +95,9 @@ class Store:
         self.swarm = SwarmOrchestrator(bus=self.bus)
         self.active_mode_cfg: ModeConfig = get_mode("default") or MODES["default"]
         self.state = ViewState(active_harness=self._first_harness())
+        # human-in-the-loop approval gates. Fail-closed: nothing auto-approves
+        # unless a policy vouches for it (none does by default).
+        self.gates = GateBook()
         self._external_agents_cache: tuple[float, list[dict]] = (0.0, [])
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
@@ -449,6 +453,18 @@ class Store:
     def handle(self, intent: Intent) -> None:
         t = intent.type
         p = intent.payload
+        # A pending HITL gate captures confirm/cancel: the same ACTIVATE that
+        # any device emits (deck button, joystick click, ring tap, Enter) now
+        # approves it, BACK rejects it — so no new per-device mapping is needed.
+        if self.gates.has_pending():
+            if t in (IntentType.ACTIVATE, IntentType.HITL_APPROVE):
+                self._resolve_gate(True)
+                return
+            if t in (IntentType.BACK, IntentType.HITL_REJECT, IntentType.CANCEL):
+                self._resolve_gate(False)
+                return
+        if t in (IntentType.HITL_APPROVE, IntentType.HITL_REJECT):
+            return  # no gate pending — nothing to resolve
         if t == IntentType.NAVIGATE:
             self._navigate(p.get("dir", "down"))
         elif t == IntentType.ACTIVATE:
@@ -566,6 +582,35 @@ class Store:
             elif task.state.value == "running" and h is not None:
                 h.resume(task) if task.paused else h.pause(task)
 
+    # ---- human-in-the-loop gates ----------------------------------------
+    def _resolve_gate(self, approved: bool) -> None:
+        gate = self.gates.resolve_latest(approved)
+        if gate is not None:
+            verb = "approved" if approved else "rejected"
+            t = self.registry.tasks.get(gate.task_id)
+            if t is not None:
+                self.registry.log(t, f"[hitl] {verb}: {gate.action[:80]}")
+        self.gates.clear_resolved()
+        self._publish_gates()
+
+    def _publish_gates(self) -> None:
+        self.state.stats["hitl"] = [g.as_dict() for g in self.gates.pending()]
+
+    def _needs_gate(self, h, prompt: str) -> bool:
+        """Does spawning this harness+prompt need a human yes first?
+
+        Two triggers: a harness explicitly flagged (config extra
+        requires_approval), or a prompt that names a destructive shell action.
+        """
+        extra = getattr(getattr(h, "cfg", None), "extra", None) or {}
+        if extra.get("requires_approval"):
+            return True
+        low = prompt.lower()
+        return any(sig in low for sig in (
+            "rm -rf", "drop table", "force push", "git push --force",
+            "mkfs", "dd if=", ":(){", "sudo rm",
+        ))
+
     async def _spawn(self, harness_id: str, prompt: str) -> None:
         h = self.harnesses.get(harness_id, self.harnesses.get(self.state.active_harness))
         if h is None:
@@ -583,7 +628,22 @@ class Store:
                 {"action": "classify", "task": task.id,
                  "label": res.label(), "cells": [c.__dict__ for c in res.cells]})
             _ = client.register(f"task:{task.id}", 1.0, edge_to=res.label())
-        asyncio.create_task(h.run(task, prompt))
+        asyncio.create_task(self._gated_run(h, task, prompt))
+
+    async def _gated_run(self, h, task: Task, prompt: str) -> None:
+        """Await a HITL gate for a privileged spawn, then run — or cancel."""
+        if self._needs_gate(h, prompt):
+            gate = self.gates.request(task.id, f"run {h.name}: {prompt[:60]}",
+                                      risk=RISK_HIGH)
+            self.registry.log(task, f"[hitl] awaiting approval: {gate.action[:80]}")
+            self._publish_gates()
+            await self.bus.publish(TOPIC_HITL,
+                {"action": "request", "gates": self.state.stats.get("hitl", [])})
+            approved = await self.gates.wait(gate)
+            if not approved:
+                self.registry.set_state(task, TaskState.CANCELLED)
+                return
+        await h.run(task, prompt)
 
     async def _respawn(self, old: Task) -> None:
         h = self.harnesses.get(old.harness, self.harnesses.get(self.state.active_harness))
@@ -596,6 +656,13 @@ class Store:
         self.state.history.append(text)
         self.state.last_command = text
         parts = text.split(" ", 1)
+        if parts[0] == "hitl" and len(parts) == 2:
+            # voice/palette HITL: "hitl approve" / "hitl reject"
+            if parts[1].strip() in ("approve", "yes"):
+                self._resolve_gate(True)
+            elif parts[1].strip() in ("reject", "no"):
+                self._resolve_gate(False)
+            return
         if parts[0] == "goto" and len(parts) == 2:
             ws_ids = [w["id"] for w in self.cfg["workspaces"]]
             target = parts[1].strip().lower()

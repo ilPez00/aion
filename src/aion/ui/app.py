@@ -1591,6 +1591,16 @@ class AiOSApp(App):
     def _render_bottom(self) -> None:
         theme = self.cfg["theme"]
         a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
+        # A pending HITL gate owns the bottom rail until answered.
+        gates = self.store.state.stats.get("hitl") or []
+        if gates:
+            g = gates[0]
+            extra = f"  [{di}](+{len(gates)-1} more)[/]" if len(gates) > 1 else ""
+            self.query_one("#bottom", expect_type=Static).update(
+                f"[{er}]⚠ APPROVE?[/] [{theme['fg'] if 'fg' in theme else a}]"
+                f"{g['action'][:60]}[/]  "
+                f"[{ok_}]Enter/●=yes[/] [{er}]Esc=no[/]{extra}")
+            return
         running = any(t.state.value == "running"
                       for t in self.store.registry.tasks.values())
         cmd = self.store.state.last_command or ""

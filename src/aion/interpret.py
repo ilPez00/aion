@@ -103,6 +103,12 @@ def interpret(text: str) -> str | None:
     if re.match(r"^(?:re)?scan(?: (?:my )?(?:disk|data|trackers))?$|^refresh data$", t):
         return "scan"
 
+    # HITL approval (voice): answer a pending gate
+    if re.match(r"^(?:approve|confirm|yes do it|go ahead|do it)$", t):
+        return "hitl approve"
+    if re.match(r"^(?:reject|deny|no don't|cancel that|stop)$", t):
+        return "hitl reject"
+
     # observer
     if re.match(r"^(?:watch(?: this)?|observe(?: this)?|keep an eye on (?:this|it))$", t):
         return "observe ai"

@@ -41,6 +41,8 @@ class IntentType(Enum):
     RERUN = auto()          # re-run focused interrupted/cancelled/failed task
     COMPARE = auto()         # side-by-side model comparison, payload: {"text": str}
     ACT = auto()             # act on the top Jarvis suggestion (no payload)
+    HITL_APPROVE = auto()    # approve the pending human-in-the-loop gate
+    HITL_REJECT = auto()     # reject the pending human-in-the-loop gate
 
 
 @dataclass
@@ -95,6 +97,7 @@ TOPIC_HERMES = "hermes"  # payload: {"action": str, "data": dict}
 TOPIC_SKILL = "skill"    # payload: {"action": str, "name": str, "data": dict}
 TOPIC_SETTINGS = "settings"  # payload: {"action": str, "key": str, "value": any}
 TOPIC_PHYSIS = "physis"   # payload: {"action": str, "kind": str, "graph": dict}
+TOPIC_HITL = "hitl"       # payload: {"action": str, "gates": list[dict]}
 
 
 class Bus:
