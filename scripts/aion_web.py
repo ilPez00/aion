@@ -642,10 +642,33 @@ def web_search(q: str, n: int = 5):
             out.append({"title": re.sub(r"<[^>]+>", "", m[1]).strip(), "url": url, "snippet": ""})
     return out
 
+def _lan_ip() -> str:
+    """Best-guess primary LAN IP (no traffic actually sent)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
     _load_env()
+    # Default localhost-only: this HUD can run commands (PTY/L3), so LAN exposure
+    # is opt-in. Set AION_WEB_HOST=0.0.0.0 to reach it from a phone over WiFi.
+    host = os.environ.get("AION_WEB_HOST", "127.0.0.1")
     threading.Thread(target=run_ws, daemon=True).start()
-    httpd = ThreadingHTTPServer(("127.0.0.1", 8742), Handler)
-    print("AION web HUD: http://127.0.0.1:8742  (WS :8743)")
+    httpd = ThreadingHTTPServer((host, 8742), Handler)
+    if host in ("0.0.0.0", "::"):
+        lan = _lan_ip()
+        print(f"AION web HUD (LAN): http://{lan}:8742  (WS :8743)")
+        print("  ⚠ exposed to the whole WiFi — this HUD can run commands. "
+              "Trust the network, or put HTTPS+auth in front.")
+    else:
+        print("AION web HUD: http://127.0.0.1:8742  (WS :8743)")
+        print("  (localhost only — set AION_WEB_HOST=0.0.0.0 to reach from a phone)")
     print(f"  Sessions: {SESSIONS_DIR}")
     httpd.serve_forever()
