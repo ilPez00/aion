@@ -472,3 +472,78 @@ class DeckInput(InputDevice):
         if self.router is not None:
             asyncio.create_task(self.router.bus.publish(
                 TOPIC_MODE, {"mode": "deck_app", "active": app}))
+
+
+# --------------------------------------------------------------------------
+# Colmi R02 smart ring — physical peripheral over BLE (see aion.deck.ring).
+# Telemetry (battery/HR/SpO2) is published on TOPIC_MODE for the HUD; derived
+# gestures (see note below) become Intents via ring_intent(), which is pure so
+# the mapping is unit-testable with no radio.
+#
+# NOTE: the R02 has no physical button; its BLE protocol exposes telemetry +
+# a raw accelerometer. Taps are DERIVED from accel spikes (ring.TapDetector)
+# and fed through ring_intent(). The gesture->Intent choice below, plus the
+# TapDetector thresholds, are the real design knobs — tune to taste.
+# --------------------------------------------------------------------------
+from .deck.ring import RingEvent, RingLink, TapDetector  # noqa: E402
+
+
+def ring_intent(name: str) -> Intent | None:
+    """Derived ring gesture name -> Intent (None = ignore). Pure, testable.
+
+    DESIGN POINT — the R02's proposed gesture verbs, re-homed on real hardware:
+      single tap  -> toggle Push-To-Talk voice listening (like VoiceInput)
+      double tap  -> recenter (no camera Intent exists; ACTIVATE is closest)
+    Taps are DERIVED from the accelerometer (there is no physical button), so
+    tune TapDetector thresholds too if the feel is off. Change to taste.
+    """
+    return {
+        "single_tap": Intent(IntentType.MODE_TOGGLE, {"mode": "voice"}),
+        "double_tap": Intent.activate(),
+    }.get(name)
+
+
+class RingInput(InputDevice):
+    """Routes Colmi R02 BLE: telemetry -> HUD, accel -> derived tap Intents."""
+
+    def __init__(self, link=None, address: str | None = None,
+                 taps: TapDetector | None = None) -> None:
+        super().__init__()
+        self.link = link or RingLink(address=address, on_event=self.on_ring_event)
+        self.link.on_event = self.on_ring_event
+        self.taps = taps or TapDetector()
+        self._poll_task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self.available = self.link.start()
+        if self.available:
+            # resolve lone taps once their double-tap window closes
+            self._poll_task = asyncio.create_task(self._poll_taps())
+
+    def stop(self) -> None:
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+        self.link.stop()
+
+    async def _poll_taps(self) -> None:
+        while True:
+            await asyncio.sleep(0.1)
+            self._fire(self.taps.poll())
+
+    def on_ring_event(self, ev: RingEvent) -> None:
+        if self.router is None:
+            return
+        if ev.kind != "telemetry":
+            return
+        if ev.name == "accel" and ev.xyz is not None:
+            self._fire(self.taps.feed(ev.xyz))   # may resolve a double_tap now
+            return
+        asyncio.create_task(self.router.bus.publish(
+            TOPIC_MODE, {"mode": "ring", ev.name: ev.val}))
+
+    def _fire(self, gesture: str | None) -> None:
+        if gesture is None or self.router is None:
+            return
+        intent = ring_intent(gesture)
+        if intent is not None:
+            asyncio.create_task(self.router.emit(intent))

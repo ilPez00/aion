@@ -29,7 +29,7 @@ from ..core import (
 )
 from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, AgentEntityHarness, BoardHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
-from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput
+from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput, RingInput
 from ..store import Store
 
 
@@ -142,6 +142,10 @@ class AiOSApp(App):
         self.deck = DeckInput(port=deck_cfg.get("port"))
         if deck_cfg.get("enabled", True):
             self.router.register(self.deck)
+        ring_cfg = self.cfg.get("ring", {})
+        self.ring = RingInput(address=ring_cfg.get("address"))
+        if ring_cfg.get("enabled", True):
+            self.router.register(self.ring)
         self._rail: list[Cell] = []
         self._center: list[Cell] = []
         self._right: list[Cell] = []

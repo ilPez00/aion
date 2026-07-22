@@ -13,6 +13,7 @@ dependencies = [
 voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice control
 voice-tts = ["edge-tts"]                             # optional: text-to-speech output
 deck = ["pyserial"]                                  # optional: CyclUno control deck
+ring = ["bleak"]                                     # optional: Colmi R02 smart ring (BLE)
 dev = ["pytest", "pytest-asyncio"]
 web = ["websockets", "pyte", "requests", "python-dotenv"]  # optional: web HUD server
 
