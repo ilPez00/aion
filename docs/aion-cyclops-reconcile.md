@@ -77,5 +77,14 @@ hardware/transport can't actually do.
 | Colmi R02 ring (BLE)  | `deck/ring.py` + `input.RingInput` | working (telemetry + derived taps) |
 | XIAO pendant (cam/mic)| `deck/pendant.py`   | scaffold — pick a transport, fill `_connect()` |
 
+Verify the ring against real hardware:
+
+    python scripts/verify_ring_accel.py [ADDRESS] [SECONDS]
+
+Streams live accelerometer XYZ + raw frame hex + tap events, so the
+`decode_accel()` byte offsets can be confirmed (tap the ring, watch which bytes
+move) and the `TapDetector` threshold tuned (it prints a suggested value from
+your peak tap). Reuses `deck/ring.py`, so verifying it verifies the cockpit path.
+
 Next real gap: the pendant transport (BLE vs Wi-Fi push vs USB-CDC) and feeding
 its vision/audio blobs into aion's context (`physis.py` / the voice pipeline).
