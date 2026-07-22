@@ -88,7 +88,9 @@ class GateBook:
                 await ev.wait()
         except asyncio.TimeoutError:
             self.resolve(gate.id, approved=False)     # unanswered == denied
-        return self._gates[gate.id].approved
+        # read the gate object directly: resolve() mutates this same instance,
+        # and the store may have pruned it from _gates via clear_resolved().
+        return gate.approved
 
     def resolve(self, gate_id: str, approved: bool) -> Gate | None:
         gate = self._gates.get(gate_id)

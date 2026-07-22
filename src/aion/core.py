@@ -143,6 +143,8 @@ class Task:
     log: list[str] = field(default_factory=list)
     created: float = field(default_factory=time.time)
     paused: bool = False           # transient: harness loop is suspended
+    coherence: float = 0.0         # transient: physis score of last loop step [-1,1]
+    novelty: float = 1.0           # transient: how new the last step's output was
 
     def as_dict(self) -> dict:
         return {

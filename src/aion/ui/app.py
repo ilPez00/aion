@@ -1565,8 +1565,11 @@ class AiOSApp(App):
         # ---- LIVE TASKS (compact) ----
         if running or wf_live:
             lines.append(f"[{a}]TASKS[/][{wa}] ●{len(running)}{' ◆'+str(len(wf_live))+'wf' if wf_live else ''}[/]")
+            from .gauges import coherence_glyph
             for t in running:
-                lines.append(f" [{wa}]●[/] [{di}]{t.label[:20]}[/] {bar(t.progress, width=10, color=wa)}")
+                glyph = coherence_glyph(t.coherence, t.novelty)
+                suffix = f" {glyph}" if glyph else ""
+                lines.append(f" [{wa}]●[/] [{di}]{t.label[:20]}[/] {bar(t.progress, width=10, color=wa)}{suffix}")
         # ---- Telemetry one-liner ----
         tel = self.store.state.stats.get("telemetry")
         if tel:

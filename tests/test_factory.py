@@ -199,6 +199,22 @@ def test_coherence_fn_scores_each_iteration():
     assert result.iterations[0].coherence == 0.7
 
 
+def test_reporter_receives_iteration_for_live_hud():
+    # the post-run step call carries the Iteration so the harness can stash
+    # coherence/novelty on the task for the live HUD glyph
+    seen = []
+
+    def report(n, total, exit_code, tail, it=None):
+        if it is not None:
+            seen.append((it.n, it.novelty, it.coherence))
+        return True
+
+    run = make_runner(["DONE"])
+    cfg = FactoryConfig(command="c", max_iters=1, done_marker="DONE")
+    run_factory("p", cfg, run, report_step=report, coherence_fn=lambda o: 0.4)
+    assert seen == [(1, 1.0, 0.4)]     # first iter: fully novel, scored 0.4
+
+
 def test_coherence_fn_failure_is_swallowed():
     def boom(_out):
         raise RuntimeError("physis down")

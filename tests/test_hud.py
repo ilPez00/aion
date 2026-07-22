@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion.ui.gauges import (sparkline, hbar, core_grid, mem_readable,  # noqa: E402
-                            cyclops_panel)
+                            cyclops_panel, coherence_glyph)
 from aion.vault import VaultReader, render_tree  # noqa: E402
 from aion.health import HealthReader  # noqa: E402
 from aion.core import Bus, TaskRegistry, TOPIC_STATS  # noqa: E402
@@ -76,6 +76,21 @@ def test_cyclops_panel_deck_link_and_physis():
                       physis={"degraded": False, "kind": "CONSTRUCT/REST"})
     assert "UART OK" in p and "115200" in p
     assert "CONSTRUCT/REST" in p and "offline" not in p
+
+
+def test_coherence_glyph_quiet_when_neutral():
+    # a healthy, varied loop with no physis score says nothing (no HUD noise)
+    assert coherence_glyph(0.0, novelty=1.0) == ""
+
+
+def test_coherence_glyph_spin_wins_on_collapsed_novelty():
+    g = coherence_glyph(0.9, novelty=0.05)     # spinning even if "coherent"
+    assert "spin" in g
+
+
+def test_coherence_glyph_flow_and_block():
+    assert "flow" in coherence_glyph(0.5, novelty=1.0)
+    assert "block" in coherence_glyph(-0.5, novelty=1.0)
 
 
 def test_mem_readable():

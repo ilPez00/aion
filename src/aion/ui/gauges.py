@@ -93,6 +93,21 @@ def metric(label: str, value: str, unit: str = "", color: str = "#c7d3df") -> st
     return f"[{color}]{label}[/][#5a6b7b]:[/] [{color}]{value}{uv}[/]"
 
 
+def coherence_glyph(coherence: float, novelty: float = 1.0) -> str:
+    """Compact live indicator of a loop's flow state (physis coherence + novelty).
+
+    Pure. Returns rich markup, or "" when there's nothing to show. A spinning
+    loop (novelty collapsed) flags amber first — that's the actionable state.
+    """
+    if novelty <= 0.1:
+        return "[#FFB000]⟳ spin[/]"          # output stopped changing
+    if coherence >= 0.15:
+        return "[#7dff9b]◈ flow[/]"          # physis recognises productive work
+    if coherence <= -0.15:
+        return "[#FF3344]◈ block[/]"         # blocked
+    return ""                                # neutral/idle — stay quiet
+
+
 def cyclops_panel(ring: dict | None = None, deck: dict | None = None,
                   physis: dict | None = None) -> str:
     """One-glance Cyclops HUD: ring biometrics + deck link + brain coherence.

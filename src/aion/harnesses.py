@@ -464,13 +464,17 @@ class FactoryHarness(Harness):
             except subprocess.TimeoutExpired:
                 return 1
 
-        def report_step(n: int, total: int, exit_code: int, tail: str) -> bool:
+        def report_step(n: int, total: int, exit_code: int, tail: str,
+                        it=None) -> bool:
             # Runs off the event loop (to_thread), so mutate task fields
             # directly and checkpoint to disk — same constraint as research.
             if self._killed(task):
                 return False
             task.progress = min(0.99, n / max(1, total))
             task.eta = max(0, total - n)
+            if it is not None:                 # live coherence/novelty for the HUD
+                task.coherence = it.coherence
+                task.novelty = it.novelty
             if tail:
                 task.log.append(f"[factory] iter {n}/{total} (exit {exit_code})")
                 for line in tail.strip().splitlines()[-3:]:

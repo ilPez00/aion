@@ -46,7 +46,7 @@ STOP_STALLED = "stalled"    # output stopped changing — the loop is spinning
 
 class StepReporter(Protocol):
     def __call__(self, iteration: int, total: int, exit_code: int,
-                 tail: str) -> bool: ...
+                 tail: str, it: "Iteration | None" = None) -> bool: ...
 
 
 @dataclass
@@ -209,7 +209,7 @@ def run_factory(prompt: str, cfg: FactoryConfig, run_cmd: RunCmd,
         result.count = n
         last_output = output
 
-        if not step(n, max_iters, exit_code, output[-200:]):
+        if not step(n, max_iters, exit_code, output[-200:], it):
             result.stopped = STOP_ABORTED
             return result
 
