@@ -1,0 +1,29 @@
+{
+  "packageId": "net.aion.hud",
+  "host": "REPLACE-WITH-YOUR-HTTPS-HOST",
+  "name": "AION · AI-OS",
+  "launcherName": "AION",
+  "display": "standalone",
+  "orientation": "any",
+  "themeColor": "#16f0c8",
+  "themeColorDark": "#04100e",
+  "navigationColor": "#04100e",
+  "navigationColorDark": "#04100e",
+  "backgroundColor": "#04100e",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://REPLACE-WITH-YOUR-HTTPS-HOST/icon.svg",
+  "maskableIconUrl": "https://REPLACE-WITH-YOUR-HTTPS-HOST/icon.svg",
+  "webManifestUrl": "https://REPLACE-WITH-YOUR-HTTPS-HOST/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "shortcuts": [],
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "android"
+  },
+  "appVersionName": "1",
+  "appVersionCode": 1,
+  "minSdkVersion": 23,
+  "_comment": "Bubblewrap config. Replace REPLACE-WITH-YOUR-HTTPS-HOST with the tunnel/TLS host serving the PWA (see docs/install-mobile.md), then: bubblewrap init --manifest ./twa-manifest.json && bubblewrap build"
+}

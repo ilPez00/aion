@@ -353,6 +353,19 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/" or p == "/index.html":
             fp = os.path.join(STATIC, "index.html")
             return self._send(200, "text/html", open(fp, "rb").read())
+        # ---- PWA assets (root-scoped so the service worker controls "/") ----
+        if p in ("/manifest.webmanifest", "/sw.js", "/icon.svg"):
+            fp = os.path.join(STATIC, os.path.basename(p))
+            if not os.path.exists(fp):
+                return self._send(404, "text/plain", b"no")
+            ctype = {
+                "/manifest.webmanifest": "application/manifest+json",
+                "/sw.js": "text/javascript",
+                "/icon.svg": "image/svg+xml",
+            }[p]
+            # SW must be allowed to claim the root scope
+            extra = {"Service-Worker-Allowed": "/"} if p == "/sw.js" else None
+            return self._send(200, ctype, open(fp, "rb").read(), headers=extra)
         if p.startswith("/static/"):
             fp = os.path.join(STATIC, os.path.basename(p))
             if os.path.exists(fp):

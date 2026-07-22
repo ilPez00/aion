@@ -1,0 +1,15 @@
+{
+  "name": "AION · AI-OS",
+  "short_name": "AION",
+  "description": "Local-first multi-agent cockpit — spatial process & agent orchestration.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#04100e",
+  "theme_color": "#16f0c8",
+  "categories": ["productivity", "utilities", "developer"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
