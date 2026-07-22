@@ -4,10 +4,12 @@
 
 aion is a customizable multi-harness **desktop shell** and **stats HUD** for
 half a screen (or a full console). Drive it with keyboard, trackpad,
-joystick/gamepad, optional voice, and the **CyclUno deck** (physical console:
+joystick/gamepad, optional voice, the **CyclUno deck** (physical console:
 sticks + buttons + SPI TFT) that navigates workspaces one-handed and doubles as
-a Linux gamepad for programs aion spawns. See `docs/DECK.md` and
-`docs/IDENTITY.md`.
+a Linux gamepad for programs aion spawns, and the **Colmi R02 ring** (BLE:
+HR/SpO2/battery telemetry + accel-derived taps). Together the deck + ring +
+XIAO pendant form the **Cyclops** physical layer. See `docs/DECK.md`,
+`docs/IDENTITY.md`, and `docs/aion-cyclops-reconcile.md`.
 
 Run it more than once — a cockpit and a HUD side by side, or a box in the
 corner you drive over the network — and the **Fleet** workspace shows every
@@ -77,16 +79,22 @@ Wire a real health source in `config/layout.json`:
 
 ## Web HUD
 
-The same HUD is also served as a browser UI (`static/index.html`):
+The same HUD is also served as a browser UI (served from `scripts/static/` —
+note: NOT the repo-root `static/`):
 
 ```bash
 ./aion.sh web          # or: python scripts/aion_web.py  → http://127.0.0.1:8742
+AION_WEB_HOST=0.0.0.0 python scripts/aion_web.py          # reach it from a phone on the LAN
 ```
 
 Modules: Terminal (PTY), Files (organic graph), Browser (voice → DeepSearch),
 Editor (live micro), LaTeX, **Notes** (Obsidian-style canvas graph of your
 vault, node size = link degree), **Life** (real-life stats from the health
 source), and Agent. The top bar shows live CPU/GPU/RAM/DSK/NET.
+
+The web HUD is a **PWA** — installable to a phone's home screen as a standalone
+app (needs HTTPS; over LAN HTTP you get a shortcut). Full install + real-`.apk`
+path in `docs/install-mobile.md`.
 
 Point the web HUD at a health export with env vars:
 `AION_HEALTH_SOURCE=google AION_HEALTH_PATH=~/takeout/fit.csv ./aion.sh web`.
@@ -163,6 +171,15 @@ swarm create <goal> · swarm add <name> <goal> · swarm run|status|stop
   and route with `tier <name>` — e.g. shell for grunt work, Cyclops for the
   heavy lift (mirrors Ralph TUI's tiered model approach).
 - **Safe-run guard**: set `max_steps` per harness to cage autonomous loops.
+- **Stall guard**: the factory loop bails a spinning agent (output stopped
+  changing) with `STOP_STALLED` instead of burning the whole budget — pure and
+  local, works even with the physis brain down.
+- **HITL approval gates** (`hitl.py`): a privileged action pauses for a human
+  yes/no. Fail-closed (nothing auto-approves; an unanswered gate stays denied).
+  A pending gate captures the ACTIVATE any device already emits — deck button,
+  joystick click, ring tap, Enter — as approve, BACK/Esc as reject; voice
+  "approve"/"reject" too. Destructive prompts (`rm -rf`, `drop table`, force
+  push, …) and `requires_approval` harnesses gate before they run.
 - **Offline voice control** (lesson #7, the last mile): press `v` to toggle.
   A background thread captures the mic (sounddevice), runs local VAD, and on
   speech-end transcribes with faster-whisper `tiny` (CPU, int8) — fully
@@ -172,14 +189,20 @@ swarm create <goal> · swarm add <name> <goal> · swarm run|status|stop
   - Install the voice extra: `pip install -e ".[voice]"`
 
 ## Architecture (src/aion/)
-## Architecture (src/aion/)
 - `core.py`    — `Intent`, async `Bus` (pub/sub), `TaskRegistry`, `Config`.
 - `harnesses.py` — swappable backends. `DemoHarness`, `ShellHarness`,
-  `CyclopsHarness` (stub). Add a new backend = 1 subclass + 1 config entry.
-  Plus the Iron Man HUD pollers: `SystemHarness` (computer stats),
-  `HealthHarness` (real-life stats), `VaultHarness` (notes graph).
+  `FactoryHarness` (Ralph loop + stall guard), `ResearchHarness` (DeepResearch).
+  Add a new backend = 1 subclass + 1 config entry. Plus the Iron Man HUD
+  pollers: `SystemHarness`, `HealthHarness`, `VaultHarness`, `PhysisHarness`.
+- `factory.py` / `research.py` — pure loop engines (injectable, testable).
+- `physis.py`  — client for the physis_pro coherence brain (classify / register
+  / ingest); wired into both loops. See `docs/physis-integration.md`.
+- `hitl.py`    — human-in-the-loop approval gates (`GateBook`, fail-closed).
 - `input.py`   — `Router` + `KeyboardMap`, `JoystickInput` (evdev),
-  `VoiceInput` (STT stub). All emit `Intent`.
+  `VoiceInput` (STT stub), `DeckInput` (CyclUno), `RingInput` (Colmi R02).
+  All emit `Intent`.
+- `deck/`      — Cyclops physical layer: `link`/`protocol`/`gamepad` (CyclUno
+  serial), `ring.py` (Colmi R02 BLE + `TapDetector`), `pendant.py` (XIAO stub).
 - `ui/app.py`  — the Textual cockpit. Renders from the model; subscribes to
   the bus so work never blocks the UI.
 - `ui/gauges.py` — reusable HUD widgets (sparklines, bars, gauges).
