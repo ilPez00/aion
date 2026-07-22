@@ -375,9 +375,26 @@ class ResearchHarness(Harness):
         for i, s in enumerate(report.sources[:6]):
             self.registry.log(task, f"  [{i+1}] {s.title[:50]} — {s.url[:60]}")
         await self._stat(rounds=report.rounds, sources=len(report.sources))
+        # feed the brain: register this research run as a holarchy node linked to
+        # its sources, so knowledge accumulates across runs and the swarm can
+        # reconstruct it. Coherence: a covered answer flowed (+1), budget = idle.
+        await asyncio.to_thread(self._ingest_research, task, report)
         self.registry.set_progress(task, 1.0)
         self.registry.set_state(task, TaskState.DONE)
         self._finish(task)
+
+    @staticmethod
+    def _ingest_research(task: Task, report) -> None:
+        """Push a research run into physis (holarchy + coherence). Soft-fails."""
+        from .physis import get_client, record_outcome
+        node = f"research:{task.id}"
+        edges = [s.url for s in report.sources[:8] if s.url]
+        try:
+            get_client().ingest(node, edges or None)
+        except Exception:  # noqa: BLE001  (brain optional, never fatal)
+            pass
+        record_outcome(node, 1.0 if report.stopped == "covered" else 0.0,
+                       task.domain or None)
 
 
 class FactoryHarness(Harness):
@@ -416,8 +433,19 @@ class FactoryHarness(Harness):
             done_marker=extra.get("done_marker", ""),
             done_command=extra.get("done_command", ""),
             stop_on_error=extra.get("stop_on_error", True),
+            # a spinning Ralph loop wastes the whole budget; bail after this many
+            # near-identical rounds. 0 in config == off; default the harness on.
+            stall_window=int(extra.get("stall_window", 3)),
+            stall_novelty=float(extra.get("stall_novelty", 0.1)),
         )
         timeout = float(extra.get("per_iter_timeout", 120))
+        # physis coherence per round is opt-in (a classify call per iteration):
+        # it feeds the HUD/brain but never gates the loop. Runs in the worker
+        # thread with run_factory — blocking urllib, no registry access. OK.
+        coherence_fn = None
+        if extra.get("coherence"):
+            from .physis import score_text
+            coherence_fn = score_text
 
         def run_cmd(cmd: str) -> tuple[int, str]:
             import subprocess
@@ -454,7 +482,7 @@ class FactoryHarness(Harness):
         try:
             result = await asyncio.to_thread(
                 factory.run_factory, prompt, fcfg, run_cmd, check_cmd,
-                report_step,
+                report_step, coherence_fn,
             )
         except Exception as e:  # noqa: BLE001
             self.registry.log(task, f"[factory] error: {e}")
@@ -469,7 +497,20 @@ class FactoryHarness(Harness):
 
         self.registry.log(task, f"[factory] stopped: {result.stopped} "
                                 f"after {result.count} iteration(s)")
+        if result.stopped == factory.STOP_STALLED:
+            self.registry.log(task, "[factory] output stopped changing — bailed "
+                                    "out of a spinning loop instead of burning "
+                                    "the budget")
         await self._stat(iterations=result.count, stopped=result.stopped)
+        # feed the outcome back to physis: this task-domain flowed (+1) or got
+        # blocked (-1). Soft-fails if physis is down; off the loop thread.
+        outcome = (1.0 if result.stopped == factory.STOP_DONE
+                   else -1.0 if result.stopped in (factory.STOP_ERROR,
+                                                   factory.STOP_STALLED)
+                   else 0.0)
+        from .physis import record_outcome
+        await asyncio.to_thread(record_outcome, f"task:{task.id}", outcome,
+                                task.domain or None)
         self.registry.set_progress(task, 1.0)
         # a loop that ran out of budget or died is not a success
         final = TaskState.DONE if result.stopped == factory.STOP_DONE \

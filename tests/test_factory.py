@@ -5,8 +5,9 @@ import pytest
 
 from aion import factory
 from aion.factory import (
-    STOP_ABORTED, STOP_BUDGET, STOP_DONE, STOP_ERROR,
+    STOP_ABORTED, STOP_BUDGET, STOP_DONE, STOP_ERROR, STOP_STALLED,
     FactoryConfig, render_command, run_factory,
+    output_novelty, detect_stall,
 )
 
 
@@ -146,3 +147,62 @@ def test_result_as_dict_serialisable():
     run = make_runner(["DONE"])
     cfg = FactoryConfig(command="c", max_iters=1, done_marker="DONE")
     json.dumps(run_factory("p", cfg, run).as_dict())
+
+
+# ── novelty / stall detection ─────────────────────────────────────────────────
+def test_novelty_first_iteration_is_fully_novel():
+    assert output_novelty("", "anything") == 1.0
+
+
+def test_novelty_identical_output_is_zero():
+    assert output_novelty("same tail", "same tail") == 0.0
+
+
+def test_novelty_partial_change_between_zero_and_one():
+    n = output_novelty("hello world foo", "hello world bar")
+    assert 0.0 < n < 1.0
+
+
+def test_detect_stall_disabled_when_window_zero():
+    assert detect_stall([0.0, 0.0, 0.0], window=0, threshold=0.1) is False
+
+
+def test_detect_stall_needs_full_window():
+    # only two low-novelty samples but a window of 3 -> not yet stalled
+    assert detect_stall([0.0, 0.0], window=3, threshold=0.1) is False
+
+
+def test_detect_stall_fires_on_repeat_run():
+    assert detect_stall([0.5, 0.0, 0.05, 0.0], window=3, threshold=0.1) is True
+
+
+def test_loop_bails_out_of_a_spinning_agent():
+    # agent prints the exact same thing forever; no marker, big budget
+    run = make_runner(["stuck output"] * 20)
+    cfg = FactoryConfig(command="c", max_iters=20, stall_window=3)
+    result = run_factory("p", cfg, run)
+    assert result.stopped == STOP_STALLED
+    # 1st is novel, then 3 repeats trip the window -> stops at iter 4
+    assert result.count == 4
+
+
+def test_stall_off_by_default_runs_full_budget():
+    run = make_runner(["stuck"] * 5)
+    cfg = FactoryConfig(command="c", max_iters=5)   # stall_window defaults to 0
+    assert run_factory("p", cfg, run).stopped == STOP_BUDGET
+
+
+def test_coherence_fn_scores_each_iteration():
+    run = make_runner(["DONE"])
+    cfg = FactoryConfig(command="c", max_iters=1, done_marker="DONE")
+    result = run_factory("p", cfg, run, coherence_fn=lambda out: 0.7)
+    assert result.iterations[0].coherence == 0.7
+
+
+def test_coherence_fn_failure_is_swallowed():
+    def boom(_out):
+        raise RuntimeError("physis down")
+    run = make_runner(["DONE"])
+    cfg = FactoryConfig(command="c", max_iters=1, done_marker="DONE")
+    result = run_factory("p", cfg, run, coherence_fn=boom)
+    assert result.iterations[0].coherence == 0.0   # neutral, loop unaffected

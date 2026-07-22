@@ -127,3 +127,29 @@ def get_client() -> PhysisClient:
     if _client is None:
         _client = PhysisClient()
     return _client
+
+
+# ── convenience: coherence scoring + outcome recording ───────────────────────
+# Both soft-fail (physis down -> neutral / no-op). Safe to call from a worker
+# thread: PhysisClient is blocking urllib and touches no asyncio/registry state.
+def score_text(text: str) -> float:
+    """Coherence proxy in [-1, 1]: how strongly physis recognises this output.
+
+    The top semiotic cell's score is how well the text matches a known domain
+    of work; a degraded classify (physis down / empty) scores 0.0 (idle). Used
+    as per-iteration telemetry, never as a stop signal.
+    """
+    if not text.strip():
+        return 0.0
+    res = get_client().classify(text[:4000])
+    if res.degraded or res.top is None:
+        return 0.0
+    return max(-1.0, min(1.0, res.top.score))
+
+
+def record_outcome(node: str, coherence: float, domain: str | None = None) -> None:
+    """Persist a loop's result as a coherence fact (+1 flowing / -1 blocked)."""
+    try:
+        get_client().register(node, coherence, edge_to=domain)
+    except Exception:  # noqa: BLE001  (the brain is optional, never fatal)
+        pass
