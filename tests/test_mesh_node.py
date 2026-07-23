@@ -22,10 +22,12 @@ def mesh(monkeypatch):
     return m
 
 
-def test_own_node_advertises_no_ssh_or_hostname(mesh):
+def test_own_node_advertises_no_ssh_material(mesh):
+    # inventory (hardware/hostname/data/services) is the feature and stays;
+    # SSH user/key/port must be gone (harvest + broadcast vector).
     own = mesh._own_node()
-    assert not any(k.startswith("ssh") or k == "hostname" for k in own)
-    assert set(own) == {"host", "agent_type", "port", "status", "source", "last_seen"}
+    assert not any(k.startswith("ssh") for k in own), own
+    assert "hardware" in own and "hostname" in own      # inventory preserved
 
 
 def test_no_ssh_harvest_function(mesh):
@@ -44,18 +46,19 @@ def test_bind_opens_only_with_token(mesh):
 
 
 def test_peer_node_ssh_fields_are_stripped(mesh):
+    # a peer's ssh_* is never trusted (authorized_keys / recon vector), but its
+    # inventory (hardware/hostname) is the whole point of the mesh and is kept.
     poisoned = {
         "host": "192.168.1.9", "agent_type": "aion", "port": 8765,
-        "status": "online", "last_seen": "t",
+        "status": "online", "last_seen": "t", "hostname": "peerbox",
+        "hardware": {"cpu": {"model": "x"}},
         "ssh_user": "root", "ssh_pub_key": "ssh-ed25519 AAAA... attacker",
-        "hostname": "evil", "source": "self",
+        "ssh_port": 22,
     }
     safe = mesh._sanitize_peer_node(poisoned, my_ip="192.168.1.1")
-    assert safe == {
-        "host": "192.168.1.9", "agent_type": "aion", "port": 8765,
-        "status": "online", "last_seen": "t", "source": "peer",
-    }
-    assert "ssh_user" not in safe and "ssh_pub_key" not in safe and "hostname" not in safe
+    assert not any(k.startswith("ssh") for k in safe)      # all ssh_* dropped
+    assert safe["hardware"] == {"cpu": {"model": "x"}}     # inventory preserved
+    assert safe["hostname"] == "peerbox" and safe["source"] == "peer"
 
 
 def test_peer_node_dropped_when_self_or_malformed(mesh):
