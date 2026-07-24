@@ -9,6 +9,17 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
+from .theme import TOKENS as _T
+
+# audited palette aliases (ui/theme.py) — keeps every gauge legible and in sync
+_ACCENT = _T["accent"]
+_OK = _T["ok"]
+_WARN = _T["warn"]
+_ERR = _T["err"]
+_FG = _T["fg"]
+_DIM = _T["dim"]       # secondary TEXT — AA-legible on every surface
+_TRACK = _T["faint"]   # decoration only — unfilled bar track, separators
+
 # unicode block ramp for sparklines (low -> high)
 _SPARK = " ▁▂▃▄▅▆▇█"
 # vertical bar ramp for compact per-core CPU
@@ -41,16 +52,16 @@ def sparkline(values: Sequence[float], width: int = 24) -> str:
     return s
 
 
-def hbar(pct: float, width: int = 18, color: str = "#7CFFB2") -> str:
+def hbar(pct: float, width: int = 18, color: str = _OK) -> str:
     """Horizontal progress bar (mirrors app.bar, exported for reuse)."""
     pct = max(0.0, min(1.0, pct))
     filled = int(round(pct * width))
     return (f"[{color}]{'█' * filled}[/]"
-            f"[#5a6b7b]{'░' * (width - filled)}[/] "
+            f"[{_TRACK}]{'░' * (width - filled)}[/] "
             f"{int(pct * 100):3d}%")
 
 
-def vbars(percents: Sequence[float], width: int = 4, color: str = "#5ad1ff") -> str:
+def vbars(percents: Sequence[float], width: int = 4, color: str = _ACCENT) -> str:
     """Stacked per-core mini bars (one short bar per value)."""
     out = []
     for p in percents:
@@ -61,7 +72,7 @@ def vbars(percents: Sequence[float], width: int = 4, color: str = "#5ad1ff") -> 
     return " ".join(out)
 
 
-def core_grid(percents: Sequence[float], group: int = 8, color: str = "#5ad1ff") -> str:
+def core_grid(percents: Sequence[float], group: int = 8, color: str = _ACCENT) -> str:
     """Render per-core CPU usage as rows of tiny bars.
 
     `percents` is a list of 0..100 per logical core. We colour each cell by
@@ -74,9 +85,9 @@ def core_grid(percents: Sequence[float], group: int = 8, color: str = "#5ad1ff")
         filled = int(round(frac * (len(_VBAR) - 1)))
         filled = max(1, filled) if p > 1 else 0
         if p >= 80:
-            col = "#FF6B6B"   # hot
+            col = _ERR       # hot
         elif p >= 50:
-            col = "#FFD479"   # warm
+            col = _WARN      # warm
         else:
             col = color
         ch = _VBAR[filled] if filled else "·"
@@ -87,10 +98,10 @@ def core_grid(percents: Sequence[float], group: int = 8, color: str = "#5ad1ff")
     return " ".join(rows) if len(rows) == 1 else "\n            ".join(rows)
 
 
-def metric(label: str, value: str, unit: str = "", color: str = "#c7d3df") -> str:
+def metric(label: str, value: str, unit: str = "", color: str = _FG) -> str:
     """A 'LABEL  value unit' HUD readout line."""
     uv = f" {unit}" if unit else ""
-    return f"[{color}]{label}[/][#5a6b7b]:[/] [{color}]{value}{uv}[/]"
+    return f"[{color}]{label}[/][{_DIM}]:[/] [{color}]{value}{uv}[/]"
 
 
 def coherence_glyph(coherence: float, novelty: float = 1.0) -> str:
@@ -100,11 +111,11 @@ def coherence_glyph(coherence: float, novelty: float = 1.0) -> str:
     loop (novelty collapsed) flags amber first — that's the actionable state.
     """
     if novelty <= 0.1:
-        return "[#FFB000]⟳ spin[/]"          # output stopped changing
+        return f"[{_WARN}]⟳ spin[/]"          # output stopped changing
     if coherence >= 0.15:
-        return "[#7dff9b]◈ flow[/]"          # physis recognises productive work
+        return f"[{_OK}]◈ flow[/]"          # physis recognises productive work
     if coherence <= -0.15:
-        return "[#FF3344]◈ block[/]"         # blocked
+        return f"[{_ERR}]◈ block[/]"         # blocked
     return ""                                # neutral/idle — stay quiet
 
 
@@ -129,33 +140,33 @@ def cyclops_panel(ring: dict | None = None, deck: dict | None = None,
     if hr >= 0 or spo2 >= 0 or batt >= 0:
         bio = []
         if hr >= 0:
-            bio.append(metric("HR", str(hr), " bpm", "#ff6b8a"))
+            bio.append(metric("HR", str(hr), " bpm", _ERR))
         if spo2 >= 0:
-            bio.append(metric("SpO2", str(spo2), "%", "#5ad1ff"))
+            bio.append(metric("SpO2", str(spo2), "%", _ACCENT))
         if batt >= 0:
-            bio.append(metric("ring", str(batt), "%", "#7CFFB2"))
+            bio.append(metric("ring", str(batt), "%", _OK))
         rows.append("  ".join(bio))
     else:
-        rows.append("[#5a6b7b]ring: not paired[/]")
+        rows.append(f"[{_DIM}]ring: not paired[/]")
 
     # ── deck / UART link ─────────────────────────────────────────────────────
     if deck.get("available"):
         baud = deck.get("baud", 115200)
-        rows.append(f"[#7CFFB2]▪ UART OK[/] [#5a6b7b]{baud} baud[/]")
+        rows.append(f"[{_OK}]▪ UART OK[/] [{_DIM}]{baud} baud[/]")
     else:
-        rows.append("[#5a6b7b]▪ deck: no link (keyboard fallback)[/]")
+        rows.append(f"[{_DIM}]▪ deck: no link (keyboard fallback)[/]")
 
     # ── physis coherence (the brain) ─────────────────────────────────────────
     if physis and not physis.get("degraded", True):
         label = physis.get("kind", "?")
-        rows.append(f"[#FFB000]◈ physis[/] [#c7d3df]{label}[/]")
+        rows.append(f"[{_WARN}]◈ physis[/] [{_FG}]{label}[/]")
     else:
-        rows.append("[#5a6b7b]◈ physis: offline[/]")
+        rows.append(f"[{_DIM}]◈ physis: offline[/]")
 
-    return gauge_panel("CYCLOPS", "\n  ".join(rows), color="#00F0FF")
+    return gauge_panel("CYCLOPS", "\n  ".join(rows), color=_ACCENT)
 
 
-def gauge_panel(title: str, body: str, color: str = "#5ad1ff") -> str:
+def gauge_panel(title: str, body: str, color: str = _ACCENT) -> str:
     """Wrap a block of HUD lines under a titled panel header."""
     return f"[{color}]▌ {title}[/]\n  {body}"
 

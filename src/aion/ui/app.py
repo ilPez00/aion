@@ -37,12 +37,12 @@ from ..store import Store
 def bar(pct: float, width: int = 18, color: str = "#7CFFB2") -> str:
     pct = max(0.0, min(1.0, pct))
     filled = int(round(pct * width))
-    return f"[{color}]{'█' * filled}[/][#5a6b7b]{'░' * (width - filled)}[/] {int(pct * 100):3d}%"
+    return f"[{color}]{'█' * filled}[/][#6b7d8d]{'░' * (width - filled)}[/] {int(pct * 100):3d}%"
 
 
 class Cell(Static):
     """A single updatable text cell. Mutating .update() is cheap (no remount)."""
-    DEFAULT_CSS = "Cell { height: auto; } Cell:hover { background: #15303f; }"
+    DEFAULT_CSS = "Cell { height: auto; } Cell:hover { background: #131d26; }"
 
     def on_click(self) -> None:
         """Click activates the focused item or toggles palette on bottom."""
@@ -58,7 +58,7 @@ class TermPane(Static):
     Keystrokes are forwarded to the pty by the app's on_key (when the Term
     workspace is active), not here, so there's a single clear passthrough path.
     """
-    DEFAULT_CSS = "TermPane { height: 1fr; background: #0a0e14; }"
+    DEFAULT_CSS = "TermPane { height: 1fr; background: #0a0f14; }"
 
     def __init__(self, harness: TermHarness, **kwargs):
         super().__init__("", **kwargs)
@@ -90,17 +90,29 @@ def _key_bytes(key: str) -> bytes:
 
 
 class AiOSApp(App):
+    # Colours mirror ui/theme.py (audited for WCAG AA in tests/test_theme.py).
+    # Textual CSS can't read Python, so the literals are duplicated here — the
+    # test `test_app_css_matches_theme_tokens` guards them against drift.
+    # Structure is carried by borders, not background tint: box-drawing glyphs
+    # render crisply in every terminal, whereas the old 1.04:1 background
+    # difference between panels was mathematically invisible.
     CSS = """
-    Screen { background: #0c1116; color: #c7d3df; }
-    #header { height: 1; background: #11202c; }
-    #rail   { width: 24; background: #0e161e; }
-    #center { width: 1fr; background: #0c1116; }
-    #right  { width: 36; background: #0e161e; border-left: solid #1c2b38; }
-    #bottom { height: 1; background: #11202c; border-top: solid #1c2b38; dock: bottom; }
-    #help   { background: #0e161e; border: solid #5ad1ff; padding: 1 2; width: 60%; height: 60%; }
-    #palette { dock: bottom; background: #0e161e; }
+    Screen { background: #0a0f14; color: #dbe6f0; }
+    #header { height: 1; background: #131d26; color: #dbe6f0; }
+    #rail   { width: 26; background: #0a0f14; border-right: solid #25384a;
+              padding: 1 1 0 1; }
+    #center { width: 1fr; background: #0a0f14; padding: 1 2; }
+    #right  { width: 38; background: #0a0f14; border-left: solid #25384a;
+              padding: 1 2; }
+    #bottom { height: 1; background: #131d26; border-top: solid #25384a;
+              dock: bottom; padding: 0 1; }
+    #help   { background: #131d26; border: round #5ad1ff; padding: 1 3;
+              width: 72; max-width: 90%; height: auto; max-height: 84%; }
+    #palette { dock: bottom; background: #131d26; border: round #5ad1ff;
+               padding: 0 1; }
     Cell { padding: 0 1; }
-    .focus { background: #15303f; }
+    Cell:hover { background: #131d26; }
+    .focus { background: #1d3a4d; }
     """
 
     BINDINGS = [
@@ -189,12 +201,19 @@ class AiOSApp(App):
             yield VerticalScroll(id="center")
             yield VerticalScroll(id="right")
         yield Static("", id="bottom")
-        yield Input(placeholder="Ctrl-K: ask or command — try 'todo buy milk', 'help manual', 'agent create Alice'", id="palette")
+        yield Input(placeholder="type anything — 'todo buy milk' · 'agent create Alice' · 'swarm research X' · '?' for help", id="palette")
         yield Static("", id="help")
 
     async def on_mount(self) -> None:
-        self.query_one("#palette").display = False
-        self.query_one("#help").display = False
+        palette = self.query_one("#palette")
+        palette.display = False
+        # captions on the framed overlays so they announce themselves; the
+        # round borders they sit in are defined in CSS, so these always render
+        palette.border_title = "⌘ command"
+        palette.border_subtitle = "Enter to run · Esc to close"
+        help_ = self.query_one("#help")
+        help_.display = False
+        help_.border_title = "aion · help"
         self.set_interval(1.0, self._tick)
         # all background HUD pollers (Jarvis HUD + Iron Man panels)
         for h in self.harnesses.values():
@@ -824,7 +843,7 @@ class AiOSApp(App):
                         f"[{theme['ok']}]{gpu['gpu_models']} model(s) loaded · "
                         f"{gpu.get('gpu_vram_mb',0)}MB[/]", theme["accent"]))
         else:
-            blocks.append(gauge_panel("COMPUTER", "[#5a6b7b](stats unavailable)[/]", theme["accent"]))
+            blocks.append(gauge_panel("COMPUTER", "[#9aabbb](stats unavailable)[/]", theme["accent"]))
 
         # ---- THERMAL (CPU/thermal sensors) ----
         th = sys_.get("thermal") if sys_ and sys_.get("ok") else None
@@ -867,7 +886,7 @@ class AiOSApp(App):
             blocks.append(gauge_panel("REAL LIFE", "\n  ".join(lines), theme["ok"]))
         else:
             blocks.append(gauge_panel("REAL LIFE",
-                         "[#5a6b7b](no health data — source: google/apple/json)[/]",
+                         "[#9aabbb](no health data — source: google/apple/json)[/]",
                          theme["ok"]))
 
         # ---- PHYSIS (coherence brain) ----

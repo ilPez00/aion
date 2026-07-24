@@ -138,7 +138,7 @@ def render_tree(graph: dict[str, Any], root: str | None = None, depth: int = 2) 
         seen.add(name)
         n = by_name[name]
         lines.append(f"{'  ' * indent}• {n['title']}  "
-                     f"[#5a6b7b][{len(n['links'])}→{len(n['backlinks'])}][/]")
+                     f"[#9aabbb][{len(n['links'])}→{len(n['backlinks'])}][/]")
         for l in n["links"][:6]:
             target = by_name.get(l) or by_name.get(title_to_name.get(l.lower(), ""))
             if target is not None:

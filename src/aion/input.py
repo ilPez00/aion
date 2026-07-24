@@ -88,9 +88,15 @@ class KeyboardMap:
             return Intent.back()
         if key in k["context"]:
             return Intent.context()
-        for n in range(1, 10):
-            if key == k.get(f"workspace_{n}"):
-                return Intent.switch_workspace(index=n - 1)
+        # walk every workspace_N the config declares, not a hardcoded 1..9 —
+        # the cockpit ships 10 workspaces, so the last one used to be
+        # unreachable by number key entirely
+        for name, bound in k.items():
+            if name.startswith("workspace_") and key == bound:
+                try:
+                    return Intent.switch_workspace(index=int(name[10:]) - 1)
+                except ValueError:
+                    continue
         return None
 
 

@@ -250,15 +250,30 @@ class SessionStore:
 # --------------------------------------------------------------------------
 # Config — loads config/layout.json, falls back to sane defaults
 # --------------------------------------------------------------------------
+def _theme_defaults() -> dict:
+    """Palette from ui/theme.py, with a self-contained fallback.
+
+    Imported locally: `aion.ui` is a subpackage being pulled in while
+    `aion.core` is still executing, and a local import keeps that resolution
+    lazy enough to be robust. The fallback keeps a headless/partial install
+    (no ui extras) booting rather than dying on a colour table.
+    """
+    try:
+        from .ui.theme import theme_dict
+        return theme_dict()
+    except Exception:  # noqa: BLE001
+        return {"accent": "#5ad1ff", "ok": "#7CFFB2", "warn": "#FFD479",
+                "err": "#FF8A8A", "fg": "#dbe6f0", "dim": "#9aabbb",
+                "faint": "#6b7d8d", "bg": "#0a0f14", "panel": "#131d26",
+                "sel": "#1d3a4d", "border": "#25384a", "border_hi": "#5ad1ff"}
+
+
 DEFAULT_LAYOUT = {
     "app_name": "aion",
-    "theme": {
-        "accent": "#5ad1ff",
-        "ok": "#7CFFB2",
-        "warn": "#FFD479",
-        "err": "#FF6B6B",
-        "dim": "#5a6b7b",
-    },
+    # palette lives in ui/theme.py, which also carries the WCAG audit that
+    # tests/test_theme.py enforces. Imported lazily-ish (module-level is fine,
+    # ui.theme has no dependencies) so there is exactly one source of truth.
+    "theme": _theme_defaults(),
     "workspaces": [
         {"id": "models", "title": "Models",    "icon": "◈"},
         {"id": "tasks",  "title": "Tasks",     "icon": "▤"},

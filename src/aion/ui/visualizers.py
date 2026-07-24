@@ -10,12 +10,15 @@ from typing import Sequence
 
 
 # ── palette ──────────────────────────────────────────────────────────────────
-_CYAN = "#5ad1ff"
-_GREEN = "#7CFFB2"
-_YELLOW = "#FFD479"
-_RED = "#FF6B6B"
-_DIM = "#5a6b7b"
-_WHITE = "#ffffff"
+# Named aliases onto the audited tokens (ui/theme.py) so the visualizers can't
+# drift from the rest of the cockpit.
+from .theme import TOKENS as _T
+_CYAN = _T["accent"]
+_GREEN = _T["ok"]
+_YELLOW = _T["warn"]
+_RED = _T["err"]
+_DIM = _T["dim"]
+_WHITE = _T["fg"]
 
 _BLOCKS = " ▏▎▍▌▋▊▉█"
 

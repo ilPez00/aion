@@ -6,7 +6,7 @@
 <title>Aion HUD</title>
 <!-- PWA: installable web HUD (Add to Home Screen -> standalone app) -->
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#16f0c8">
+<meta name="theme-color" content="#5ad1ff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="AION">
@@ -14,17 +14,19 @@
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <style>
 :root {
-  --bg: #0d0d12;
-  --bg2: #16161e;
-  --bg3: #1e1e2a;
-  --fg: #cdd6f4;
-  --fg2: #a6adc8;
-  --accent: #89b4fa;
-  --accent2: #74c7ec;
-  --green: #a6e3a1;
-  --red: #f38ba8;
-  --yellow: #f9e2af;
-  --border: #2a2a3a;
+  /* palette mirrors the TUI cockpit (src/aion/ui/theme.py), WCAG-AA audited,
+     so the phone HUD and the terminal cockpit read as one product */
+  --bg: #0a0f14;
+  --bg2: #131d26;
+  --bg3: #1d3a4d;
+  --fg: #dbe6f0;
+  --fg2: #9aabbb;
+  --accent: #5ad1ff;
+  --accent2: #7fe0ff;
+  --green: #7CFFB2;
+  --red: #FF8A8A;
+  --yellow: #FFD479;
+  --border: #25384a;
   --radius: 8px;
   --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 }

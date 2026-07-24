@@ -35,14 +35,17 @@ STAGE_THEME = {
     "failed": "err",
 }
 
-# default theme keys if caller passes incomplete theme
-_DEFAULT_THEME = {
-    "accent": "#5ad1ff",
-    "ok": "#7CFFB2",
-    "warn": "#FFD479",
-    "err": "#FF6B6B",
-    "dim": "#5a6b7b",
-}
+# default theme keys if caller passes incomplete theme. Sourced from the
+# audited palette (ui/theme.py) so a partial theme can't fall back to the old
+# illegible dim; the local fallback keeps this importable without the ui extras.
+try:
+    from .ui.theme import theme_dict as _theme_dict
+    _DEFAULT_THEME = _theme_dict()
+except Exception:  # noqa: BLE001
+    _DEFAULT_THEME = {
+        "accent": "#5ad1ff", "ok": "#7CFFB2", "warn": "#FFD479",
+        "err": "#FF8A8A", "dim": "#9aabbb",
+    }
 
 
 @dataclass
