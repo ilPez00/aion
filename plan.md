@@ -39,6 +39,30 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   destructive prompts + `requires_approval` harnesses gate `_spawn`. Voice + HUD wired.
 - **Web HUD is a PWA** — installable; LAN-reachable via `AION_WEB_HOST=0.0.0.0`.
   See `docs/install-mobile.md`.
+- **Graph file manager** (`fsgraph.py` + `/api/fs/*`) — physis-compatible
+  payload, local TF-IDF + spherical k-means clustering, sandboxed to
+  `AION_FS_ROOT`. Preview + move from the HUD.
+- **Web HUD rebuilt around one organic graph renderer** — Files, Vault and
+  System are the same canvas force layout with different adapters; each has a
+  keyboard/screen-reader list twin. Responsive to 375px (bottom nav + bottom
+  sheet inspector), WCAG-AA palette shared with the TUI, reduced-motion aware.
+- **Launcher usability** — `./aion.sh graph|doctor|help`; `AION_WEB_PORT`
+  honoured (PTY websocket follows at +1) so two HUDs can coexist.
+- **Agent process graph** (`procgraph.py` + `/api/agents`) — fleet instances,
+  harnesses, tasks and swarm deps as one organic graph, reconstructed from the
+  on-disk checkpoints so it works with no cockpit running. Orphan harnesses
+  surfaced rather than dropped.
+- **Ctrl-K palette** (`/api/search/all`) — one search across modules,
+  harnesses, tasks, task logs, instances, notes, filenames and file contents;
+  every hit jumps to its node.
+- **Navigation** — hash routing + browser back/forward, clickable
+  breadcrumbs, Backspace to climb, click-a-hub to isolate a cluster,
+  directional arrow traversal, Tab to walk graph neighbours.
+- **Live push** (`procgraph.fingerprint/diff` + `/ws/events`) — the daemon
+  watches the cockpit's checkpoint files and pushes deltas; the graph patches
+  in place (no rebuild, pan/zoom/selection preserved) and pulses state
+  transitions. Idle cost is a hash of a few small files at 4Hz, nothing sent.
+  Falls back to polling with a visible liveness dot.
 
 ## Roadmap — next
 
@@ -54,6 +78,7 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
    audio → transcriber) and registering the link in `ui/app.py` next to
    `DeckInput`/`RingInput`. Point it with `AION_PENDANT_HOST`.
 4. **HUD coherence stream** — feed `Iteration.coherence` into the DAG edge animation.
+   *(the live channel now exists; this is the next payload to put on it)*
 5. **Research priming** — use physis `reconstruct()` to skip queries a past run covered.
 6. **assetlinks.json route** in `aion_web.py` for TWA trust (needed by the APK).
 

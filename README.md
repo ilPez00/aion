@@ -31,6 +31,19 @@ push live task progress + stats through an async bus.
 
 ## Quick start
 
+`aion.sh` bootstraps the venv and deps on first run, so there is nothing to
+install by hand:
+
+```bash
+./aion.sh              # the TUI cockpit
+./aion.sh web          # the web HUD          -> http://127.0.0.1:8742
+./aion.sh graph ~/dev  # web HUD opened on the graph file manager for ~/dev
+./aion.sh doctor       # deps, services, paths — run this first when stuck
+./aion.sh help         # every command, key and env var
+```
+
+Manual path, if you prefer it:
+
 ```bash
 cd aion
 python3 -m venv .venv && . .venv/bin/activate
@@ -79,12 +92,14 @@ Wire a real health source in `config/layout.json`:
 
 ## Web HUD
 
-The same HUD is also served as a browser UI (served from `scripts/static/` —
-note: NOT the repo-root `static/`):
+The same HUD is also served as a browser UI. It is served from
+`scripts/static/` — the repo-root `static/` is a gitignored leftover that
+nothing reads; edit the one under `scripts/`:
 
 ```bash
 ./aion.sh web          # or: python scripts/aion_web.py  → http://127.0.0.1:8742
 AION_WEB_HOST=0.0.0.0 python scripts/aion_web.py          # reach it from a phone on the LAN
+AION_WEB_PORT=8750 ./aion.sh web                          # second instance (PTY WS follows at +1)
 ```
 
 Loopback is open. **Any non-loopback bind is token-gated** — this HUD browses
@@ -102,10 +117,99 @@ loaded. Plain HTTP still carries the token in clear — put `tailscale serve` or
 a TLS proxy in front on any network you don't control. The PTY websocket
 (:8743) stays bound to loopback and is not LAN-reachable at all.
 
-Modules: Terminal (PTY), Files (organic graph), Browser (voice → DeepSearch),
-Editor (live micro), LaTeX, **Notes** (Obsidian-style canvas graph of your
-vault, node size = link degree), **Life** (real-life stats from the health
-source), and Agent. The top bar shows live CPU/GPU/RAM/DSK/NET.
+### Modules
+
+Six, on keys `1`–`6`. Four of them are the *same* organic force-directed
+graph fed by different adapters — one renderer, so the whole HUD reads as one
+instrument:
+
+| Key | Module | What the graph shows |
+|-----|--------|----------------------|
+| 1 | **Files** | the graph file manager (below) |
+| 2 | **Agents** | aion's own work: fleet instances → harnesses → tasks, plus swarm dependency edges. Colour = state, size = progress |
+| 3 | **Vault** | your notes: `[[wikilinks]]` as edges, node size = link degree, colour = first tag |
+| 4 | **System** | telemetry as a constellation: CPU/RAM/DISK/GPU orbiting the host, per-core satellites off the CPU node, size + colour band = load |
+| 5 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
+| 6 | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
+
+### Search everything — `Ctrl-K`
+
+The same key the TUI uses. One query across **modules, harnesses, tasks, task
+logs, fleet instances, swarm agents, note titles, filenames and file
+contents**. Every hit carries the coordinates to jump to it, so you stop
+needing to know which module a thing lives in — including the file-content
+search, which is how you find the file whose name you have forgotten.
+
+The **Agents** module reads what the cockpit checkpoints to disk
+(`~/.aion/instances/*/`), so it works even with no cockpit running: you get
+the last known state rather than an empty screen. Tasks whose harness has
+since vanished from config get an `ORPHAN` hub instead of being dropped —
+abandoned work is exactly what you open this view to find.
+
+### Live updates
+
+The cockpit and the web HUD are separate processes, so there is no shared
+`Bus` to subscribe to. Instead the daemon **watches the checkpoint files the
+cockpit already writes** and pushes only what changed over `/ws/events`.
+Zero coupling: no cockpit changes, no extra socket, and it keeps working when
+the cockpit restarts underneath.
+
+Tasks change state in the graph as they happen — a state transition wears an
+expanding ring for a moment, progress redraws in place, and new work appears
+next to its harness. The layout does **not** rebuild, so your pan, zoom and
+selection survive. The green dot next to the status line means the push
+channel is up; if the socket drops, the HUD falls back to polling and the dot
+goes grey (it never silently shows stale data as live).
+
+Cost when nothing is happening: one `blake2b` over a few small JSON files at
+4Hz, and **nothing sent**. Measured — 8 seconds idle produces exactly one
+message, the initial snapshot.
+
+Every graph has a **list twin** (`g`/`l`). That is not a fallback: a canvas
+network graph is opaque to screen readers and awkward one-handed, so the table
+carries the same data with exact numbers, sortable columns and keyboard rows.
+The left rail always shows live CPU/RAM/DSK/GPU regardless of module.
+
+Keys: `Ctrl-K` search · `1`–`6` module · `g`/`l` graph↔list · `/` filter ·
+`r` rescan · `0` fit · `?` inspector · `Backspace` up a directory.
+
+In the graph: drag nodes, scroll/pinch to zoom, **arrow keys** move to the
+nearest node in that direction, **Tab** walks linked neighbours (a hub to its
+members), **click a hub or press Enter** to isolate it and its links, `Esc` to
+release. Files has clickable breadcrumbs, and the URL is a real address —
+`#files?dir=/x/y` is bookmarkable and the browser back button walks your
+history.
+
+### Graph file manager
+
+Modelled on the one physis_pro ships (`src/bin/ui/graph_fm.html`) and
+wire-compatible with it — same `themes` / `files` / `edges` / `file_edges`
+payload — but the clustering runs **locally** in `src/aion/fsgraph.py`:
+TF-IDF over content head, filename, parent directories and extension, then
+deterministic spherical k-means. No embedder, no model download, no physis
+process required; when the physis engine *is* up you can point the same UI at
+its richer BGE clustering.
+
+**Content leads.** What a file says outranks what it was named (`W_CONTENT`
+4.0 vs `W_NAME` 1.5), so a misleadingly-named file still clusters with its
+actual subject. Sublinear tf plus L2 normalisation stop a long file from
+outvoting a short one on sheer volume. Name/dir/ext stay non-zero because
+they are the *only* signal a content-free file (image, media, archive) has —
+zero them and every binary collapses into one blob. All three properties are
+pinned by `tests/test_fsgraph.py`.
+
+Files are laid out *near the cluster they belong to* — that is enforced by
+`tests/test_organic_layout.py`, which fails the build if position stops
+encoding membership. Click a node to preview it; rename or move from the
+inspector (sandboxed, never overwrites).
+
+```
+AION_FS_ROOT=~        sandbox — the graph FM cannot read or write outside it
+AION_FS_DIR=.         directory it opens on (default: the repo)
+AION_FS_MAX_FILES=600 scan cap; the HUD says TRUNCATED when it bites
+```
+
+`./aion.sh graph DIR` sets all three for you and opens the browser.
 
 The web HUD is a **PWA** — installable to a phone's home screen as a standalone
 app (needs HTTPS; over LAN HTTP you get a shortcut). Full install + real-`.apk`
@@ -222,6 +326,12 @@ swarm create <goal> · swarm add <name> <goal> · swarm run|status|stop
   the bus so work never blocks the UI.
 - `ui/gauges.py` — reusable HUD widgets (sparklines, bars, gauges).
 - `vault.py`   — Obsidian-style notes reader (`[[wikilinks]]` + backlinks → graph).
+- `fsgraph.py` — graph file manager engine: sandboxed scan → TF-IDF →
+  spherical k-means → physis-compatible `themes/files/edges/file_edges`.
+  Pure, dependency-free, deterministic.
+- `scripts/static/organic.js` — the one graph renderer (canvas force layout,
+  spatial-hash repulsion, cluster anchoring, keyboard traversal). No CDN, no
+  build step: the HUD boots offline from the service worker.
 - `memory.py`  — persistent fact store (`note`/`mem`/`forget`).
 - `llm.py`     — inline LLM chat (FCM proxy + Groq fallback).
 - `interpret.py` — plain-language palette: rules + LLM translate to commands.

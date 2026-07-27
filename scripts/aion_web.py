@@ -45,6 +45,19 @@ AION_DIR = os.path.expanduser("~/.aion")
 #   2. the aion_token cookie that first request sets (every later fetch)
 #   3. X-Aion-Token header (scripts, curl)
 # ---------------------------------------------------------------------------
+def _clampenv(name, default, lo, hi):
+    """Int from the environment, clamped. Junk falls back to the default."""
+    try:
+        return max(lo, min(hi, int(os.environ.get(name, default))))
+    except ValueError:
+        return default
+
+
+# The PTY websocket. Derived from the HTTP port so two HUDs on one box do not
+# collide; always loopback-bound regardless of AION_WEB_HOST.
+WS_PORT = _clampenv("AION_WS_PORT", _clampenv("AION_WEB_PORT", 8742, 1024, 65534) + 1,
+                    1024, 65535)
+
 TOKEN_COOKIE = "aion_token"
 TOKEN_HEADER_NAME = "X-Aion-Token"
 TOKEN = ""            # filled in main(); empty means auth disabled
@@ -248,6 +261,180 @@ def health_summary():
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
 
+# ---------------------------------------------------------------------------
+# Graph file manager
+#
+# The engine lives in `aion.fsgraph` (pure, unit-tested); this layer only maps
+# it onto HTTP and onto the errors a browser can act on. Every path argument is
+# sandboxed *inside* the engine, so no route here has to remember to do it.
+# ---------------------------------------------------------------------------
+def _fsgraph_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import fsgraph
+    return fsgraph
+
+
+def _int(q, key, default, lo, hi):
+    """Clamped int from a query string. Junk falls back to the default."""
+    try:
+        return max(lo, min(hi, int(q.get(key, [default])[0])))
+    except (TypeError, ValueError):
+        return default
+
+
+def fs_limit():
+    return _clampenv("AION_FS_MAX_FILES", 600, 1, 2000)
+
+
+def fs_default_dir():
+    """Where the graph FM opens. Defaults to the repo, not $HOME — a first
+    scan of a whole home directory is slow and reads as noise; the repo you
+    launched from is the thing you almost certainly meant."""
+    return Path(os.environ.get("AION_FS_DIR", os.path.dirname(ROOT)))
+
+
+def fs_roots():
+    """Bookmarks for the location bar, so nobody has to type an absolute path."""
+    fg = _fsgraph_mod()
+    root = fg.scan_root()
+    home = Path(os.path.expanduser("~"))
+    cand = [("repo", fs_default_dir()), ("home", home),
+            ("notes", Path(NOTES_DIR)), ("dev", home / "dev"),
+            ("documents", home / "Documents")]
+    out = []
+    for name, p in cand:
+        try:
+            rp = p.resolve()
+        except OSError:
+            continue
+        inside = rp == root or root in rp.parents
+        if inside and rp.is_dir() and not any(o["path"] == str(rp) for o in out):
+            out.append({"name": name, "path": str(rp)})
+    return {"root": str(root), "roots": out}
+
+
+def fs_listing(fg, q):
+    """Flat adjacency list for the same scan the graph renders.
+
+    Same payload, different projection: file -> its hub -> its nearest
+    neighbour. This is the keyboard/screen-reader path through the data.
+    """
+    g = fg.graph(q.get("dir", [str(fs_default_dir())])[0],
+                 depth=_int(q, "depth", 3, 1, 8),
+                 max_files=_int(q, "limit", fs_limit(), 1, 2000),
+                 include_hidden=(q.get("hidden", ["0"])[0] == "1"))
+    hubs = {t["id"]: t["name"] for t in g["themes"]}
+    best_hub, best_sib = {}, {}
+    for e in sorted(g["edges"], key=lambda e: -e["score"]):
+        best_hub.setdefault(e["file_id"], (hubs.get(e["theme_id"], "?"), e["score"]))
+    for e in sorted(g["file_edges"], key=lambda e: -e["score"]):
+        best_sib.setdefault(e["source"], (e["target"], e["score"]))
+        best_sib.setdefault(e["target"], (e["source"], e["score"]))
+    titles = {f["id"]: f["title"] for f in g["files"]}
+    rows = []
+    for f in g["files"]:
+        hub, hs = best_hub.get(f["id"], ("unclustered", 0.0))
+        sib = best_sib.get(f["id"])
+        rows.append({**f, "hub": hub, "hub_score": hs,
+                     "nearest": titles.get(sib[0]) if sib else None,
+                     "nearest_score": sib[1] if sib else 0.0})
+    rows.sort(key=lambda r: (r["hub"], -r["hub_score"], r["title"]))
+    return {"root": g["root"], "truncated": g["truncated"], "rows": rows}
+
+
+# ---------------------------------------------------------------------------
+# Process graph + unified search
+# ---------------------------------------------------------------------------
+def _procgraph_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import procgraph
+    return procgraph
+
+
+def proc_snapshot(include_finished=True):
+    try:
+        return _procgraph_mod().snapshot(include_finished=include_finished)
+    except Exception as e:  # noqa: BLE001
+        # A HUD that renders "process graph unavailable" beats one that 500s.
+        return {"instances": [], "harnesses": [], "tasks": [], "swarm": [],
+                "summary": {}, "error": str(e)[:200]}
+
+
+# Static jump targets. These are the things you cannot discover by scanning
+# something -- the modules themselves and the handful of verbs the HUD has.
+_COMMANDS = [
+    ("Files — graph file manager", "files", "Scan a directory as an organic graph"),
+    ("Vault — notes graph", "vault", "Wikilinks, backlinks, tags"),
+    ("System — telemetry constellation", "system", "CPU / RAM / disk / GPU / per-core"),
+    ("Agents — process graph", "agents", "Fleet, harnesses, tasks, swarm"),
+    ("Agent — chat", "agent", "Talk to the LLM"),
+    ("LaTeX — compile", "latex", "Edit, compile, preview"),
+]
+
+
+def search_everything(query, scan_dir=None, limit=60):
+    """One query across every corpus the HUD can show.
+
+    Ordered by how specific the match is, not by corpus: an exact task label
+    beats a fuzzy file-content hit. Each result carries `{module, node}` so
+    the palette can jump straight to it, and results are capped per corpus so
+    one huge directory cannot crowd out the notes.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return {"query": query, "results": []}
+    out = []
+
+    for label, module, sub in _COMMANDS:
+        if q in label.lower() or q in module:
+            out.append({"type": "module", "label": label, "sub": sub,
+                        "module": module, "node": None, "rank": 0})
+
+    # process graph (harnesses, tasks, instances, swarm)
+    try:
+        pgm = _procgraph_mod()
+        for h in pgm.search(query, limit=20):
+            out.append({**h, "rank": 1})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # notes
+    try:
+        for n in vault_graph()["nodes"]:
+            if q in n["label"].lower() or q in n["id"].lower():
+                out.append({"type": "note", "label": n["label"],
+                            "sub": f"{n.get('degree', 0)} links",
+                            "module": "vault", "node": n["id"], "rank": 1})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # files in the directory currently on screen -- name matches first, then
+    # content. Content search re-reads heads, so it is capped tightly.
+    try:
+        fg = _fsgraph_mod()
+        base = fg.resolve_in_root(scan_dir or str(fs_default_dir()))
+        paths = fg.walk(base, depth=3, max_files=fs_limit())
+        named, inside = [], []
+        for fp in paths:
+            if q in fp.name.lower():
+                named.append(fp)
+            elif len(inside) < 12 and q in fg._read_head(fp).lower():
+                inside.append(fp)
+        for fp in named[:25]:
+            out.append({"type": "file", "label": fp.name, "sub": str(fp),
+                        "module": "files", "node": str(fp), "rank": 1})
+        for fp in inside:
+            out.append({"type": "file", "label": fp.name, "sub": f"contains · {fp}",
+                        "module": "files", "node": str(fp), "rank": 2})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # exact-prefix matches float to the top within their rank band
+    out.sort(key=lambda r: (r["rank"], not r["label"].lower().startswith(q),
+                            len(r["label"])))
+    return {"query": query, "results": out[:limit]}
+
+
 def vault_graph():
     try:
         sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -342,6 +529,22 @@ HOSTS = {}
 # HTTP handler
 # ---------------------------------------------------------------------------
 
+_CTYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".webmanifest": "application/manifest+json",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
+}
+
+
+def _ctype(path: str) -> str:
+    return _CTYPES.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
+
+
 def _sse_event(data: str, event: str = "message") -> bytes:
     return f"event: {event}\ndata: {data}\n\n".encode()
 
@@ -390,6 +593,22 @@ class Handler(BaseHTTPRequestHandler):
     def _sendj(self, obj, code=200):
         self._send(code, "application/json", json.dumps(obj).encode())
 
+    def _fs(self, fn):
+        """Run a graph-FM call, mapping engine errors onto honest HTTP codes.
+
+        A sandbox rejection is a 403 and says so; anything else is a 500 with
+        the reason. Returning 200 + `{"error": ...}` would let the frontend
+        render a broken graph as an empty one.
+        """
+        fg = _fsgraph_mod()
+        try:
+            return self._sendj(fn(fg))
+        except fg.FsGraphError as e:
+            code = 403 if "outside scan root" in str(e) else 400
+            return self._sendj({"error": str(e)}, code)
+        except OSError as e:
+            return self._sendj({"error": f"{type(e).__name__}: {e}"}, 500)
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
@@ -419,9 +638,13 @@ class Handler(BaseHTTPRequestHandler):
             extra = {"Service-Worker-Allowed": "/"} if p == "/sw.js" else None
             return self._send(200, ctype, open(fp, "rb").read(), headers=extra)
         if p.startswith("/static/"):
+            # Content-Type is load-bearing, not cosmetic: a stylesheet served
+            # as octet-stream is silently dropped in standards mode, and a
+            # script served as one is refused outright when nosniff is on.
             fp = os.path.join(STATIC, os.path.basename(p))
             if os.path.exists(fp):
-                return self._send(200, "application/octet-stream", open(fp, "rb").read())
+                return self._send(200, _ctype(fp), open(fp, "rb").read(),
+                                  {"X-Content-Type-Options": "nosniff"})
             return self._send(404, "text/plain", b"no")
         # ---- API: sessions ----
         if p == "/api/sessions":
@@ -493,6 +716,32 @@ class Handler(BaseHTTPRequestHandler):
                               "kind": "dir" if isdir else "file"})
                 edges.append({"s": root, "t": e})
             return self._sendj({"nodes": nodes, "edges": edges, "path": path})
+        # ---- graph file manager (aion.fsgraph, physis-compatible payload) ----
+        if p == "/api/fs/roots":
+            return self._sendj(fs_roots())
+        if p == "/api/fs/graph":
+            return self._fs(lambda fg: fg.graph(
+                q.get("dir", [str(fs_default_dir())])[0],
+                depth=_int(q, "depth", 3, 1, 8),
+                max_files=_int(q, "limit", fs_limit(), 1, 2000),
+                k=_int(q, "k", 0, 0, 24) or None,
+                include_hidden=(q.get("hidden", ["0"])[0] == "1"),
+            ))
+        if p == "/api/fs/file":
+            return self._fs(lambda fg: fg.preview(q.get("path", [""])[0]))
+        # ---- agent / process graph ----
+        if p == "/api/agents":
+            return self._sendj(proc_snapshot(
+                include_finished=(q.get("finished", ["1"])[0] == "1")))
+        # ---- unified search (the command palette) ----
+        if p == "/api/search/all":
+            return self._sendj(search_everything(
+                (q.get("q", [""])[0]), (q.get("dir", [""])[0] or None)))
+        if p == "/api/fs/listing":
+            # Accessible twin of the graph: a flat, sortable adjacency list.
+            # Network graphs grade D for accessibility, so the list is a peer
+            # view, not a consolation prize (see static/hud.js `renderList`).
+            return self._fs(lambda fg: fs_listing(fg, q))
         if p in ("/api/notes", "/api/vault"):
             return self._sendj(vault_graph())
         if p == "/api/notes/content":
@@ -540,6 +789,9 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/search":
             qq = body.get("query", "")
             return self._sendj({"results": web_search(qq), "query": qq})
+        if p == "/api/fs/move":
+            return self._fs(lambda fg: fg.move(body.get("from", ""),
+                                               body.get("to", "")))
         if p == "/api/notes/save":
             name = (body.get("name") or "note").replace("/", "")
             open(os.path.join(NOTES_DIR, name + ".md"), "w").write(body.get("text", ""))
@@ -606,10 +858,41 @@ async def term_ws(ws):
         HOSTS.pop(id(ws), None)
 
 async def events_ws(ws):
+    """Live channel: system stats on a tick, fleet changes as they happen.
+
+    The fleet half is a watch, not a poll of the expensive thing: it stats a
+    few checkpoint files at 4Hz and only parses/diffs when the signature
+    moves. An idle fleet therefore costs a handful of stat() calls per second
+    and sends nothing, so a HUD left open all day is free.
+
+    Every send is wrapped: one slow or dead client must not take down the
+    loop for the others, and a fleet read error must not kill the stats feed.
+    """
+    pg = _procgraph_mod()
+    prev_snap = None
+    prev_fp = None
+    stats_at = 0.0
     try:
         while True:
-            await ws.send(json.dumps({"type": "stats", **system_stats()}))
-            await asyncio.sleep(1.0)
+            now = time.time()
+            if now - stats_at >= 1.0:
+                stats_at = now
+                await ws.send(json.dumps({"type": "stats", **system_stats()}))
+            try:
+                fp = pg.fingerprint()
+                if fp != prev_fp:
+                    prev_fp = fp
+                    snap = pg.snapshot()
+                    payload = pg.diff(prev_snap, snap)
+                    prev_snap = snap
+                    # A first-connect diff is "full"; suppress the empty
+                    # updates that follow an unrelated file touch.
+                    if payload["full"] or payload["changed"] or payload["removed"]:
+                        await ws.send(json.dumps({"type": "agents", **payload}))
+            except Exception as e:  # noqa: BLE001
+                await ws.send(json.dumps({"type": "agents_error",
+                                          "error": str(e)[:200]}))
+            await asyncio.sleep(0.25)
     except Exception:
         pass
 
@@ -656,7 +939,7 @@ async def hub(ws):
 
 async def run_ws_async():
     import websockets
-    async with websockets.serve(hub, "127.0.0.1", 8743):
+    async with websockets.serve(hub, "127.0.0.1", WS_PORT):
         await asyncio.Future()
 
 def run_ws():
@@ -730,18 +1013,21 @@ if __name__ == "__main__":
                 f"web: refusing to bind {host} without a token ({e}).\n"
                 "     Bind loopback, or fix ~/.aion/token so auth can load.\n")
             sys.exit(1)
+    port = _clampenv("AION_WEB_PORT", 8742, 1024, 65535)
     threading.Thread(target=run_ws, daemon=True).start()
-    httpd = ThreadingHTTPServer((host, 8742), Handler)
+    httpd = ThreadingHTTPServer((host, port), Handler)
     if not _loopback(host):
         lan = _lan_ip()
-        print(f"AION web HUD (LAN): http://{lan}:8742/?token={TOKEN}")
+        print(f"AION web HUD (LAN): http://{lan}:{port}/?token={TOKEN}")
         print("  token-gated (shared fleet secret, ~/.aion/token). Open the URL")
         print("  above once per device — it sets a SameSite=Strict cookie.")
         print("  Still plain HTTP: the token crosses the WiFi in clear. Put it")
         print("  behind tailscale serve / a TLS proxy on an untrusted network.")
-        print("  PTY (:8743) stays bound to loopback and is NOT reachable here.")
+        print(f"  PTY (:{WS_PORT}) stays bound to loopback and is NOT reachable here.")
     else:
-        print("AION web HUD: http://127.0.0.1:8742  (WS :8743)")
+        print(f"AION web HUD: http://127.0.0.1:{port}  (WS :{WS_PORT})")
         print("  (localhost only — set AION_WEB_HOST=0.0.0.0 to reach from a phone)")
+    print(f"  Graph FM root: {os.environ.get('AION_FS_ROOT', '~')}"
+          f"  ·  opens on: {fs_default_dir()}")
     print(f"  Sessions: {SESSIONS_DIR}")
     httpd.serve_forever()

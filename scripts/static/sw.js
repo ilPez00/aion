@@ -3,8 +3,9 @@
  * Cache-first for the static shell (so the HUD opens with no network), but
  * NEVER touch /api/ or the SSE stream — those must always hit the live daemon.
  */
-const CACHE = 'aion-v2';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'aion-v3';
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg',
+               '/static/hud.css', '/static/organic.js', '/static/hud.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(

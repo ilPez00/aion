@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 # aion.sh — one-command launcher for the aion Iron Man cockpit.
 #
-# Usage:
-#   ./aion.sh            # run the cockpit (boots venv, installs deps if missing)
-#   ./aion.sh install    # create/refresh .venv + install deps (editable)
-#   ./aion.sh web        # run the web HUD server instead of the TUI
-#   ./aion.sh test       # run the test suite
-#   ./aion.sh shell      # drop into the venv shell
+# Run `./aion.sh help` for the full command list.
 #
 # Behaviour:
 #   - prefers uv if available (fast), else falls back to python -m venv.
@@ -55,6 +50,97 @@ case "${1:-run}" in
     shift || true
     exec "$PY" scripts/aion_web.py "$@"
     ;;
+  graph)
+    # Open the graph file manager straight at a directory (default: cwd).
+    # Saves the "which module, which path, which port" dance every time you
+    # actually want the thing: `./aion.sh graph ~/dev/foo` and it is on screen.
+    ensure_venv
+    shift || true
+    TARGET="${1:-$PWD}"
+    if [ ! -d "$TARGET" ]; then
+      echo "[aion] not a directory: $TARGET" >&2; exit 1
+    fi
+    TARGET="$(cd "$TARGET" && pwd)"
+    export AION_FS_DIR="$TARGET"
+    # Widen the sandbox only as far as the target actually needs.
+    if [ -z "${AION_FS_ROOT:-}" ]; then
+      case "$TARGET" in
+        "$HOME"/*|"$HOME") : ;;                 # inside $HOME: default root is fine
+        *) export AION_FS_ROOT="$TARGET" ;;     # outside: pin the root to it
+      esac
+    fi
+    URL="http://127.0.0.1:${AION_WEB_PORT:-8742}/"
+    echo "[aion] graph file manager → $TARGET"
+    ( sleep 2; command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL" >/dev/null 2>&1 || true ) &
+    exec "$PY" scripts/aion_web.py
+    ;;
+  doctor)
+    # Answers "why isn't X working" without reading three docs first.
+    ensure_venv
+    echo "[aion] environment"
+    "$PY" - <<'PYEOF'
+import importlib, os, shutil, socket, sys
+sys.path.insert(0, "src")
+
+def line(ok, name, note=""):
+    print(f"  [{'ok' if ok else '--'}] {name:<22} {note}")
+
+print(f"  python {sys.version.split()[0]}  ({sys.executable})")
+for mod, why in [("textual", "TUI cockpit"), ("psutil", "system HUD"),
+                 ("websockets", "web HUD terminal"), ("pyte", "PTY screen"),
+                 ("requests", "web module"), ("faster_whisper", "offline voice"),
+                 ("evdev", "joystick"), ("bleak", "Colmi ring"),
+                 ("serial", "CyclUno deck")]:
+    try:
+        importlib.import_module(mod); line(True, mod, why)
+    except Exception:
+        line(False, mod, f"{why} — pip install -e '.[web,voice]'")
+
+print("[aion] services")
+def probe(host, port, name):
+    s = socket.socket(); s.settimeout(0.4)
+    ok = s.connect_ex((host, port)) == 0
+    s.close(); line(ok, name, f"{host}:{port}")
+    return ok
+probe("127.0.0.1", 19876, "physis brain")
+probe("127.0.0.1", 19280, "FCM llm proxy")
+probe("127.0.0.1", int(os.environ.get("AION_WEB_PORT", 8742)), "web HUD")
+
+print("[aion] paths")
+from aion import fsgraph
+line(True, "fs scan root", str(fsgraph.scan_root()))
+line(os.path.exists(os.path.expanduser("~/.aion/token")), "fleet token",
+     "~/.aion/token — needed for LAN access")
+line(bool(shutil.which("latexmk")), "latexmk", "LaTeX module")
+line(bool(os.environ.get("GROQ_API_KEY")), "GROQ_API_KEY", "llm fallback")
+PYEOF
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+aion — splitscreen HUD + application desktop
+
+  ./aion.sh                 launch the TUI cockpit
+  ./aion.sh daily           start the physis brain, then the cockpit
+  ./aion.sh web             serve the web HUD    → http://127.0.0.1:8742
+  ./aion.sh graph [DIR]     web HUD opened on the graph file manager for DIR
+  ./aion.sh doctor          check deps, services, paths — run this first when stuck
+  ./aion.sh desktop         install a .desktop launcher
+  ./aion.sh install         create/refresh .venv + deps
+  ./aion.sh test            run the test suite
+  ./aion.sh shell [ARGS]    run the venv python
+
+Web HUD modules (keys 1-5):  Files · Vault · System · Agent · LaTeX
+  g / l    toggle organic graph <-> list view      / focus filter
+  r        rescan               0  fit graph       ? inspector
+
+Environment
+  AION_WEB_HOST=0.0.0.0     expose on the LAN (token-gated, see README)
+  AION_WEB_PORT=8742        HTTP port
+  AION_FS_ROOT=~            sandbox for the graph file manager
+  AION_FS_DIR=.             directory the graph file manager opens on
+  AION_FS_MAX_FILES=600     scan cap
+EOF
+    ;;
   shell)
     ensure_venv
     exec "$PY" "${@:2}"
@@ -99,7 +185,7 @@ EOF
     echo "        ln -s $DEST \$HOME/.config/autostart/aion.desktop"
     ;;
   *)
-    echo "usage: ./aion.sh [run|daily|desktop|install|web|test|shell]" >&2
+    echo "aion: unknown command '${1}'. Try: ./aion.sh help" >&2
     exit 1
     ;;
 esac

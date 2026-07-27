@@ -1,0 +1,342 @@
+/* hud.css — aion web HUD.
+ *
+ * Tokens mirror src/aion/ui/theme.py verbatim (that palette is WCAG-AA
+ * audited by tests/test_theme.py), so the phone HUD and the terminal cockpit
+ * read as one instrument. Do not introduce a hex literal below this block —
+ * add a token instead, and keep the two files in sync.
+ *
+ * Density is deliberately high (8/10): this is an operations cockpit, not a
+ * marketing page. Spacing scale runs 8 -> 32, not 24 -> 96.
+ */
+:root {
+  --bg: #0a0f14;
+  --panel: #131d26;
+  --sel: #1d3a4d;
+  --fg: #dbe6f0;
+  --dim: #9aabbb;
+  --faint: #6b7d8d;   /* decoration only, never text */
+  --accent: #5ad1ff;
+  --ok: #7CFFB2;
+  --warn: #FFD479;
+  --err: #FF8A8A;
+  --border: #25384a;
+
+  /* categorical ramp for graph hubs. Hue never carries meaning alone —
+     every node also has a shape (see organic.js KIND_SHAPE). */
+  --c1: #5ad1ff; --c2: #7CFFB2; --c3: #FFD479; --c4: #c9a6ff;
+  --c5: #FF8A8A; --c6: #7fe0ff; --c7: #ffb3d9; --c8: #a8e6a0;
+
+  --s1: 8px; --s2: 12px; --s3: 16px; --s4: 24px; --s5: 32px;
+  --radius: 8px;
+  --rail: 168px;
+  --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  --dur: 180ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  height: 100%; background: var(--bg); color: var(--fg);
+  font-family: var(--font); font-size: 14px; line-height: 1.5;
+  overscroll-behavior: none;
+}
+body { overflow: hidden; }
+
+/* Every interactive element keeps a visible focus ring. The cockpit is
+   keyboard-first; removing these would make half of it unreachable. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+:focus:not(:focus-visible) { outline: none; }
+
+button, input, select, textarea { font-family: inherit; font-size: inherit; color: var(--fg); }
+button {
+  cursor: pointer; border: 1px solid var(--border); background: var(--panel);
+  padding: var(--s1) var(--s2); border-radius: var(--radius);
+  min-height: 36px; transition: background var(--dur) var(--ease),
+                                 border-color var(--dur) var(--ease);
+}
+button:hover { background: var(--sel); border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+button.primary:hover { filter: brightness(1.12); background: var(--accent); }
+input, select, textarea {
+  background: var(--bg); border: 1px solid var(--border);
+  padding: var(--s1) var(--s2); border-radius: var(--radius); min-height: 36px;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); outline-offset: 0; }
+::placeholder { color: var(--faint); }
+
+.muted { color: var(--dim); }
+.err { color: var(--err); }
+.ok { color: var(--ok); }
+.mono-sm { font-size: 12px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ── shell ────────────────────────────────────────────────────────────── */
+#app { display: grid; grid-template-columns: var(--rail) 1fr; height: 100dvh; }
+
+#rail {
+  background: var(--panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#brand {
+  display: flex; align-items: center; gap: var(--s1);
+  padding: var(--s2) var(--s2) var(--s1);
+  border-bottom: 1px solid var(--border); color: var(--accent);
+  font-weight: 700; letter-spacing: 0.14em; font-size: 13px;
+}
+#nav { display: flex; flex-direction: column; gap: 2px; padding: var(--s1); flex: 1; overflow-y: auto; }
+.nav-item {
+  display: flex; align-items: center; gap: var(--s2);
+  width: 100%; min-height: 44px;              /* touch target floor */
+  padding: var(--s1) var(--s2); border: 1px solid transparent;
+  background: none; color: var(--dim); text-align: left; border-radius: var(--radius);
+}
+.nav-item:hover { background: var(--sel); color: var(--fg); border-color: transparent; }
+.nav-item[aria-current="page"] {
+  background: var(--sel); color: var(--accent); border-color: var(--accent);
+  font-weight: 600;
+}
+.nav-item svg { width: 18px; height: 18px; flex: none; }
+.nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#vitals { border-top: 1px solid var(--border); padding: var(--s2); display: grid; gap: 6px; }
+.vital { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: var(--s1); font-size: 11px; }
+.vital .k { color: var(--dim); }
+.vital .v { color: var(--fg); font-variant-numeric: tabular-nums; }
+.meter { height: 4px; border-radius: 2px; background: var(--bg); overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--accent); transition: width var(--dur) linear; }
+
+/* ── workspace ────────────────────────────────────────────────────────── */
+#work { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#topbar {
+  display: flex; gap: var(--s1); align-items: center; flex-wrap: wrap;
+  padding: var(--s1) var(--s2); border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#topbar h2 { font-size: 13px; letter-spacing: 0.1em; color: var(--accent); margin-right: var(--s1); }
+#topbar button { display: inline-flex; align-items: center; gap: 6px; }
+#topbar button svg { width: 15px; height: 15px; }
+.btn-label { white-space: nowrap; }
+#topbar .grow { flex: 1; min-width: 60px; }
+#status { font-size: 12px; color: var(--dim); white-space: nowrap; }
+/* Liveness has to be visible: a stale graph and a live one look identical
+   otherwise, and "is this actually updating" is the first question. */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.live-dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: 0.45; } }
+
+kbd {
+  font: inherit; font-size: 10px; border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 4px; color: var(--dim); background: var(--bg);
+}
+
+/* ── breadcrumbs ──────────────────────────────────────────────────────── */
+#crumbs {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 6px var(--s2); border-bottom: 1px solid var(--border);
+  background: var(--bg); font-size: 12px;
+}
+.crumb {
+  background: none; border: 1px solid transparent; color: var(--dim);
+  padding: 3px 7px; min-height: 28px; border-radius: 6px;
+}
+.crumb:hover { background: var(--sel); color: var(--fg); border-color: transparent; }
+.crumb[aria-current="location"] { color: var(--accent); font-weight: 600; }
+.crumb-sep { color: var(--faint); }
+
+/* ── command palette ──────────────────────────────────────────────────── */
+#palette {
+  position: fixed; inset: 0; z-index: 50; background: rgba(4, 8, 12, 0.72);
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: max(8vh, var(--s4)) var(--s2) var(--s2);
+}
+#pal-box {
+  width: min(720px, 100%); max-height: 70dvh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--accent);
+  border-radius: var(--radius); overflow: hidden;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+#pal-head { display: flex; align-items: center; gap: var(--s1); padding: var(--s2); border-bottom: 1px solid var(--border); }
+#pal-input { flex: 1; min-width: 0; background: var(--bg); font-size: 15px; min-height: 42px; }
+#pal-list { overflow-y: auto; flex: 1; min-height: 0; }
+.pal-item {
+  display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: var(--s2); align-items: baseline; padding: 9px var(--s2);
+  cursor: pointer; border-left: 2px solid transparent;
+}
+.pal-item:hover { background: var(--sel); }
+.pal-item.active { background: var(--sel); border-left-color: var(--accent); }
+.pal-tag {
+  font-size: 9px; letter-spacing: 0.08em; color: var(--bg); background: var(--dim);
+  border-radius: 3px; padding: 2px 5px; text-align: center; align-self: center;
+}
+.pal-item.active .pal-tag { background: var(--accent); }
+.pal-label { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-sub { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.pal-empty { padding: var(--s3); text-align: center; }
+#pal-foot { padding: 6px var(--s2); border-top: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+
+@media (max-width: 640px) {
+  #palette { padding: 0; }
+  #pal-box { max-height: 100dvh; height: 100dvh; border-radius: 0; border-width: 0 0 1px; }
+  .pal-item { grid-template-columns: 54px minmax(0, 1fr); }
+  .pal-sub { grid-column: 2; }
+}
+
+#stage { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+#stage.no-inspector { grid-template-columns: 1fr; }
+#canvas-wrap { position: relative; min-width: 0; min-height: 0; background: var(--bg); }
+#canvas-wrap canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+#canvas-wrap canvas:active { cursor: grabbing; }
+#canvas-wrap.list-mode canvas { display: none; }
+
+/* Legend — hue alone never encodes a hub; the swatch pairs with its name. */
+#legend {
+  position: absolute; left: var(--s2); bottom: var(--s2); max-width: 60%;
+  display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none;
+}
+.legend-chip {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px;
+  color: var(--dim);
+}
+.legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+
+#focus-badge {
+  position: absolute; left: var(--s2); top: var(--s2); z-index: 5;
+  display: flex; gap: var(--s1); align-items: center; font-size: 11px;
+  background: var(--sel); border: 1px solid var(--accent); color: var(--fg);
+  border-radius: 999px; padding: 4px 6px 4px 12px;
+}
+.chip-x { min-height: 24px; padding: 2px 8px; font-size: 10px; border-radius: 999px; }
+
+#hint {
+  position: absolute; right: var(--s2); bottom: var(--s2);
+  font-size: 11px; color: var(--faint); pointer-events: none;
+}
+
+/* list twin — the accessible peer of every graph, not a fallback */
+#list-view { display: none; overflow: auto; padding: var(--s2); height: 100%; }
+#canvas-wrap.list-mode #list-view { display: block; }
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th, table.data td {
+  text-align: left; padding: 6px var(--s1); border-bottom: 1px solid var(--border);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px;
+}
+table.data th { color: var(--dim); font-weight: 600; position: sticky; top: 0; background: var(--bg); }
+table.data tbody tr { cursor: pointer; }
+table.data tbody tr:hover { background: var(--sel); }
+table.data tbody tr[aria-selected="true"] { background: var(--sel); outline: 1px solid var(--accent); }
+
+/* ── inspector ────────────────────────────────────────────────────────── */
+#inspector {
+  background: var(--panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+}
+.pane { padding: var(--s2); border-bottom: 1px solid var(--border); }
+.pane h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--dim); margin-bottom: var(--s1); font-weight: 600;
+}
+#sel-body { font-size: 12px; word-break: break-word; }
+#sel-body dl { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--s1); }
+#sel-body dt { color: var(--dim); }
+#sel-body dd { color: var(--fg); overflow-wrap: anywhere; }
+#preview-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#preview {
+  flex: 1; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-size: 11px; line-height: 1.45; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s1);
+  color: var(--dim);
+}
+.row { display: flex; gap: var(--s1); align-items: center; }
+.row > input { flex: 1; min-width: 0; }
+
+/* ── chat + latex panels (non-graph modules) ──────────────────────────── */
+#panel-view { display: none; flex-direction: column; min-height: 0; height: 100%; }
+#canvas-wrap.panel-mode #panel-view { display: flex; }
+#canvas-wrap.panel-mode canvas, #canvas-wrap.panel-mode #legend,
+#canvas-wrap.panel-mode #focus-badge {
+  position: absolute; left: var(--s2); top: var(--s2); z-index: 5;
+  display: flex; gap: var(--s1); align-items: center; font-size: 11px;
+  background: var(--sel); border: 1px solid var(--accent); color: var(--fg);
+  border-radius: 999px; padding: 4px 6px 4px 12px;
+}
+.chip-x { min-height: 24px; padding: 2px 8px; font-size: 10px; border-radius: 999px; }
+
+#hint { display: none; }
+#messages { flex: 1; overflow-y: auto; padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+.msg { max-width: min(85%, 62ch); padding: var(--s1) var(--s2); border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
+.msg.user { align-self: flex-end; background: var(--accent); color: var(--bg); }
+.msg.assistant { align-self: flex-start; background: var(--sel); border: 1px solid var(--border); }
+.msg.system { align-self: center; background: var(--panel); color: var(--dim); font-size: 12px; border: 1px solid var(--border); }
+.streaming-cursor { animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+#composer { display: flex; gap: var(--s1); padding: var(--s2); border-top: 1px solid var(--border); background: var(--panel); }
+#composer input { flex: 1; min-width: 0; }
+#voice-btn { min-width: 44px; }
+#voice-btn[aria-pressed="true"] { background: var(--err); color: var(--bg); border-color: var(--err); }
+#latex-area { width: 100%; height: 160px; resize: vertical; font-size: 12px; }
+
+/* ── responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  #stage { grid-template-columns: 1fr 280px; }
+}
+@media (max-width: 1023px) {
+  :root { --rail: 56px; }
+  .nav-label, #vitals .k { display: none; }
+  .nav-item { justify-content: center; padding: var(--s1); }
+  #brand span { display: none; }
+  #stage { grid-template-columns: 1fr; }
+  /* Inspector becomes a bottom sheet so the graph keeps the whole viewport. */
+  #inspector {
+    position: fixed; inset: auto 0 0 0; z-index: 20; max-height: 62dvh;
+    border-left: none; border-top: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    transform: translateY(100%); transition: transform var(--dur) var(--ease);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #inspector.open { transform: translateY(0); }
+  #inspector-close { display: inline-flex !important; }
+}
+@media (max-width: 760px) {
+  /* Legend and hint would collide; the hint is the expendable one (its
+     content is also the pointer affordance, which touch users don't need). */
+  #focus-badge {
+  position: absolute; left: var(--s2); top: var(--s2); z-index: 5;
+  display: flex; gap: var(--s1); align-items: center; font-size: 11px;
+  background: var(--sel); border: 1px solid var(--accent); color: var(--fg);
+  border-radius: 999px; padding: 4px 6px 4px 12px;
+}
+.chip-x { min-height: 24px; padding: 2px 8px; font-size: 10px; border-radius: 999px; }
+
+#hint { display: none; }
+  #legend { max-width: calc(100% - 24px); max-height: 34%; overflow: auto; }
+  .btn-label { display: none; }
+}
+@media (max-width: 640px) {
+  /* Bottom nav, capped at 5 primary destinations (the rest live in More). */
+  #app { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  #rail {
+    grid-row: 2; flex-direction: row; border-right: none;
+    border-top: 1px solid var(--border); align-items: stretch;
+  }
+  #brand, #vitals { display: none; }
+  #nav { flex-direction: row; justify-content: space-around; padding: 4px; overflow-x: auto; }
+  .nav-item { flex-direction: column; gap: 2px; min-width: 56px; font-size: 10px; }
+  .nav-item .nav-label { display: block; font-size: 10px; }
+  #work { grid-row: 1; min-height: 0; }
+  #topbar { padding: 6px var(--s1); }
+  #topbar h2 { width: 100%; }
+}
+
+/* Motion is meaning here (a settling layout shows structure forming), but it
+   is never mandatory: reduced-motion snaps the graph to its solved state. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

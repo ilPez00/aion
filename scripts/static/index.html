@@ -12,519 +12,150 @@
 <meta name="apple-mobile-web-app-title" content="AION">
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<style>
-:root {
-  /* palette mirrors the TUI cockpit (src/aion/ui/theme.py), WCAG-AA audited,
-     so the phone HUD and the terminal cockpit read as one product */
-  --bg: #0a0f14;
-  --bg2: #131d26;
-  --bg3: #1d3a4d;
-  --fg: #dbe6f0;
-  --fg2: #9aabbb;
-  --accent: #5ad1ff;
-  --accent2: #7fe0ff;
-  --green: #7CFFB2;
-  --red: #FF8A8A;
-  --yellow: #FFD479;
-  --border: #25384a;
-  --radius: 8px;
-  --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { height: 100%; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; }
-input, textarea, select, button { font-family: var(--font); }
-button { cursor: pointer; border: none; background: var(--accent); color: var(--bg); padding: 6px 14px; border-radius: var(--radius); font-weight: 600; }
-button:hover { filter: brightness(1.15); }
-button:disabled { opacity: 0.4; cursor: default; }
-
-/* layout */
-#app { display: flex; height: 100vh; }
-#sidebar { width: 260px; min-width: 200px; background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-#sidebar-header { padding: 12px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
-#sidebar-header h1 { font-size: 15px; flex: 1; }
-#session-list { flex: 1; overflow-y: auto; padding: 4px; }
-.session-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
-.session-item:hover { background: var(--bg3); color: var(--fg); }
-.session-item.active { background: var(--accent); color: var(--bg); }
-#main { flex: 1; display: flex; flex-direction: column; position: relative; }
-#messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.msg { max-width: 85%; padding: 10px 14px; border-radius: var(--radius); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-.msg.user { align-self: flex-end; background: var(--accent); color: var(--bg); }
-.msg.assistant { align-self: flex-start; background: var(--bg3); border: 1px solid var(--border); }
-.msg.system { align-self: center; background: var(--bg2); color: var(--fg2); font-size: 12px; border: 1px solid var(--border); }
-.msg .streaming-cursor { animation: blink 0.8s infinite; }
-@keyframes blink { 50% { opacity: 0; } }
-#input-bar { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg2); }
-#input-bar input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 8px 12px; border-radius: var(--radius); outline: none; }
-#input-bar input:focus { border-color: var(--accent); }
-#voice-btn { background: var(--bg3); color: var(--fg2); padding: 6px 10px; border-radius: 50%; font-size: 18px; }
-#voice-btn.listening { background: var(--red); color: white; }
-
-/* panels */
-#right-panel { width: 0; overflow: hidden; transition: width 0.2s; background: var(--bg2); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
-#right-panel.open { width: 360px; min-width: 300px; }
-#right-panel-header { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
-#right-panel-header select { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
-#right-panel-content { flex: 1; overflow-y: auto; padding: 12px; }
-
-/* system stats */
-.stat-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
-.stat-row .label { color: var(--fg2); }
-.stat-row .value { color: var(--fg); font-weight: 600; }
-.bar { height: 4px; border-radius: 2px; margin-top: 2px; background: var(--bg3); overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
-
-/* files */
-.file-entry { padding: 4px 8px; font-size: 13px; cursor: pointer; border-radius: 4px; display: flex; gap: 6px; }
-.file-entry:hover { background: var(--bg3); }
-.file-entry.dir { color: var(--accent); }
-.file-entry.file { color: var(--fg2); }
-#file-preview { margin-top: 8px; padding: 8px; background: var(--bg3); border-radius: var(--radius); font-size: 12px; white-space: pre-wrap; max-height: 200px; overflow: auto; }
-
-/* notes graph */
-#graph-svg { width: 100%; height: 300px; }
-#graph-svg .node circle { cursor: pointer; }
-#graph-svg .node text { fill: var(--fg); font-size: 10px; pointer-events: none; }
-#graph-svg line { stroke: var(--border); stroke-width: 1; }
-
-/* latex */
-#latex-area { width: 100%; height: 120px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; font-family: var(--font); font-size: 12px; resize: vertical; }
-</style>
+<link rel="stylesheet" href="/static/hud.css">
 </head>
 <body>
 <div id="app">
-  <!-- Sidebar -->
-  <div id="sidebar">
-    <div id="sidebar-header">
-      <h1>Aion</h1>
-      <button onclick="newSession()" title="New chat">+</button>
+
+  <!-- ── rail: modules + always-on vitals ─────────────────────────────── -->
+  <nav id="rail" aria-label="Modules">
+    <div id="brand"><span>AION</span></div>
+    <div id="nav" role="tablist"></div>
+    <div id="vitals" aria-label="System vitals">
+      <div class="vital"><span class="k">CPU</span><span class="meter"><i id="m-cpu"></i></span><span class="v" id="v-cpu">–</span></div>
+      <div class="vital"><span class="k">RAM</span><span class="meter"><i id="m-mem"></i></span><span class="v" id="v-mem">–</span></div>
+      <div class="vital"><span class="k">DSK</span><span class="meter"><i id="m-dsk"></i></span><span class="v" id="v-dsk">–</span></div>
+      <div class="vital"><span class="k">GPU</span><span class="meter"><i id="m-gpu"></i></span><span class="v" id="v-gpu">–</span></div>
     </div>
-    <div id="session-list"></div>
-  </div>
-  <!-- Main -->
-  <div id="main">
-    <div id="messages"></div>
-    <div id="input-bar">
-      <input id="chat-input" type="text" placeholder="Message Aion..." autofocus>
-      <button id="voice-btn" onclick="toggleVoice()" title="Voice input">🎤</button>
-      <button onclick="sendMessage()">Send</button>
+  </nav>
+
+  <!-- ── workspace ────────────────────────────────────────────────────── -->
+  <div id="work">
+    <div id="topbar">
+      <h2 id="module-title">FILES</h2>
+
+      <div id="graph-tools" class="row">
+        <button id="pal-open" type="button" title="Search everything (Ctrl-K)">Search <kbd>^K</kbd></button>
+        <button id="view-toggle" type="button" aria-pressed="false" title="Show list view"></button>
+        <button id="fit" type="button" title="Fit graph to screen (0)">Fit</button>
+        <button id="refresh" type="button" title="Rescan (r)">Refresh</button>
+        <label class="sr-only" for="search">Filter nodes</label>
+        <input id="search" type="search" placeholder="filter… (/)" style="max-width:180px">
+      </div>
+
+      <div id="fs-tools" class="row" hidden>
+        <label class="sr-only" for="roots">Bookmarked directory</label>
+        <select id="roots" title="Jump to a bookmarked directory"></select>
+        <label class="sr-only" for="dir">Directory to scan</label>
+        <input id="dir" type="text" placeholder="/absolute/path" style="min-width:200px">
+        <label class="sr-only" for="depth">Scan depth</label>
+        <select id="depth" title="Scan depth">
+          <option value="1">depth 1</option>
+          <option value="2">depth 2</option>
+          <option value="3" selected>depth 3</option>
+          <option value="5">depth 5</option>
+        </select>
+        <label class="row mono-sm muted" style="gap:6px">
+          <input id="hidden" type="checkbox" style="min-height:auto;width:16px;height:16px"> hidden
+        </label>
+      </div>
+
+      <span class="grow"></span>
+      <span id="live-dot" class="live-dot" title="offline — polling" aria-hidden="true"></span>
+      <span id="status" class="muted" role="status" aria-live="polite">booting…</span>
     </div>
-  </div>
-  <!-- Right panel -->
-  <div id="right-panel">
-    <div id="right-panel-header">
-      <select id="panel-mode" onchange="switchPanel()">
-        <option value="stats">Stats</option>
-        <option value="files">Files</option>
-        <option value="notes">Notes</option>
-        <option value="latex">LaTeX</option>
-      </select>
-      <button onclick="togglePanel()">✕</button>
+
+    <nav id="crumbs" aria-label="Directory path" hidden></nav>
+
+    <div id="stage">
+      <div id="canvas-wrap">
+        <!-- The graph. role=application + tabindex makes arrow-key traversal
+             reachable; #graph-desc is the live text description, and the
+             list view (below) is the real accessible peer. -->
+        <canvas id="graph-canvas" tabindex="0" role="application"
+                aria-label="Organic relationship graph"
+                aria-describedby="graph-desc"></canvas>
+        <p id="graph-desc" class="sr-only" role="status" aria-live="polite"></p>
+        <div id="focus-badge" role="status" hidden></div>
+        <div id="legend" aria-hidden="true"></div>
+        <div id="hint">drag · scroll zoom · click a hub to isolate · 0 fit</div>
+
+        <!-- accessible twin of the graph -->
+        <div id="list-view"></div>
+
+        <!-- non-graph modules mount here -->
+        <div id="panel-view">
+          <div id="chat-root" style="display:flex;flex-direction:column;min-height:0;height:100%">
+            <div id="messages" role="log" aria-label="Agent conversation" aria-live="polite"></div>
+            <div id="composer">
+              <label class="sr-only" for="chat-input">Message the agent</label>
+              <input id="chat-input" type="text" placeholder="Message Aion…" autocomplete="off">
+              <button id="voice-btn" type="button" aria-pressed="false" aria-label="Voice input">MIC</button>
+              <button id="send" type="button" class="primary">Send</button>
+            </div>
+          </div>
+          <div id="latex-root" hidden style="padding:16px;overflow:auto;width:100%">
+            <label class="sr-only" for="latex-area">LaTeX source</label>
+            <textarea id="latex-area" placeholder="\documentclass{article}
+\begin{document}
+Hello
+\end{document}"></textarea>
+            <div class="row" style="margin-top:12px">
+              <button id="latex-compile" type="button" class="primary">Compile</button>
+              <span id="latex-log" class="muted mono-sm"></span>
+            </div>
+            <iframe id="latex-preview" title="Compiled PDF" hidden
+                    style="width:100%;height:60vh;margin-top:12px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── inspector ──────────────────────────────────────────────── -->
+      <aside id="inspector" aria-label="Selection inspector">
+        <div class="pane row">
+          <h3 style="flex:1;margin:0">Inspector</h3>
+          <button id="inspector-close" type="button" style="display:none" aria-label="Close inspector">✕</button>
+        </div>
+        <div class="pane">
+          <h3>Selection</h3>
+          <div id="sel-body"><p class="muted">Select a node.</p></div>
+          <div id="move-box" hidden style="margin-top:12px">
+            <label class="mono-sm muted" for="dest">Rename / move to</label>
+            <div class="row" style="margin-top:6px">
+              <input id="dest" type="text" spellcheck="false">
+              <button id="move" type="button">Move</button>
+            </div>
+          </div>
+        </div>
+        <div class="pane" id="preview-pane">
+          <h3>Preview</h3>
+          <pre id="preview">—</pre>
+        </div>
+      </aside>
     </div>
-    <div id="right-panel-content"></div>
   </div>
 </div>
-<script>
-// ---- state ----
-let sessionId = null;
-let streaming = false;
-let aborter = null;
-let panelOpen = true;
 
-// WebSocket connections
-let evtWs = null;
-let termWs = null;
+<!-- Command palette: one search across modules, harnesses, tasks, task logs,
+     notes, filenames and file contents. Ctrl-K, same as the TUI cockpit. -->
+<div id="palette" hidden>
+  <div id="pal-box" role="combobox" aria-expanded="true" aria-haspopup="listbox"
+       aria-owns="pal-list">
+    <div id="pal-head">
+      <label class="sr-only" for="pal-input">Search everything</label>
+      <input id="pal-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="search files, tasks, notes, harnesses…"
+             aria-controls="pal-list" aria-autocomplete="list">
+      <span id="pal-count" class="muted mono-sm"></span>
+    </div>
+    <div id="pal-list" role="listbox" aria-label="Search results"></div>
+    <div id="pal-foot" class="muted mono-sm">
+      <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>⏎</kbd> jump · <kbd>esc</kbd> close
+    </div>
+  </div>
+</div>
 
-// ---- init ----
-async function init() {
-  const res = await fetch('/api/sessions');
-  const data = await res.json();
-  renderSessions(data.sessions);
-  if (data.sessions.length) {
-    await loadSession(data.sessions[0].id);
-  } else {
-    await newSession();
-  }
-  connectEventWs();
-  startSystemPoll();
-}
-init();
-
-// ---- sessions ----
-function renderSessions(sessions) {
-  const el = document.getElementById('session-list');
-  el.replaceChildren(...sessions.map(s =>
-    entry('session-item', s.title, () => loadSession(s.id),
-          {title: s.title, active: s.id === sessionId})
-  ));
-}
-
-async function loadSession(sid) {
-  sessionId = sid;
-  const res = await fetch(`/api/session?id=${sid}`);
-  const sess = await res.json();
-  renderMessages(sess.messages || []);
-  document.getElementById('session-list').querySelectorAll('.session-item').forEach(el => {
-    el.classList.toggle('active', el.textContent.trim() === (sess.title || 'Chat'));
-  });
-}
-
-async function newSession() {
-  const res = await fetch('/api/session/new');
-  const data = await res.json();
-  sessionId = data.id;
-  renderMessages([]);
-  // refresh sidebar
-  const r2 = await fetch('/api/sessions');
-  const d2 = await r2.json();
-  renderSessions(d2.sessions);
-}
-
-// ---- messages ----
-function renderMessages(msgs) {
-  const el = document.getElementById('messages');
-  el.replaceChildren(...msgs.map(m => {
-    const div = document.createElement('div');
-    div.className = 'msg ' + m.role;   // className assignment, not HTML parsing
-    div.textContent = m.content;       // never parsed as markup
-    return div;
-  }));
-  el.scrollTop = el.scrollHeight;
-}
-
-function appendMessage(role, content) {
-  const el = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = `msg ${role}`;
-  div.textContent = content;
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
-  return div;
-}
-
-// ---- chat (SSE) ----
-async function sendMessage() {
-  const input = document.getElementById('chat-input');
-  const text = input.value.trim();
-  if (!text || streaming) return;
-  input.value = '';
-  appendMessage('user', text);
-
-  streaming = true;
-  const msgEl = appendMessage('assistant', '');
-  const cursor = document.createElement('span');
-  cursor.className = 'streaming-cursor';
-  cursor.textContent = '▊';
-  msgEl.appendChild(cursor);
-
-  const url = `/api/agent/stream?session=${encodeURIComponent(sessionId)}&text=${encodeURIComponent(text)}`;
-  const evtSource = new EventSource(url);
-  let full = '';
-
-  aborter = evtSource;
-  evtSource.addEventListener('token', e => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.token) {
-        full += d.token;
-        msgEl.textContent = full;
-        msgEl.appendChild(cursor);
-        document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-      }
-    } catch(err) {}
-  });
-  evtSource.addEventListener('done', e => {
-    evtSource.close();
-    streaming = false;
-    msgEl.removeChild(cursor);
-    // refresh sessions to update title
-    fetch('/api/sessions').then(r => r.json()).then(d => renderSessions(d.sessions));
-  });
-  evtSource.onerror = () => {
-    evtSource.close();
-    streaming = false;
-    if (msgEl.contains(cursor)) msgEl.removeChild(cursor);
-  };
-}
-
-document.getElementById('chat-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-});
-
-// ---- voice (Web Speech API) ----
-let recognition = null;
-let voiceListening = false;
-
-function toggleVoice() {
-  if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-    alert('Voice input not supported in this browser.');
-    return;
-  }
-  if (voiceListening) {
-    if (recognition) recognition.stop();
-    voiceListening = false;
-    document.getElementById('voice-btn').classList.remove('listening');
-    return;
-  }
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
-
-  let silenceTimer = null;
-  let finalText = '';
-
-  recognition.onresult = (event) => {
-    clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => { recognition.stop(); }, 1500);
-
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const result = event.results[i];
-      if (result.isFinal) {
-        finalText += (finalText ? ' ' : '') + result[0].transcript;
-        document.getElementById('chat-input').value = finalText;
-      } else {
-        document.getElementById('chat-input').value = finalText + result[0].transcript;
-      }
-    }
-  };
-
-  recognition.onend = () => {
-    voiceListening = false;
-    document.getElementById('voice-btn').classList.remove('listening');
-    if (finalText.trim()) sendMessage();
-    finalText = '';
-  };
-
-  recognition.onerror = () => {
-    voiceListening = false;
-    document.getElementById('voice-btn').classList.remove('listening');
-  };
-
-  voiceListening = true;
-  document.getElementById('voice-btn').classList.add('listening');
-  finalText = '';
-  recognition.start();
-}
-
-// ---- right panel ----
-function togglePanel() {
-  panelOpen = !panelOpen;
-  document.getElementById('right-panel').classList.toggle('open', panelOpen);
-}
-
-async function switchPanel() {
-  const mode = document.getElementById('panel-mode').value;
-  const content = document.getElementById('right-panel-content');
-  panelOpen = true;
-  document.getElementById('right-panel').classList.add('open');
-
-  if (mode === 'stats') {
-    content.innerHTML = '<div id="stats-panel"></div>';
-    updateStats();
-  } else if (mode === 'files') {
-    await renderFiles('/home/gio');
-  } else if (mode === 'notes') {
-    await renderNotes();
-  } else if (mode === 'latex') {
-    content.innerHTML = `
-      <textarea id="latex-area" placeholder="\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}"></textarea>
-      <div style="margin-top:8px;display:flex;gap:6px;">
-        <button onclick="compileLatex()">Compile</button>
-        <button onclick="clearLatex()">Clear</button>
-      </div>
-      <div id="latex-log" style="margin-top:8px;font-size:12px;color:var(--fg2);"></div>
-      <iframe id="latex-preview" style="width:100%;height:400px;margin-top:8px;border:1px solid var(--border);border-radius:var(--radius);background:white;" hidden></iframe>
-    `;
-  }
-}
-
-// system stats
-let statsInterval = null;
-function startSystemPoll() {
-  updateStats();
-  statsInterval = setInterval(updateStats, 2000);
-}
-
-async function updateStats() {
-  const el = document.getElementById('stats-panel');
-  if (!el) return;
-  const res = await fetch('/api/system');
-  const s = await res.json();
-  el.innerHTML = `
-    <div class="stat-row"><span class="label">Time</span><span class="value">${s.time}</span></div>
-    <div class="stat-row"><span class="label">Date</span><span class="value">${s.date}</span></div>
-    <div class="stat-row"><span class="label">CPU</span><span class="value">${s.cpu}%</span></div>
-    <div class="bar"><div class="bar-fill" style="width:${s.cpu}%;background:var(--accent)"></div></div>
-    <div class="stat-row"><span class="label">RAM</span><span class="value">${s.mem}%</span></div>
-    <div class="bar"><div class="bar-fill" style="width:${s.mem}%;background:var(--yellow)"></div></div>
-    <div class="stat-row"><span class="label">Disk</span><span class="value">${s.disk}%</span></div>
-    <div class="bar"><div class="bar-fill" style="width:${s.disk}%;background:var(--green)"></div></div>
-    ${s.gpu ? `
-    <div class="stat-row"><span class="label">GPU</span><span class="value">${s.gpu.util}% (${s.gpu.mem_mb}/${s.gpu.mem_total_mb}MB)</span></div>
-    <div class="bar"><div class="bar-fill" style="width:${s.gpu.util}%;background:var(--red)"></div></div>
-    ` : ''}
-    <div class="stat-row"><span class="label">Net Up</span><span class="value">${fmtBytes(s.net_up)}</span></div>
-    <div class="stat-row"><span class="label">Net Down</span><span class="value">${fmtBytes(s.net_down)}</span></div>
-  `;
-}
-
-function fmtBytes(b) {
-  if (b > 1e9) return (b/1e9).toFixed(1) + ' GB';
-  if (b > 1e6) return (b/1e6).toFixed(1) + ' MB';
-  if (b > 1e3) return (b/1e3).toFixed(1) + ' KB';
-  return b + ' B';
-}
-
-// files
-async function renderFiles(path) {
-  const content = document.getElementById('right-panel-content');
-  content.innerHTML = '<div id="file-browser"></div><div id="file-preview"></div>';
-  const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
-  const data = await res.json();
-  const browser = document.getElementById('file-browser');
-  const rows = [entry('file-entry dir', '📁 ~', () => renderFiles('/home/gio'))];
-  if (path !== '/home/gio') {
-    const parent = path.substring(0, path.lastIndexOf('/'));
-    rows.push(entry('file-entry dir', '📁 ..', () => renderFiles(parent)));
-  }
-  for (const n of (data.nodes || []).slice(1)) {  // skip root
-    const icon = n.kind === 'dir' ? '📁' : '📄';
-    const fullPath = path + '/' + n.id;
-    const go = n.kind === 'dir' ? () => renderFiles(fullPath)
-                                : () => previewFile(fullPath);
-    rows.push(entry('file-entry ' + n.kind, `${icon} ${n.id}`, go));
-  }
-  browser.replaceChildren(...rows);
-}
-
-async function previewFile(path) {
-  const el = document.getElementById('file-preview');
-  try {
-    const res = await fetch(path.startsWith('/') ? `/api/files?path=${encodeURIComponent(path)}` : path);
-    const text = await res.text();
-    el.textContent = text.substring(0, 2000);
-  } catch(e) {
-    el.textContent = '(error loading)';
-  }
-}
-
-// notes
-async function renderNotes() {
-  const content = document.getElementById('right-panel-content');
-  const res = await fetch('/api/notes');
-  const data = await res.json();
-  const nodes = data.nodes || [];
-  const edges = data.edges || [];
-
-  // simple text graph
-  const header = document.createElement('div');
-  header.style.marginBottom = '8px';
-  header.innerHTML = '<b>Vault</b>';
-  const rows = [header];
-  for (const n of nodes) {
-    rows.push(entry('file-entry note', `📝 ${n.label}`, () => loadNote(n.id)));
-  }
-  const noteContent = document.createElement('div');
-  noteContent.id = 'note-content';
-  noteContent.style.cssText = 'margin-top:8px;background:var(--bg3);padding:8px;border-radius:var(--radius);font-size:12px;white-space:pre-wrap;';
-  rows.push(noteContent);
-  content.replaceChildren(...rows);
-  loadNote(nodes[0]?.id || 'welcome');
-}
-
-async function loadNote(name) {
-  const el = document.getElementById('note-content');
-  if (!el) return;
-  try {
-    const res = await fetch(`/api/notes/content?name=${encodeURIComponent(name)}`);
-    const data = await res.json();
-    el.textContent = data.text || '# (empty)';
-  } catch(e) {
-    el.textContent = '# (error)';
-  }
-}
-
-// latex
-async function compileLatex() {
-  const src = document.getElementById('latex-area')?.value;
-  if (!src) return;
-  const log = document.getElementById('latex-log');
-  const preview = document.getElementById('latex-preview');
-  log.textContent = 'Compiling...';
-  try {
-    const res = await fetch('/api/latex', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({src}) });
-    const data = await res.json();
-    if (data.ok && data.pdf) {
-      log.textContent = 'OK';
-      preview.hidden = false;
-      preview.src = data.pdf + '?' + Date.now();
-    } else {
-      log.textContent = (data.log || 'error').substring(0, 1000);
-      preview.hidden = true;
-    }
-  } catch(e) {
-    log.textContent = 'Error: ' + e.message;
-  }
-}
-function clearLatex() {
-  document.getElementById('latex-area').value = '';
-  document.getElementById('latex-log').textContent = '';
-  document.getElementById('latex-preview').hidden = true;
-}
-
-// ---- WebSocket (events) ----
-function connectEventWs() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  evtWs = new WebSocket(`${proto}//${location.hostname}:8743/ws/events`);
-  evtWs.onmessage = (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.type === 'stats') {
-        // update title bar stat
-      }
-    } catch(_) {}
-  };
-  evtWs.onclose = () => setTimeout(connectEventWs, 3000);
-}
-
-// ---- utilities ----
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
-}
-
-// Build a clickable row without ever putting untrusted text into an HTML
-// string. text/title go through textContent + setAttribute (never parsed as
-// markup), and the handler is a real closure (never an onclick attribute), so
-// a filename or title containing quotes or <script> cannot execute.
-function entry(cls, text, onClick, opts) {
-  opts = opts || {};
-  const div = document.createElement('div');
-  div.className = cls;
-  div.textContent = text;
-  if (opts.title != null) div.setAttribute('title', opts.title);
-  if (opts.style) div.style.cssText = opts.style;
-  if (opts.active) div.classList.add('active');
-  if (onClick) {
-    div.style.cursor = div.style.cursor || 'pointer';
-    div.addEventListener('click', onClick);
-  }
-  return div;
-}
-
-// ---- keyboard shortcuts ----
-document.addEventListener('keydown', e => {
-  if (e.ctrlKey && e.key === 'k') { e.preventDefault(); document.getElementById('chat-input').focus(); }
-  if (e.key === 'Escape') { togglePanel(); }
-});
-/* PWA service worker — offline shell, never caches /api/ or SSE */
-if ('serviceWorker' in navigator) {
-  addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
-}
-</script>
+<script src="/static/organic.js"></script>
+<script src="/static/hud.js"></script>
 </body>
 </html>
