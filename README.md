@@ -133,6 +133,35 @@ instrument:
 | 6 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
 | 7 | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
 
+### Cross-instance task routing
+
+Drag a task onto an instance in the **Agents** graph to run it there. The
+fleet stops being a dashboard and becomes a control surface.
+
+Routing a task is **remote code execution** — aion's `/run` executes a prompt
+on the target — so the flow is deliberately two-step and the guards live on
+the server, not in the UI:
+
+1. The drop asks for a **plan**, which dispatches nothing.
+2. The plan says where it would go *and why*, with a score breakdown for every
+   candidate and a reason for each rejection. A scheduler you can't
+   interrogate is one you stop trusting the first time it surprises you.
+3. Only an explicit confirm sends it. `POST /api/route` without
+   `confirm: true` returns the plan and sends nothing, so a stray request
+   cannot run anything anywhere.
+
+The target is resolved from real discovery (`fleet.discover_local`), never
+from the request: you may name an **instance id**, you may not name a machine.
+A `host`/`port` in the body is ignored — otherwise anyone who could reach the
+HUD could aim `/run` at an arbitrary address.
+
+Auto-routing (no pin) scores idle over busy, prefers a box that already has
+the right harness active, penalises CPU load, and treats a stale heartbeat as
+last-resort. Offline and wedged instances are **ineligible**, not merely
+low-scoring — otherwise a fleet where everything is down quietly routes to the
+least-dead option. Weights are the policy knob, at the top of
+`src/aion/routing.py`.
+
 ### Worktrees — the unit of agent isolation
 
 Give each autonomous loop its own checkout and two agents can work the same

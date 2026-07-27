@@ -77,6 +77,9 @@
                 aria-describedby="graph-desc"></canvas>
         <p id="graph-desc" class="sr-only" role="status" aria-live="polite"></p>
         <div id="focus-badge" role="status" hidden></div>
+        <!-- Routing a task is remote code execution: the drop only plans,
+             this confirms, and the server refuses to dispatch without it. -->
+        <div id="route-confirm" role="alertdialog" aria-label="Confirm routing" hidden></div>
         <div id="legend" aria-hidden="true"></div>
         <div id="hint">drag · scroll zoom · click a hub to isolate · 0 fit</div>
 

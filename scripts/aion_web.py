@@ -445,6 +445,85 @@ def search_everything(query, scan_dir=None, limit=60):
     return {"query": query, "results": out[:limit]}
 
 
+# ---------------------------------------------------------------------------
+# Cross-instance task routing
+#
+# Sending a task to another instance is remote code execution: aion's /run
+# endpoint executes a prompt on the target. Three rules follow, and all three
+# are enforced here rather than in the UI:
+#
+#   1. The target is resolved from real discovery (fleet.discover_local), never
+#      from a host/port in the request. The caller may name an instance id; it
+#      may not name a machine.
+#   2. Dispatch is fail-closed. Without an explicit `confirm: true` the route
+#      endpoint returns a PLAN and sends nothing, so a stray POST cannot run
+#      anything anywhere.
+#   3. The plan is always computed, even when pinned, so dropping work on a box
+#      that died two seconds ago is refused with a reason instead of failing
+#      somewhere down in the transport.
+# ---------------------------------------------------------------------------
+def _routing_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import routing
+    return routing
+
+
+def _fleet_peers():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import fleet
+    return fleet.discover_local(include_self=True)
+
+
+def _self_cpu() -> float:
+    try:
+        import psutil
+        return float(psutil.cpu_percent(interval=None)) / 100.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def route_plan(harness: str = "", target_id: str | None = None) -> dict:
+    """Where would this task go? Pure — dispatches nothing."""
+    routing = _routing_mod()
+    known = [h["id"] for h in proc_snapshot().get("harnesses", [])]
+    cands = routing.candidates_from_fleet(
+        _fleet_peers(), harnesses=known, now_cpu=_self_cpu())
+    return routing.plan(cands, harness=harness, target_id=target_id).as_dict()
+
+
+def route_dispatch(prompt: str, harness: str = "",
+                   target_id: str | None = None, confirm: bool = False) -> dict:
+    """Plan, then (only with confirm) actually send the task."""
+    if not prompt.strip():
+        return {"ok": False, "reason": "no prompt", "dispatched": False}
+    plan = route_plan(harness=harness, target_id=target_id)
+    plan["dispatched"] = False
+    if not plan["ok"]:
+        return plan
+    if not confirm:
+        plan["reason"] += " — preview only, resend with confirm to dispatch"
+        return plan
+
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.remotes import RemoteClient, RemoteNode
+    t = plan["target"]
+    node = RemoteNode(id=t["id"], host=t["host"], port=t["port"])
+    try:
+        result = asyncio.run(RemoteClient().run_task(node, prompt, harness))
+    except Exception as e:  # noqa: BLE001
+        plan["error"] = f"dispatch failed: {type(e).__name__}: {str(e)[:160]}"
+        return plan
+    if result is None:
+        # RemoteClient swallows transport errors into None; say so plainly
+        # rather than reporting a success the fleet never acknowledged.
+        plan["error"] = (f"{t['id']} at {t['host']}:{t['port']} did not accept "
+                         "the task (unreachable, or token mismatch)")
+        return plan
+    plan["dispatched"] = True
+    plan["result"] = result
+    return plan
+
+
 def _worktrees_mod():
     sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
     from aion import worktrees
@@ -820,6 +899,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/agents":
             return self._sendj(proc_snapshot(
                 include_finished=(q.get("finished", ["1"])[0] == "1")))
+        if p == "/api/route/plan":
+            return self._sendj(route_plan(
+                harness=q.get("harness", [""])[0],
+                target_id=(q.get("target", [""])[0] or None)))
         if p == "/api/worktrees":
             return self._sendj(worktree_snapshot(
                 probe=(q.get("probe", ["1"])[0] == "1")))
@@ -879,6 +962,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/search":
             qq = body.get("query", "")
             return self._sendj({"results": web_search(qq), "query": qq})
+        if p == "/api/route":
+            # Fail-closed: no `confirm` means plan only, dispatch nothing.
+            return self._sendj(route_dispatch(
+                prompt=str(body.get("prompt", "")),
+                harness=str(body.get("harness", "")),
+                target_id=(body.get("target") or None),
+                confirm=body.get("confirm") is True))
         if p == "/api/open":
             # Hand a path to the user's editor. The path is sandboxed here;
             # the editor comes from an allowlist inside aion.opener, never

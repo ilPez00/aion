@@ -76,6 +76,11 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
 - **Notifications** (`notify.py`) — opt-in webhook for failed/stalled/gate
   events only, deduped, never raises, URL redacted from logs.
 
+- **Cross-instance routing** (`routing.py` + `/api/route`) — drag a task onto
+  an instance to run it there. Fail-closed (no dispatch without `confirm`),
+  target resolved from discovery only, every decision explained with a score
+  breakdown and per-candidate rejection reasons.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin

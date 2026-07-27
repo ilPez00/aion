@@ -52,6 +52,9 @@ class OrganicGraph {
     this.onSelect = opts.onSelect || (() => {});
     this.onHover = opts.onHover || (() => {});
     this.onFocusChange = opts.onFocusChange || (() => {});
+    // Dragging one node onto another is a gesture, not a layout accident —
+    // the Agents view uses it to route a task to an instance.
+    this.onDrop = opts.onDrop || (() => {});
     this.selected = null;
     this.hovered = null;
     this.focusIdx = -1;          // keyboard cursor, independent of selection
@@ -491,11 +494,11 @@ class OrganicGraph {
              y: (cy - rect.top - this.ty) / this.scale };
   }
 
-  nodeAt(cx, cy) {
+  nodeAt(cx, cy, exclude = null) {
     const { x, y } = this._toWorld(cx, cy);
     let best = null, bd = Infinity;
     for (const n of this.nodes) {
-      if (!this.visible(n)) continue;
+      if (n === exclude || !this.visible(n)) continue;
       const d = Math.hypot(n.x - x, n.y - y);
       // generous slop so a 4px file node is still tappable on a phone
       if (d < Math.max(n.r + 10 / this.scale, 14 / this.scale) && d < bd) { bd = d; best = n; }
@@ -554,7 +557,19 @@ class OrganicGraph {
     const end = e => {
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinch = 0;
-      if (drag) { drag.fixed = false; if (!moved) this.select(drag); drag = null; }
+      if (drag) {
+        drag.fixed = false;
+        if (!moved) {
+          this.select(drag);
+        } else {
+          // Dropped on top of something? Offer it as a gesture. The graph
+          // does not act on it — hud.js decides whether the pair means
+          // anything, so the renderer stays free of domain rules.
+          const onto = this.nodeAt(e.clientX, e.clientY, drag);
+          if (onto) this.onDrop(drag, onto);
+        }
+        drag = null;
+      }
       else if (pan && !moved) this.select(null);
       pan = null;
       this._start();

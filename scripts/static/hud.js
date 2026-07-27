@@ -256,6 +256,7 @@ async function doMove() {
 }
 
 const HINT = 'drag · scroll zoom · click a hub to isolate · 0 fit';
+const HINT_AGENTS = 'drag a task onto an instance to run it there · 0 fit';
 
 /* Isolation is invisible once applied — the graph just has fewer nodes, which
  * reads as a failed load. A dismissible badge names the state and how to
@@ -517,6 +518,70 @@ async function loadAgents() {
 
 const swatch = i => getComputedStyle(document.documentElement)
   .getPropertyValue(`--c${(i % 8) + 1}`).trim();
+
+/* ── cross-instance routing ───────────────────────────────────────────── */
+/* Drag a task onto an instance to run it there. Routing a task is remote code
+ * execution, so the flow is deliberately two-step: the drop asks the server
+ * to PLAN (which dispatches nothing), we show what would happen and where,
+ * and only an explicit confirm sends it. The server enforces this too — it
+ * will not dispatch without `confirm: true` — so the guard does not depend on
+ * the UI behaving. */
+async function onGraphDrop(dragged, target) {
+  if (S.module !== 'agents') return;
+  const isTask = dragged.id.startsWith('t') && dragged.harness !== undefined;
+  const isInstance = target.id.startsWith('i');
+  if (!isTask || !isInstance) return;
+
+  const instance = target.id.slice(1);
+  const prompt = dragged.label.replace(/^[^\w]+\s*/, '');   // strip state glyph
+  setStatus(`planning route to ${instance}…`);
+  try {
+    const plan = await api(
+      `/api/route/plan?target=${encodeURIComponent(instance)}` +
+      `&harness=${encodeURIComponent(dragged.harness || '')}`);
+    if (!plan.ok) { setStatus(plan.reason, true); return; }
+    showRouteConfirm(prompt, dragged.harness || '', instance, plan);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function showRouteConfirm(prompt, harness, instance, plan) {
+  const box = $('route-confirm');
+  box.hidden = false;
+  box.replaceChildren(
+    el('div', { class: 'route-head', text: `Run on ${instance}?` }),
+    el('div', { class: 'route-body mono-sm' }, [
+      el('div', { text: prompt.slice(0, 90) }),
+      el('div', { class: 'muted', text: `harness: ${harness || '(default)'}` }),
+      el('div', { class: 'muted', text: plan.reason.slice(0, 140) }),
+    ]),
+    el('div', { class: 'row' }, [
+      el('button', {
+        class: 'primary', type: 'button', text: 'Dispatch',
+        on: { click: () => doRoute(prompt, harness, instance) },
+      }),
+      el('button', {
+        type: 'button', text: 'Cancel',
+        on: { click: () => { box.hidden = true; setStatus('routing cancelled'); } },
+      }),
+    ]));
+}
+
+async function doRoute(prompt, harness, instance) {
+  $('route-confirm').hidden = true;
+  setStatus(`dispatching to ${instance}…`);
+  try {
+    const r = await api('/api/route', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, harness, target: instance, confirm: true }),
+    });
+    if (r.dispatched) {
+      setStatus(`dispatched to ${instance} (${r.result?.task_id || 'accepted'})`);
+      loadAgents();
+    } else {
+      setStatus(r.error || r.reason, true);
+    }
+  } catch (e) { setStatus(e.message, true); }
+}
 
 /* ── module: Repos (git worktrees) ────────────────────────────────────── */
 /* Worktrees are the unit of agent isolation — one checkout per autonomous
@@ -1020,6 +1085,7 @@ function boot() {
     onSelect: showSelection,
     onHover: n => { $('hint').textContent = n ? (n.path || n.label) : HINT; },
     onFocusChange: showFocusBadge,
+    onDrop: onGraphDrop,
   });
 
   $('view-toggle').addEventListener('click', toggleView);
