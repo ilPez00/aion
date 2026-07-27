@@ -14,6 +14,7 @@ Layers:
   L3 Tool    : PTY host, file browse, notes graph, latex
 """
 import asyncio
+import hmac
 import json
 import os
 import re
@@ -32,6 +33,22 @@ from urllib.parse import urlparse, parse_qs
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(ROOT, "static")
 AION_DIR = os.path.expanduser("~/.aion")
+
+# ---------------------------------------------------------------------------
+# Auth. This HUD reads and writes the filesystem, runs latexmk, and drives the
+# agent -- on a LAN that is somebody else's shell, not a dashboard. Loopback
+# stays frictionless; any non-loopback bind demands the same shared secret the
+# fleet transport already uses (~/.aion/token, see aion.fleet).
+#
+# Three ways to present it, in the order a phone actually needs them:
+#   1. ?token=... on the first URL you open (what you type/QR once)
+#   2. the aion_token cookie that first request sets (every later fetch)
+#   3. X-Aion-Token header (scripts, curl)
+# ---------------------------------------------------------------------------
+TOKEN_COOKIE = "aion_token"
+TOKEN_HEADER_NAME = "X-Aion-Token"
+TOKEN = ""            # filled in main(); empty means auth disabled
+AUTH_REQUIRED = False  # True only when bound off-loopback
 WEBUI_DIR = os.path.join(AION_DIR, "webui")
 SESSIONS_DIR = os.path.join(WEBUI_DIR, "sessions")
 # share notes dir with the TUI vault (consistent across web and TUI)
@@ -332,6 +349,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    # ---- auth ------------------------------------------------------------
+    def _presented_token(self, q):
+        """Token from query, cookie, or header -- in that precedence."""
+        got = (q.get("token") or [""])[0]
+        if got:
+            return got, True          # came from the URL -> worth a cookie
+        cookies = self.headers.get("Cookie", "")
+        for part in cookies.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == TOKEN_COOKIE and v:
+                return v, False
+        return self.headers.get(TOKEN_HEADER_NAME, ""), False
+
+    def _authorized(self, q):
+        """(ok, set_cookie). Constant-time compare; loopback is exempt."""
+        if not AUTH_REQUIRED or not TOKEN:
+            return True, False
+        got, from_url = self._presented_token(q)
+        ok = hmac.compare_digest(got, TOKEN)
+        return ok, (ok and from_url)
+
+    def _deny(self):
+        # 401 with no hint about the token -- an unauthenticated caller learns
+        # only that this port wants credentials.
+        self._send(401, "text/plain",
+                   b"401 unauthorized: append ?token=<~/.aion/token> to the URL\n")
+
     def _send(self, code, ctype, body, headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -350,9 +394,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         p = u.path
+        ok, set_cookie = self._authorized(q)
+        if not ok:
+            return self._deny()
         if p == "/" or p == "/index.html":
             fp = os.path.join(STATIC, "index.html")
-            return self._send(200, "text/html", open(fp, "rb").read())
+            # SameSite=Strict: the cookie is never attached to a cross-site
+            # request, so a hostile page on the same WiFi cannot CSRF the HUD.
+            extra = ({"Set-Cookie": f"{TOKEN_COOKIE}={TOKEN}; Path=/; "
+                                    "SameSite=Strict; Max-Age=31536000"}
+                     if set_cookie else None)
+            return self._send(200, "text/html", open(fp, "rb").read(), extra)
         # ---- PWA assets (root-scoped so the service worker controls "/") ----
         if p in ("/manifest.webmanifest", "/sw.js", "/icon.svg"):
             fp = os.path.join(STATIC, os.path.basename(p))
@@ -464,6 +516,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        ok, _ = self._authorized(parse_qs(u.query))
+        if not ok:
+            return self._deny()
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -655,18 +710,36 @@ def _lan_ip() -> str:
         s.close()
 
 
+def _loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1", "")
+
+
 if __name__ == "__main__":
     _load_env()
-    # Default localhost-only: this HUD can run commands (PTY/L3), so LAN exposure
-    # is opt-in. Set AION_WEB_HOST=0.0.0.0 to reach it from a phone over WiFi.
+    # Default localhost-only: this HUD reads and writes the filesystem, runs
+    # latexmk, and drives the agent. LAN exposure is opt-in via AION_WEB_HOST,
+    # and off loopback it is token-gated -- a warning is not a control.
     host = os.environ.get("AION_WEB_HOST", "127.0.0.1")
+    AUTH_REQUIRED = not _loopback(host)
+    if AUTH_REQUIRED:
+        try:
+            from aion.fleet import load_or_create_token
+            TOKEN = load_or_create_token()
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(
+                f"web: refusing to bind {host} without a token ({e}).\n"
+                "     Bind loopback, or fix ~/.aion/token so auth can load.\n")
+            sys.exit(1)
     threading.Thread(target=run_ws, daemon=True).start()
     httpd = ThreadingHTTPServer((host, 8742), Handler)
-    if host in ("0.0.0.0", "::"):
+    if not _loopback(host):
         lan = _lan_ip()
-        print(f"AION web HUD (LAN): http://{lan}:8742  (WS :8743)")
-        print("  ⚠ exposed to the whole WiFi — this HUD can run commands. "
-              "Trust the network, or put HTTPS+auth in front.")
+        print(f"AION web HUD (LAN): http://{lan}:8742/?token={TOKEN}")
+        print("  token-gated (shared fleet secret, ~/.aion/token). Open the URL")
+        print("  above once per device — it sets a SameSite=Strict cookie.")
+        print("  Still plain HTTP: the token crosses the WiFi in clear. Put it")
+        print("  behind tailscale serve / a TLS proxy on an untrusted network.")
+        print("  PTY (:8743) stays bound to loopback and is NOT reachable here.")
     else:
         print("AION web HUD: http://127.0.0.1:8742  (WS :8743)")
         print("  (localhost only — set AION_WEB_HOST=0.0.0.0 to reach from a phone)")

@@ -23,10 +23,28 @@ won't offer "Install app". Fix it once, and both PWA-install and APK-build work:
   → a `https://*.trycloudflare.com` URL.
 - **Self-signed TLS** on the daemon (LAN-only; phone must trust the cert).
 
+## The second blocker: the token
+
+Reaching the HUD from anywhere but loopback requires the shared fleet secret
+(`~/.aion/token`) — the HUD runs commands, so it is not left open. Append it to
+the first URL you open on the phone:
+
+```
+https://<machine>.<tailnet>.ts.net/?token=<token>
+```
+
+The reply sets a `SameSite=Strict`, one-year cookie, so the PWA and its service
+worker keep working afterwards without the query string — and the installed
+home-screen icon does not need the token baked into its start URL. Re-pair by
+opening the `?token=` URL again if you clear site data.
+
+Tailscale Serve is the right answer here for a second reason: it removes the
+plain-HTTP hop that would otherwise carry that token across the WiFi in clear.
+
 ## Level 1 — install as a PWA (no APK, installs today)
 
 1. Serve the HUD over HTTPS (above).
-2. Open the HTTPS URL in Chrome/Edge on Android (Safari on iOS).
+2. Open the HTTPS URL **with `?token=`** in Chrome/Edge on Android (Safari on iOS).
 3. Menu → **Install app** / **Add to Home Screen**.
 4. Launches standalone (own icon, no browser chrome, offline shell cached).
 

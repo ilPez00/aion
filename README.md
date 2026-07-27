@@ -87,6 +87,21 @@ note: NOT the repo-root `static/`):
 AION_WEB_HOST=0.0.0.0 python scripts/aion_web.py          # reach it from a phone on the LAN
 ```
 
+Loopback is open. **Any non-loopback bind is token-gated** — this HUD browses
+and writes files, runs latexmk, and drives the agent, so on a LAN it is a shell
+for whoever else is on the WiFi. It uses the same shared secret as the fleet
+transport (`~/.aion/token`); the startup banner prints the full URL:
+
+```
+http://<lan-ip>:8742/?token=<token>
+```
+
+Opening that once per device sets a `SameSite=Strict` cookie; scripts can send
+`X-Aion-Token`. The server refuses to bind off-loopback if the token can't be
+loaded. Plain HTTP still carries the token in clear — put `tailscale serve` or
+a TLS proxy in front on any network you don't control. The PTY websocket
+(:8743) stays bound to loopback and is not LAN-reachable at all.
+
 Modules: Terminal (PTY), Files (organic graph), Browser (voice → DeepSearch),
 Editor (live micro), LaTeX, **Notes** (Obsidian-style canvas graph of your
 vault, node size = link degree), **Life** (real-life stats from the health
