@@ -46,8 +46,13 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
    `decode_accel()`, tune `TapDetector.threshold`. *(blocks the ring "button" in field)*
 2. **Real APK** — pair phone Wireless Debugging, `tailscale serve` HTTPS the PWA,
    Bubblewrap build (`twa-manifest.json`), `adb install`. *(blocked on phone pairing code)*
-3. **Pendant transport** — pick BLE vs Wi-Fi push vs USB-CDC, fill `PendantLink._connect`,
-   `ingest` vision/audio into physis context.
+3. **Pendant → physis ingest** — the transport is **done**: HTTP pull against the
+   endpoints the cyclops firmware already serves (`/snap`, `/audio.wav`,
+   `/stream`), in `deck/pendant.py`, LAN-only, stdlib. BLE was never viable for
+   VGA JPEGs at the ~2 KB/s notify throughput bring-up measured. What is left is
+   feeding `PendantEvent` blobs into the physis context (vision → sightings,
+   audio → transcriber) and registering the link in `ui/app.py` next to
+   `DeckInput`/`RingInput`. Point it with `AION_PENDANT_HOST`.
 4. **HUD coherence stream** — feed `Iteration.coherence` into the DAG edge animation.
 5. **Research priming** — use physis `reconstruct()` to skip queries a past run covered.
 6. **assetlinks.json route** in `aion_web.py` for TWA trust (needed by the APK).

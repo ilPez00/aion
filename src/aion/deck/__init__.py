@@ -19,3 +19,4 @@ from .protocol import (  # noqa: F401
 )
 from .link import DeckLink  # noqa: F401
 from .gamepad import VirtualPad, map_event  # noqa: F401
+from .pendant import PendantLink, PendantEvent, is_lan_host  # noqa: F401

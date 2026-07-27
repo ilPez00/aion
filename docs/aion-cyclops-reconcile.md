@@ -75,7 +75,7 @@ hardware/transport can't actually do.
 |-----------------------|---------------------|-------|
 | Cycluno deck (serial) | `deck/{link,protocol,gamepad}.py` | working |
 | Colmi R02 ring (BLE)  | `deck/ring.py` + `input.RingInput` | working (telemetry + derived taps) |
-| XIAO pendant (cam/mic)| `deck/pendant.py`   | scaffold — pick a transport, fill `_connect()` |
+| XIAO pendant (cam/mic)| `deck/pendant.py`   | working transport — HTTP pull from the firmware's `/snap`, `/audio.wav`, `/stream`; LAN-only host guard; stdlib. Ingest into physis context is the remaining piece. |
 
 Verify the ring against real hardware:
 
