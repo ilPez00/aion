@@ -64,6 +64,18 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   transitions. Idle cost is a hash of a few small files at 4Hz, nothing sent.
   Falls back to polling with a visible liveness dot.
 
+- **Swarm persistence** (`SwarmStore`) — the dependency DAG survives a restart
+  and is visible cross-process; in-flight agents restore as IDLE.
+- **Worktrees** (`worktrees.py` + `/api/worktrees`) — repos/worktrees/branches
+  as a graph, tasks linked to the tree they mention, parallel scan. Read-only.
+- **Obsidian** — the web Vault now resolves the real vault
+  (`AION_VAULT` > recorded setup answer > repo `notes/`); fixed a path
+  traversal in `/api/notes/content` while wiring it.
+- **Open in editor** (`opener.py`) — allowlisted editors (zed/code/…),
+  argv-only, sandboxed paths.
+- **Notifications** (`notify.py`) — opt-in webhook for failed/stalled/gate
+  events only, deduped, never raises, URL redacted from logs.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin

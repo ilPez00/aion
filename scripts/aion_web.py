@@ -369,6 +369,7 @@ _COMMANDS = [
     ("Agents — process graph", "agents", "Fleet, harnesses, tasks, swarm"),
     ("Agent — chat", "agent", "Talk to the LLM"),
     ("LaTeX — compile", "latex", "Edit, compile, preview"),
+    ("Repos — git worktrees", "repos", "Repositories, worktrees, branches"),
 ]
 
 
@@ -394,6 +395,15 @@ def search_everything(query, scan_dir=None, limit=60):
     try:
         pgm = _procgraph_mod()
         for h in pgm.search(query, limit=20):
+            out.append({**h, "rank": 1})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # repos + worktrees
+    try:
+        wt = _worktrees_mod()
+        snap = worktree_snapshot(probe=False)
+        for h in wt.search(query, snap, limit=15):
             out.append({**h, "rank": 1})
     except Exception:  # noqa: BLE001
         pass
@@ -435,22 +445,99 @@ def search_everything(query, scan_dir=None, limit=60):
     return {"query": query, "results": out[:limit]}
 
 
+def _worktrees_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import worktrees
+    return worktrees
+
+
+def worktree_snapshot(probe=True):
+    """Repos + worktrees under the fs sandbox. Degrades, never 500s."""
+    try:
+        fg = _fsgraph_mod()
+        wt = _worktrees_mod()
+        root = os.environ.get("AION_REPO_ROOT") or str(fs_default_dir().parent)
+        base = fg.resolve_in_root(root)      # never scan outside the sandbox
+        tasks = proc_snapshot().get("tasks", [])
+        return wt.graph(base, depth=_clampenv("AION_REPO_DEPTH", 3, 1, 6),
+                        probe=probe, tasks=tasks)
+    except Exception as e:  # noqa: BLE001
+        return {"root": "", "repos": [], "summary": {}, "error": str(e)[:200]}
+
+
+def vault_root() -> str:
+    """Where the notes actually live.
+
+    The TUI already asks for this on first run and records the answer in the
+    `vault_setup_done` flag file, but the web HUD ignored it and always read
+    the repo's own `notes/` — so the Vault module showed four seeded demo
+    notes instead of the user's real Obsidian vault. Same resolution order as
+    the cockpit, so both halves of aion agree on what "the vault" means:
+
+        AION_VAULT  >  the recorded setup answer  >  repo notes/
+    """
+    env = os.environ.get("AION_VAULT", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+        from aion.fleet import shared_path
+        recorded = shared_path("vault_setup_done").read_text().strip()
+        if recorded and os.path.isdir(os.path.expanduser(recorded)):
+            return os.path.expanduser(recorded)
+    except Exception:  # noqa: BLE001
+        pass
+    return NOTES_DIR
+
+
+def _vault_reader():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.vault import VaultReader
+    return VaultReader(vault_root())
+
+
 def vault_graph():
     try:
-        sys.path.insert(0, os.path.join(ROOT, "src"))
-        from aion.vault import VaultReader
-    except Exception:
-        return {"nodes": [], "edges": []}
-    g = VaultReader(NOTES_DIR).graph()
+        reader = _vault_reader()
+        g = reader.graph()
+    except Exception as e:  # noqa: BLE001
+        return {"nodes": [], "edges": [], "root": vault_root(), "error": str(e)[:200]}
     return {
+        "root": vault_root(),
         "nodes": [{"id": n["name"], "label": n["title"],
                    "r": 8 + min(14, n.get("degree", 0) * 2),
                    "kind": "note", "degree": n.get("degree", 0),
                    "backlinks": len(n.get("backlinks", [])),
+                   # relative path, so a nested Obsidian vault can be opened
+                   # without guessing where the file is
+                   "path": n.get("path", ""),
                    "tags": n.get("tags", [])} for n in g["nodes"]],
         "edges": [{"s": e["from"], "t": e["to"]} for e in g["edges"]
                   if not e.get("dangling")],
     }
+
+
+def vault_note(name: str) -> dict:
+    """Read one note by its vault name.
+
+    The path is taken from the reader's own index and never built from the
+    caller's string. The previous version did `join(NOTES_DIR, name + ".md")`,
+    so `?name=../../../../etc/passwd` escaped the vault outright — and this
+    endpoint is reachable from the LAN.
+    """
+    reader = _vault_reader()
+    notes = reader.read()
+    note = notes.get(name)
+    if note is None:
+        return {"name": name, "text": "# not found", "found": False}
+    target = (reader.root / note.path).resolve()
+    root = reader.root.resolve()
+    if root != target and root not in target.parents:
+        # cannot happen via the index, but the check is cheap and this is the
+        # exact spot where a future refactor would reintroduce the escape
+        return {"name": name, "text": "# refused", "found": False}
+    return {"name": name, "path": note.path, "found": True,
+            "text": target.read_text(encoding="utf-8", errors="replace")}
 
 # ---------------------------------------------------------------------------
 # PTY host (terminal + editor)
@@ -733,6 +820,9 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/agents":
             return self._sendj(proc_snapshot(
                 include_finished=(q.get("finished", ["1"])[0] == "1")))
+        if p == "/api/worktrees":
+            return self._sendj(worktree_snapshot(
+                probe=(q.get("probe", ["1"])[0] == "1")))
         # ---- unified search (the command palette) ----
         if p == "/api/search/all":
             return self._sendj(search_everything(
@@ -745,10 +835,10 @@ class Handler(BaseHTTPRequestHandler):
         if p in ("/api/notes", "/api/vault"):
             return self._sendj(vault_graph())
         if p == "/api/notes/content":
-            name = q.get("name", ["welcome"])[0]
-            pp = os.path.join(NOTES_DIR, name + ".md")
-            txt = open(pp).read() if os.path.exists(pp) else "# not found"
-            return self._sendj({"name": name, "text": txt})
+            try:
+                return self._sendj(vault_note(q.get("name", ["welcome"])[0]))
+            except OSError as e:
+                return self._sendj({"error": str(e)[:200]}, 500)
         if p == "/api/health":
             return self._sendj(health_summary())
         if p == "/api/system":
@@ -789,6 +879,22 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/search":
             qq = body.get("query", "")
             return self._sendj({"results": web_search(qq), "query": qq})
+        if p == "/api/open":
+            # Hand a path to the user's editor. The path is sandboxed here;
+            # the editor comes from an allowlist inside aion.opener, never
+            # from the request — this endpoint is LAN-reachable.
+            sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+            from aion import opener
+            fg = _fsgraph_mod()
+            try:
+                target = fg.resolve_in_root(body.get("path", ""))
+                return self._sendj(opener.launch(
+                    str(target), preferred=None,
+                    line=body.get("line") if isinstance(body.get("line"), int) else None))
+            except fg.FsGraphError as e:
+                return self._sendj({"error": str(e)}, 403)
+            except opener.OpenError as e:
+                return self._sendj({"error": str(e)}, 400)
         if p == "/api/fs/move":
             return self._fs(lambda fg: fg.move(body.get("from", ""),
                                                body.get("to", "")))

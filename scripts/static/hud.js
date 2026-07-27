@@ -41,6 +41,8 @@ const ICON = {
   latex: 'M5 5h14M5 12h9M5 19h14',
   graph: 'M6 18a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.5 13.5l7-6',
   list: 'M4 6h16M4 12h16M4 18h16',
+  repos: 'M6 3v12M6 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9v2a4 4 0 0 1-4 4H9',
+  open: 'M14 4h6v6M20 4l-8 8M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6',
 };
 const icon = name => {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -71,6 +73,7 @@ async function api(path, opts) {
 const MODULES = [
   { id: 'files', label: 'Files', icon: 'files', kind: 'graph' },
   { id: 'agents', label: 'Agents', icon: 'graph', kind: 'graph' },
+  { id: 'repos', label: 'Repos', icon: 'repos', kind: 'graph' },
   { id: 'vault', label: 'Vault', icon: 'vault', kind: 'graph' },
   { id: 'system', label: 'System', icon: 'system', kind: 'graph' },
   { id: 'agent', label: 'Chat', icon: 'agent', kind: 'panel' },
@@ -106,7 +109,7 @@ function buildNav() {
 }
 
 const LOADERS = {
-  files: loadFiles, agents: loadAgents, vault: loadVault,
+  files: loadFiles, agents: loadAgents, repos: loadRepos, vault: loadVault,
   system: loadSystem, agent: loadAgent, latex: loadLatex,
 };
 
@@ -193,6 +196,7 @@ function showSelection(n) {
   }
   const body = $('sel-body');
   $('move-box').hidden = !(n && n.path);
+  $('open-box').hidden = !(n && n.path);
   if (!n) {
     body.replaceChildren(el('p', { class: 'muted', text: 'Select a node.' }));
     $('preview').textContent = '—';
@@ -513,6 +517,86 @@ async function loadAgents() {
 
 const swatch = i => getComputedStyle(document.documentElement)
   .getPropertyValue(`--c${(i % 8) + 1}`).trim();
+
+/* ── module: Repos (git worktrees) ────────────────────────────────────── */
+/* Worktrees are the unit of agent isolation — one checkout per autonomous
+ * loop, so two agents can work the same repo without fighting over the index.
+ * The operator's questions are structural (which agent is in which tree,
+ * what's dirty, what's a stale leftover), so: repo hub -> worktree -> branch,
+ * with any task whose label or log mentions the tree attached to it. */
+const WT_GROUP = { clean: 6, dirty: 3, detached: 4, locked: 4, prunable: 5 };
+
+async function loadRepos() {
+  setStatus('scanning repositories…');
+  try {
+    const g = await api('/api/worktrees');
+    if (g.error) { setStatus(g.error, true); return; }
+    const nodes = [], links = [];
+    for (const r of g.repos) {
+      nodes.push({
+        id: `r${r.path}`, label: r.name, hub: true, kind: 'hub',
+        group: r.error ? 5 : 1,
+        weight: Math.min(1, 0.3 + r.worktrees.length / 4),
+        path: r.path,
+        detail: r.error ? `ERROR: ${r.error}` : `${r.worktrees.length} worktree(s)`,
+      });
+      for (const w of r.worktrees) {
+        const id = `w${w.path}`;
+        nodes.push({
+          id, label: w.branch || w.name || '(detached)', kind: 'config',
+          group: WT_GROUP[w.state] ?? 0,
+          weight: 0.35 + Math.min(0.65, (w.dirty > 0 ? w.dirty : 0) / 20),
+          path: w.path,
+          detail: [w.state, w.is_main ? 'main tree' : 'linked',
+                   w.dirty > 0 ? `${w.dirty} changed` : null,
+                   w.ahead ? `+${w.ahead}` : null, w.behind ? `-${w.behind}` : null,
+                   w.tasks.length ? `tasks: ${w.tasks.join(', ')}` : null,
+                  ].filter(Boolean).join(' · '),
+        });
+        links.push({ source: `r${r.path}`, target: id,
+                     weight: w.is_main ? 0.9 : 0.5, kind: 'hub' });
+      }
+    }
+    graph.setData(nodes, links);
+    graph.fit();
+    renderLegend([['clean', 6], ['dirty', 3], ['detached / locked', 4],
+                  ['prunable', 5], ['repo', 1]]
+      .map(([label, c]) => ({ label, color: swatch(c) })));
+
+    const rows = [];
+    for (const r of g.repos) for (const w of r.worktrees) {
+      rows.push({ repo: r.name, branch: w.branch || '(detached)', state: w.state,
+                  dirty: w.dirty < 0 ? '—' : w.dirty,
+                  sync: `${w.ahead ? '+' + w.ahead : ''}${w.behind ? '-' + w.behind : ''}` || '—',
+                  tasks: w.tasks.join(' ') || '—',
+                  _id: `w${w.path}`, _title: w.path });
+    }
+    renderList([{ key: 'repo', label: 'repo' }, { key: 'branch', label: 'branch' },
+                { key: 'state', label: 'state' }, { key: 'dirty', label: 'changed' },
+                { key: 'sync', label: 'sync' }, { key: 'tasks', label: 'tasks' }],
+               rows, r => graph.reveal(r._id));
+
+    const s = g.summary;
+    setStatus(`${s.repos} repos · ${s.worktrees} worktrees · ${s.dirty} dirty` +
+      `${s.prunable ? ` · ${s.prunable} prunable` : ''}` +
+      `${s.errors ? ` · ${s.errors} unreadable` : ''}`);
+    $('graph-desc').textContent = graph.describe();
+  } catch (e) { setStatus(e.message, true); }
+}
+
+/* Hand the selection to the user's editor. The editor comes from an
+ * allowlist server-side; this only sends a path. */
+async function openInEditor() {
+  const n = S.selected;
+  if (!n || !n.path) return;
+  try {
+    const r = await api('/api/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: n.path }),
+    });
+    setStatus(`opened in ${r.editor}`);
+  } catch (e) { setStatus(e.message, true); }
+}
 
 /* ── module: Vault (notes graph) ──────────────────────────────────────── */
 async function loadVault() {
@@ -950,6 +1034,7 @@ function boot() {
   $('depth').addEventListener('change', loadFiles);
   $('hidden').addEventListener('change', loadFiles);
   $('move').addEventListener('click', doMove);
+  $('open-editor').addEventListener('click', openInEditor);
   $('inspector-close').addEventListener('click', () => $('inspector').classList.remove('open'));
   $('send').addEventListener('click', sendMessage);
   $('voice-btn').addEventListener('click', toggleVoice);

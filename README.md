@@ -126,11 +126,53 @@ instrument:
 | Key | Module | What the graph shows |
 |-----|--------|----------------------|
 | 1 | **Files** | the graph file manager (below) |
-| 2 | **Agents** | aion's own work: fleet instances → harnesses → tasks, plus swarm dependency edges. Colour = state, size = progress |
-| 3 | **Vault** | your notes: `[[wikilinks]]` as edges, node size = link degree, colour = first tag |
-| 4 | **System** | telemetry as a constellation: CPU/RAM/DISK/GPU orbiting the host, per-core satellites off the CPU node, size + colour band = load |
-| 5 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
-| 6 | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
+| 2 | **Agents** | aion's own work: fleet instances → harnesses → tasks, plus the swarm dependency DAG. Colour = state, size = progress |
+| 3 | **Repos** | git repositories → worktrees → branches, with any task working in a tree attached to it |
+| 4 | **Vault** | your Obsidian vault: `[[wikilinks]]` as edges, node size = link degree, colour = first tag |
+| 5 | **System** | telemetry as a constellation: CPU/RAM/DISK/GPU orbiting the host, per-core satellites off the CPU node, size + colour band = load |
+| 6 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
+| 7 | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
+
+### Worktrees — the unit of agent isolation
+
+Give each autonomous loop its own checkout and two agents can work the same
+repo without fighting over the index. The **Repos** module answers the
+structural questions: which tree is dirty, which is a stale leftover nobody
+pruned, and which task is working where (matched from task labels and logs).
+
+Read-only by design — nothing here creates, moves or prunes a worktree. Scans
+are parallel (40 repos in ~1.3s; serially that was 4.1s) and confined to
+`AION_REPO_ROOT`, defaulting to the parent of the graph FM's directory.
+
+### Obsidian
+
+The Vault module reads **your real vault**, resolved the same way the cockpit
+does: `AION_VAULT` → the path you gave at first-run setup → the repo's
+`notes/`. Nested folders, `[[wikilinks]]` across subdirectories, tags and
+backlinks all work, because `VaultReader` already walked recursively — the web
+HUD just wasn't asking it about the right directory.
+
+### Open in your editor
+
+Select anything with a path and hit **Open in editor**. The editor is chosen
+from an allowlist (`zed`, `code`, `cursor`, `subl`, `nvim`, `vim`, `micro`,
+`helix`, …) with `AION_EDITOR` to pin one — an env var is not a licence to run
+an arbitrary binary, so a name off the allowlist is refused. Paths are
+sandboxed, the command is argv (never a shell), and `--` guards filenames that
+begin with a dash.
+
+### Notifications (opt-in)
+
+`AION_WEBHOOK_URL` (or `AION_SLACK_WEBHOOK`) turns on outbound alerts for the
+three events actually worth interrupting a human: a task **failed**, a loop
+**stalled**, or a HITL approval gate is **waiting** — that last one genuinely
+blocks the fleet, and since gates are fail-closed an unnoticed one is
+indistinguishable from a denial. Routine completions stay on the HUD;
+notifying on every success just trains people to ignore notifications.
+
+Nothing is ever sent unless the webhook is configured: there is no default
+endpoint and no telemetry. Repeats are deduplicated for 5 minutes, sends never
+raise into a harness loop, and the webhook URL is redacted from logs.
 
 ### Search everything — `Ctrl-K`
 

@@ -262,6 +262,79 @@ def test_search_survives_a_bad_scan_dir(server):
     assert all(h["type"] != "file" for h in r["results"])
 
 
+# ── vault (Obsidian) ─────────────────────────────────────────────────────
+def test_vault_follows_AION_VAULT(server, tmp_path, monkeypatch):
+    """The web HUD used to always read the repo's notes/, ignoring the vault
+    the cockpit had already been pointed at."""
+    vault = tmp_path / "obsidian"
+    vault.mkdir()
+    (vault / "Alpha.md").write_text("# Alpha\n\nlinks to [[Beta]]\n")
+    (vault / "sub").mkdir()
+    (vault / "sub" / "Beta.md").write_text("# Beta\n\nback to [[Alpha]]\n")
+    monkeypatch.setenv("AION_VAULT", str(vault))
+
+    base, _ = server
+    _, g, _ = get(base, "/api/notes")
+    assert g["root"] == str(vault)
+    assert {n["label"] for n in g["nodes"]} == {"Alpha", "Beta"}
+    assert g["edges"], "wikilinks between nested notes were not resolved"
+
+
+def test_note_content_refuses_path_traversal(server, tmp_path, monkeypatch):
+    """?name=../../../../etc/passwd used to escape the vault outright."""
+    vault = tmp_path / "obsidian"
+    vault.mkdir()
+    (vault / "Alpha.md").write_text("# Alpha\n")
+    monkeypatch.setenv("AION_VAULT", str(vault))
+
+    base, _ = server
+    _, j, _ = get(base, "/api/notes/content?name=../../../../etc/passwd")
+    assert j["found"] is False
+    assert "root:" not in j["text"]
+
+
+def test_note_content_reads_a_nested_note(server, tmp_path, monkeypatch):
+    vault = tmp_path / "obsidian"
+    (vault / "deep" / "deeper").mkdir(parents=True)
+    (vault / "deep" / "deeper" / "Gamma.md").write_text("# Gamma\n\nfound me\n")
+    monkeypatch.setenv("AION_VAULT", str(vault))
+
+    base, _ = server
+    _, j, _ = get(base, "/api/notes/content?name=Gamma")
+    assert j["found"] is True and "found me" in j["text"]
+
+
+# ── worktrees ────────────────────────────────────────────────────────────
+def test_worktrees_route_returns_a_summary(server):
+    base, _ = server
+    status, g, _ = get(base, "/api/worktrees?probe=0")
+    assert status == 200
+    assert "repos" in g and "summary" in g
+
+
+def test_worktrees_route_degrades_rather_than_500ing(server, monkeypatch):
+    base, _ = server
+    monkeypatch.setenv("AION_REPO_ROOT", "/nonexistent/xyz")
+    status, g, _ = get(base, "/api/worktrees?probe=0")
+    assert status == 200
+    assert g["repos"] == [] or g.get("error")
+
+
+# ── open in editor ───────────────────────────────────────────────────────
+def test_open_refuses_a_path_outside_the_sandbox(server):
+    base, _ = server
+    code, j = post(base, "/api/open", {"path": "/etc/passwd"})
+    assert code == 403 and "outside scan root" in j["error"]
+
+
+def test_open_refuses_when_no_allowlisted_editor_is_configured(server, tmp_path, monkeypatch):
+    """A bad AION_EDITOR must be a clear 400, not a silently spawned shell."""
+    monkeypatch.setenv("AION_EDITOR", "sh")
+    base, tmp = server
+    code, j = post(base, "/api/open", {"path": str(tmp / "gamma.md")})
+    assert code == 400 and "allowlist" in j["error"]
+
+
 def test_static_assets_carry_the_live_channel_wiring(server):
     """The HUD must actually open the socket the daemon serves."""
     base, _ = server
