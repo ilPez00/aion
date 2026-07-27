@@ -743,8 +743,21 @@ class VaultHarness(Harness):
         return flag.exists()
 
     def _prompt_storage_setup(self) -> None:
+        import os
+        import sys
+
         from .fleet import shared_path
         flag = shared_path("vault_setup_done")
+        # AION_VAULT skips the question entirely; so does having no terminal to
+        # ask on. Without this the prompt printed on every headless run (and
+        # ~15 times per test suite) before falling back to the default anyway.
+        env_root = os.environ.get("AION_VAULT", "").strip()
+        if env_root or not sys.stdin.isatty():
+            if env_root:
+                self.root = env_root
+                self._reader = None
+            self._mark_vault_setup_done(flag)
+            return
         print("\n[VAULT SETUP] Choose your notes vault (Obsidian-style storage):")
         print(f"  [Enter] keep default: {self.root}")
         print("  or type an absolute path to a markdown vault (e.g. ~/Obsidian):")
@@ -756,6 +769,9 @@ class VaultHarness(Harness):
             self.root = ans
             self._reader = None  # rebuild reader for new path
         print(f"[VAULT] using: {self.root}")
+        self._mark_vault_setup_done(flag)
+
+    def _mark_vault_setup_done(self, flag) -> None:
         try:
             flag.parent.mkdir(parents=True, exist_ok=True)
             flag.write_text(self.root)
