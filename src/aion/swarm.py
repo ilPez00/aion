@@ -15,10 +15,12 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Callable
 
 from .core import Bus, TOPIC_STATS
@@ -41,7 +43,12 @@ class SwarmAgent:
     name: str
     goal: str
     status: AgentStatus = AgentStatus.IDLE
-    dependencies: list[str] = field(default_factory=list)  # agent ids we wait for
+    # Agent NAMES we wait for -- not ids. `agents_ready`/`blocked_agents`/
+    # `_is_done` all resolve these through `agent_by_name`, and `swarm add
+    # <name> <goal> << dep1,dep2` takes names from the user. The comment here
+    # used to say "ids", which is how the HUD first drew zero dependency
+    # edges: it looked up `s<dep>` as an id and matched nothing.
+    dependencies: list[str] = field(default_factory=list)
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -63,6 +70,49 @@ class SwarmAgent:
             "age_s": round(time.time() - self.created, 1),
         }
 
+    def as_record(self) -> dict:
+        """Full form for the on-disk checkpoint.
+
+        A superset of `as_dict()` with the same key names, so anything already
+        reading the display shape (the HUD's process graph) reads a checkpoint
+        unchanged. `as_dict` truncates the goal and drops logs/output/error —
+        fine for a dashboard, lossy for something we intend to reload.
+        """
+        return {
+            **self.as_dict(),
+            "goal": self.goal,                 # untruncated
+            "output": self.output, "error": self.error,
+            "logs": self.logs[-50:],
+            "sub_agents": self.sub_agents,
+            "created": self.created, "started": self.started,
+            "completed": self.completed,
+        }
+
+    @classmethod
+    def from_record(cls, d: dict) -> "SwarmAgent":
+        """Rebuild from a checkpoint. Unknown status falls back to IDLE."""
+        try:
+            status = AgentStatus(d.get("status", "idle"))
+        except ValueError:
+            status = AgentStatus.IDLE
+        # An agent that was mid-flight when the process died cannot be resumed
+        # (the coroutine is gone), so it comes back IDLE and eligible to re-run
+        # rather than lying about still working.
+        if status in (AgentStatus.WORKING, AgentStatus.PLANNING):
+            status = AgentStatus.IDLE
+        return cls(
+            id=str(d["id"]), name=str(d.get("name", d["id"])),
+            goal=str(d.get("goal", "")), status=status,
+            dependencies=[str(x) for x in (d.get("deps") or [])],
+            parent_id=d.get("parent"),
+            sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
+            progress=float(d.get("progress", 0.0) or 0.0),
+            output=str(d.get("output", "")), error=str(d.get("error", "")),
+            created=float(d.get("created", 0) or time.time()),
+            started=d.get("started"), completed=d.get("completed"),
+            logs=[str(x) for x in (d.get("logs") or [])],
+        )
+
 
 @dataclass
 class SwarmPlan:
@@ -80,6 +130,55 @@ class SwarmPlan:
         }
 
 
+class SwarmStore:
+    """Crash-safe persistence for the swarm, mirroring `core.SessionStore`.
+
+    The orchestrator was memory-only, so a dependency DAG — the most
+    graph-shaped data aion has — vanished the moment the cockpit exited, and
+    the web HUD (a different process) could never see it at all. This writes
+    the same `swarm.json` that `procgraph.read_swarm` already looks for, so
+    the DAG appears in the process graph with no change on the reader side.
+
+    Per-instance, like the session store: a swarm belongs to the cockpit that
+    spawned it, and two cockpits on one machine must not share the file.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        from .fleet import instance_path
+        self.path = Path(path or instance_path("swarm.json"))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def save(self, agents: dict[str, "SwarmAgent"]) -> None:
+        from .fleet import write_json_atomic
+        try:
+            write_json_atomic(self.path, [a.as_record() for a in agents.values()])
+        except Exception as e:  # noqa: BLE001
+            print(f"[swarm] save failed: {e}")
+
+    def load(self) -> list["SwarmAgent"]:
+        if not self.path.exists():
+            return []
+        try:
+            raw = json.loads(self.path.read_text())
+        except Exception:  # noqa: BLE001
+            return []
+        out: list[SwarmAgent] = []
+        for d in raw if isinstance(raw, list) else []:
+            try:
+                out.append(SwarmAgent.from_record(d))
+            except Exception:  # noqa: BLE001
+                continue        # one bad record must not lose the whole swarm
+        return out
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"[swarm] clear failed: {e}")
+
+
 class SwarmOrchestrator:
     """Coordinates a swarm of agents working on a shared goal.
 
@@ -91,12 +190,44 @@ class SwarmOrchestrator:
         await orch.run_all()
     """
 
-    def __init__(self, bus: Bus | None = None) -> None:
+    def __init__(self, bus: Bus | None = None,
+                 store: "SwarmStore | None" = None,
+                 persist: bool = True) -> None:
         self.bus = bus or Bus()
         self.agents: dict[str, SwarmAgent] = {}
         self.plans: list[SwarmPlan] = []
         self._running = False
         self._paused = False
+        # `persist=False` keeps unit tests off the real ~/.aion; the store is
+        # created lazily so constructing an orchestrator never touches disk.
+        self._persist = persist
+        self._store = store
+        if store is not None:
+            self._persist = True
+
+    @property
+    def store(self) -> "SwarmStore | None":
+        if not self._persist:
+            return None
+        if self._store is None:
+            self._store = SwarmStore()
+        return self._store
+
+    def checkpoint(self) -> None:
+        """Write the swarm to disk. Called on every mutation."""
+        st = self.store
+        if st is not None:
+            st.save(self.agents)
+
+    def restore(self) -> int:
+        """Reload a checkpointed swarm. Returns how many agents came back."""
+        st = self.store
+        if st is None:
+            return 0
+        loaded = st.load()
+        for a in loaded:
+            self.agents[a.id] = a
+        return len(loaded)
 
     # ---- Agent management ------------------------------------------------
 
@@ -109,6 +240,7 @@ class SwarmOrchestrator:
             parent_id=parent,
         )
         self.agents[aid] = a
+        self.checkpoint()
         return a
 
     def agent_by_name(self, name: str) -> SwarmAgent | None:
@@ -141,6 +273,7 @@ class SwarmOrchestrator:
             return
         a.logs.append(line)
         a.logs = a.logs[-50:]
+        self.checkpoint()
 
     # ---- Orchestration ---------------------------------------------------
 
@@ -199,8 +332,23 @@ class SwarmOrchestrator:
     # ---- Bus integration -------------------------------------------------
 
     def _publish(self) -> None:
-        if self.bus:
-            asyncio.ensure_future(self._async_publish())
+        # Checkpoint first: the bus publish is fire-and-forget on the event
+        # loop, so a crash between the two would otherwise lose the change
+        # that was just broadcast.
+        self.checkpoint()
+        if not self.bus:
+            return
+        # `asyncio.ensure_future` needs a loop, and raises RuntimeError when
+        # there isn't one. Mutating a swarm from synchronous code — a CLI, a
+        # test, a restore path — is legitimate and must not blow up just
+        # because nobody is listening on the bus. The state is already on
+        # disk by this point, so dropping the notification loses nothing but
+        # the live nudge.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._async_publish())
 
     async def _async_publish(self) -> None:
         summary = self.status_summary()

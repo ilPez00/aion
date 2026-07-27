@@ -465,15 +465,25 @@ async function loadAgents() {
         links.push({ source: `i${t.instance}`, target: id, weight: 0.4, kind: 'hub' });
       }
     }
+    // Swarm dependency DAG. `deps` holds agent NAMES, not ids (see the
+    // comment on SwarmAgent.dependencies), so resolve through a name index —
+    // treating them as ids silently yields a swarm with no edges at all,
+    // which is the one thing this view exists to show.
+    const swarmByName = new Map(a.swarm.map(s => [s.name, s]));
     for (const s of a.swarm) {
       nodes.push({
         id: `s${s.id}`, label: s.name || s.id, kind: 'config',
         group: STATE_GROUP[s.status] ?? 0, weight: 0.3 + 0.7 * (s.progress || 0),
-        detail: `${s.status} · ${s.goal || ''}`.slice(0, 90),
+        detail: `${s.status} · ${s.goal || ''}`.slice(0, 120),
+        swarmGoal: s.goal, taskLog: s.logs,
       });
       for (const d of (s.deps || [])) {
-        links.push({ source: `s${d}`, target: `s${s.id}`, weight: 0.8, kind: 'sim' });
+        const dep = swarmByName.get(d);
+        if (dep) links.push({ source: `s${dep.id}`, target: `s${s.id}`, weight: 0.8, kind: 'hub' });
+        else setStatus(`swarm agent "${s.name}" waits on missing "${d}"`, true);
       }
+      // Attach the swarm to its instance so it is not a floating island.
+      if (s.instance) links.push({ source: `i${s.instance}`, target: `s${s.id}`, weight: 0.3, kind: 'sim' });
     }
 
     graph.setData(nodes, links);
