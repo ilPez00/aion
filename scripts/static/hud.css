@@ -279,7 +279,8 @@ table.data tbody tr[aria-selected="true"] { background: var(--sel); outline: 1px
 #canvas-wrap.sheet-mode canvas,
 #canvas-wrap.sheet-mode #legend,
 #canvas-wrap.sheet-mode #hint,
-#canvas-wrap.sheet-mode #focus-badge { display: none; }
+#canvas-wrap.sheet-mode #focus-badge,
+#canvas-wrap.sheet-mode #lod-badge { display: none; }
 
 .card {
   background: var(--panel); border: 1px solid var(--border);
@@ -348,25 +349,8 @@ ul.plain { list-style: none; display: flex; flex-direction: column; gap: 2px; }
 #panel-view { display: none; flex-direction: column; min-height: 0; height: 100%; }
 #canvas-wrap.panel-mode #panel-view { display: flex; }
 #canvas-wrap.panel-mode canvas, #canvas-wrap.panel-mode #legend,
-#canvas-wrap.panel-mode #focus-badge {
-  position: absolute; left: var(--s2); top: var(--s2); z-index: 5;
-  display: flex; gap: var(--s1); align-items: center; font-size: 11px;
-  background: var(--sel); border: 1px solid var(--accent); color: var(--fg);
-  border-radius: 999px; padding: 4px 6px 4px 12px;
-}
-.chip-x { min-height: 24px; padding: 2px 8px; font-size: 10px; border-radius: 999px; }
-
-#route-confirm {
-  position: absolute; left: 50%; top: var(--s3); transform: translateX(-50%);
-  z-index: 10; min-width: min(420px, 92%); display: grid; gap: var(--s2);
-  background: var(--panel); border: 1px solid var(--warn);
-  border-radius: var(--radius); padding: var(--s2);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-}
-.route-head { font-weight: 600; color: var(--warn); }
-.route-body { display: grid; gap: 2px; }
-
-#hint { display: none; }
+#canvas-wrap.panel-mode #hint, #canvas-wrap.panel-mode #focus-badge,
+#canvas-wrap.panel-mode #lod-badge { display: none; }
 #messages { flex: 1; overflow-y: auto; padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
 .msg { max-width: min(85%, 62ch); padding: var(--s1) var(--s2); border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
 .msg.user { align-self: flex-end; background: var(--accent); color: var(--bg); }
@@ -404,25 +388,7 @@ ul.plain { list-style: none; display: flex; flex-direction: column; gap: 2px; }
 @media (max-width: 760px) {
   /* Legend and hint would collide; the hint is the expendable one (its
      content is also the pointer affordance, which touch users don't need). */
-  #focus-badge {
-  position: absolute; left: var(--s2); top: var(--s2); z-index: 5;
-  display: flex; gap: var(--s1); align-items: center; font-size: 11px;
-  background: var(--sel); border: 1px solid var(--accent); color: var(--fg);
-  border-radius: 999px; padding: 4px 6px 4px 12px;
-}
-.chip-x { min-height: 24px; padding: 2px 8px; font-size: 10px; border-radius: 999px; }
-
-#route-confirm {
-  position: absolute; left: 50%; top: var(--s3); transform: translateX(-50%);
-  z-index: 10; min-width: min(420px, 92%); display: grid; gap: var(--s2);
-  background: var(--panel); border: 1px solid var(--warn);
-  border-radius: var(--radius); padding: var(--s2);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-}
-.route-head { font-weight: 600; color: var(--warn); }
-.route-body { display: grid; gap: 2px; }
-
-#hint { display: none; }
+  #hint { display: none; }
   #legend { max-width: calc(100% - 24px); max-height: 34%; overflow: auto; }
   .btn-label { display: none; }
 }

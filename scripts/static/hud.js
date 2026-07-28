@@ -283,6 +283,23 @@ function showFocusBadge(anchor) {
                    on: { click: () => { graph.clearFocus(); showFocusBadge(null); } } }));
 }
 
+/* The graph draws as many nodes as the screen has room for and defers the
+ * rest (see organic.js `_lod`). Hiding things silently would be worse than
+ * clutter — the user would have no way to know the picture is partial — so
+ * the count is always on screen, and it says what to do about it. */
+function showLodBadge(info) {
+  const bar = $('lod-badge');
+  if (!bar) return;
+  if (!info || info.hidden <= 0) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.replaceChildren(
+    el('span', { text: `${info.drawn} of ${info.total} shown` }),
+    el('button', {
+      type: 'button', class: 'chip-x', text: 'zoom in to reveal',
+      on: { click: () => graph.zoomBy(1.6) },
+    }));
+}
+
 /* ── legend + list ────────────────────────────────────────────────────── */
 function renderLegend(items) {
   $('legend').replaceChildren(...items.map(it =>
@@ -439,11 +456,18 @@ async function loadAgents() {
     const usedHarness = new Set(a.tasks.map(t => t.harness));
 
     for (const i of a.instances) {
+      // A box reached over SSH is not the same thing as a box you are running
+      // on: it is one tunnel away, and if that tunnel is the thing that broke,
+      // the reason belongs on the node rather than in a log somewhere.
+      const where = i.remote ? `ssh ${i.target}` : (i.hostname || 'local');
+      const state = i.alive ? 'live'
+        : (i.remote ? (i.error ? `unreachable — ${i.error}` : 'not answering')
+                    : 'offline');
       nodes.push({
-        id: `i${i.id}`, label: `${i.id}${i.alive ? '' : ' (offline)'}`, hub: true,
-        kind: 'hub', group: i.alive ? 2 : 0, weight: 1,
-        detail: `${i.hostname || 'local'} · pid ${i.pid || '—'} · ` +
-                `${i.alive ? 'live' : 'offline'} · ${i.running_count} running`,
+        id: `i${i.id}`, label: `${i.remote ? '⇄ ' : ''}${i.id}${i.alive ? '' : ' (offline)'}`,
+        hub: true, kind: 'hub', group: i.alive ? (i.remote ? 3 : 2) : 0, weight: 1,
+        detail: `${where} · ${i.remote ? 'remote' : `pid ${i.pid || '—'}`} · ` +
+                `${state} · ${i.running_count} running`,
       });
     }
     // Harnesses that never ran anything would trebble the node count for no
@@ -1650,6 +1674,7 @@ function boot() {
     onHover: n => { $('hint').textContent = n ? (n.path || n.label) : HINT; },
     onFocusChange: showFocusBadge,
     onDrop: onGraphDrop,
+    onLod: showLodBadge,
   });
 
   $('view-toggle').addEventListener('click', toggleView);

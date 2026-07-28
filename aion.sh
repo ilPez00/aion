@@ -178,6 +178,12 @@ case "${1:-run}" in
     ( sleep 2; open_in_chrome "$URL" >/dev/null 2>&1 || true ) &
     exec "$PY" scripts/aion_web.py
     ;;
+  peers)
+    # Machines this cockpit can reach over SSH. See docs/ssh-peers.md.
+    ensure_venv
+    shift || true
+    exec "$PY" scripts/aion_peers.py "$@"
+    ;;
   doctor)
     # Answers "why isn't X working" without reading three docs first.
     ensure_venv
@@ -231,6 +237,7 @@ aion — splitscreen HUD + application desktop
   ./aion.sh daily           start the physis brain, then the cockpit
   ./aion.sh web             serve the web HUD    → http://127.0.0.1:8742
   ./aion.sh graph [DIR]     web HUD opened on the graph file manager for DIR
+  ./aion.sh peers           machines reachable over SSH (list/add/rm/test)
   ./aion.sh doctor          check deps, services, paths — run this first when stuck
   ./aion.sh desktop         install a .desktop launcher
   ./aion.sh install         create/refresh .venv + deps

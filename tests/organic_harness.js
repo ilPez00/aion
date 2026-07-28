@@ -111,6 +111,48 @@ process.stdin.on('end', () => {
     }
   }
 
+  // Level-of-detail sweep. Zooming in shrinks the slice of graph inside the
+  // viewport, so the same node budget covers a larger SHARE of what is on
+  // screen — that share is the property worth asserting, not the raw drawn
+  // count (which falls at high zoom simply because less is in view).
+  const lodSweep = [];
+  for (const k of [0.25, 0.5, 1, 2, 4, 8]) {
+    og.fit();
+    og._zoomCenter(k);
+    og._draw();
+    const info = og.lodInfo();
+    const hubsInView = og.nodes.filter(n => n.hub && n._vis !== undefined);
+    lodSweep.push({
+      k, drawn: info.drawn, inView: info.inView, budget: info.budget,
+      total: info.total,
+      shown: info.inView ? info.drawn / info.inView : 1,
+      // A culled hub would remove a whole cluster's label from the map.
+      hubsCulled: og.nodes.filter(n => n.hub && n._inView && !n._vis).length,
+    });
+  }
+
+  // The selection must survive the budget: hiding what the user just clicked
+  // (or what search just jumped to) makes the graph lie about its own result.
+  og.fit();
+  og._zoomCenter(0.25);
+  const leastImportant = og.nodes.filter(n => !n.hub)
+    .sort((a, b) => a._imp - b._imp)[0];
+  let selectionSurvives = true;
+  if (leastImportant) {
+    og.select(leastImportant, false);
+    og._draw();
+    selectionSurvives = leastImportant._vis === true;
+  }
+  og.select(null, false);
+
+  // Captured here, with real data and a zoomed-out view, because the empty
+  // case below wipes the graph — describing that would report zero of
+  // everything and quietly pass any assertion about it.
+  og.fit();
+  og._zoomCenter(0.25);
+  og._draw();
+  const describeText = og.describe();
+
   // Empty data must not throw either.
   let emptyOk = true;
   try { og.setData([], []); og._draw(); og.fit(); } catch (_) { emptyOk = false; }
@@ -120,6 +162,7 @@ process.stdin.on('end', () => {
     agree, total, agreePct: total ? Math.round(100 * agree / total) : 0,
     hubs: hubNodes.length,
     minHubGap: Number.isFinite(minHubGap) ? Math.round(minHubGap) : null,
-    emptyOk, describe: og.describe(),
+    emptyOk, describe: og.describe(), describeText,
+    lodSweep, selectionSurvives,
   }));
 });

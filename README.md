@@ -45,6 +45,7 @@ install by hand. **One command starts everything:**
 ./aion.sh              # the TUI cockpit
 ./aion.sh web          # the web HUD          -> http://127.0.0.1:8742
 ./aion.sh graph ~/dev  # web HUD opened on the graph file manager for ~/dev
+./aion.sh peers        # aion instances on other machines, over SSH
 ./aion.sh doctor       # deps, services, paths — run this first when stuck
 ./aion.sh help         # every command, key and env var
 ```
@@ -124,6 +125,11 @@ loaded. Plain HTTP still carries the token in clear — put `tailscale serve` or
 a TLS proxy in front on any network you don't control. The PTY websocket
 (:8743) stays bound to loopback and is not LAN-reachable at all.
 
+For reaching **another machine's** aion, prefer SSH peers over binding to the
+LAN at all: `./aion.sh peers add pi5 gio@10.0.0.5` opens an `ssh -L` tunnel, so
+both ends stay on loopback and ssh does the encryption and host authentication.
+See [docs/ssh-peers.md](docs/ssh-peers.md).
+
 ### Modules
 
 Six, on keys `1`–`6`. Four of them are the *same* organic force-directed
@@ -147,6 +153,15 @@ instrument:
 Four of these are the same organic graph; the rest are card surfaces or panels.
 The TUI cockpit and the web HUD now read the *same* shared state
 (`~/.aion/shared/`), so a todo added in one shows up in the other.
+
+**Detail follows zoom.** A 600-node graph drawn all at once is a texture, not
+a picture, so the renderer draws a fixed number of nodes per unit of *screen
+area* and defers the rest. Zooming in does not cross a threshold — it shrinks
+the slice of graph inside the viewport, so fewer nodes compete for the same
+pixels and more of them are drawn. Detail appears because there is genuinely
+room for it. Cluster hubs, the current selection and search hits are never
+deferred, the badge always says how many are held back, and the list view and
+Ctrl-K search stay complete — nothing is hidden from search, only from paint.
 
 Some cockpit state is inherently in-process and is **not** faked: spawning a
 task on a harness needs a running cockpit (the HUD routes it instead — see

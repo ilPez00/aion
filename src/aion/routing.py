@@ -53,6 +53,11 @@ class Candidate:
     cpu: float = 0.0            # 0..1, 0 when unknown
     age_s: float = 0.0          # heartbeat age
     is_self: bool = False
+    # Why this candidate is in the state it is in, when the transport knows
+    # something the scheduler cannot see -- an ssh peer's "Permission denied
+    # (publickey)" beats a bare "offline" when you are staring at the HUD
+    # wondering which of six boxes is misconfigured.
+    note: str = ""
 
 
 @dataclass
@@ -92,7 +97,7 @@ def eligible(c: Candidate, harness: str = "") -> tuple[bool, str]:
     everything is offline quietly route to the least-dead option.
     """
     if not c.alive:
-        return False, "offline"
+        return False, f"offline ({c.note})" if c.note else "offline"
     if c.age_s > MAX_HEARTBEAT_AGE_S:
         return False, f"heartbeat {c.age_s:.0f}s old"
     if harness and c.harnesses and harness not in c.harnesses:
@@ -198,3 +203,47 @@ def candidates_from_fleet(peers: list, harnesses: list[str] | None = None,
             is_self=bool(getattr(p, "is_self", False)),
         ))
     return out
+
+
+def candidates_from_ssh(rows: list[dict]) -> list[Candidate]:
+    """Adapt `sshlink.describe()` rows into candidates.
+
+    A peer counts as alive only when its tunnel is up AND its /status answered
+    through that tunnel. Either alone is a lie: an ssh forward survives the
+    remote aion crashing (ssh is still connected, the port still accepts, the
+    connection is just refused one hop further on), so trusting the tunnel
+    would route work into a hole.
+
+    `age_s` is 0 because the status here was fetched just now — remote peers
+    have no heartbeat file to be stale relative to. `local=False` costs them
+    LOCAL_BONUS, which is the intent: same-machine work is cheaper, so a remote
+    box has to be meaningfully more idle to win.
+    """
+    out: list[Candidate] = []
+    for row in rows:
+        status = row.get("status") or {}
+        alive = bool(row.get("up")) and bool(status)
+        out.append(Candidate(
+            id=str(row.get("id", "?")),
+            host="127.0.0.1",              # the local end of the tunnel
+            port=int(row.get("local_port", 0) or 0),
+            alive=alive,
+            local=False,
+            running_count=int(status.get("running_count", 0) or 0),
+            active_harness=str(status.get("active_harness", "") or ""),
+            harnesses=[str(h) for h in (status.get("harnesses") or [])],
+            cpu=float(status.get("cpu", 0.0) or 0.0),
+            age_s=0.0,
+            is_self=False,
+            note=_ssh_note(row, status),
+        ))
+    return out
+
+
+def _ssh_note(row: dict, status: dict) -> str:
+    """The most specific thing we can say about why a peer is not usable."""
+    if row.get("up") and not status:
+        return "tunnel up, aion not answering on the far end"
+    if not row.get("enabled", True):
+        return "disabled"
+    return str(row.get("error", "") or "")[:120]

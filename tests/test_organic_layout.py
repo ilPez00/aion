@@ -35,6 +35,10 @@ from aion import fsgraph  # noqa: E402
 HARNESS = Path(__file__).parent / "organic_harness.js"
 ORGANIC = ROOT / "scripts" / "static" / "organic.js"
 
+# Mirrors LOD_HYSTERESIS in organic.js: a node already drawn keeps its slot
+# until it is well past the budget, so the drawn count can sit slightly over.
+LOD_HYSTERESIS = 1.18
+
 pytestmark = pytest.mark.skipif(
     not shutil.which("node"), reason="node not installed; layout gate skipped")
 
@@ -156,3 +160,102 @@ def test_graph_describes_itself_for_screen_readers(repo_graph):
     assert "nodes" in d and "clusters" in d and "links" in d
     for control in ("arrow keys", "tab", "enter"):
         assert control in d, f"description never mentions {control!r}"
+
+
+# ── level of detail ──────────────────────────────────────────────────────────
+# The renderer draws a fixed number of nodes per unit of screen area and defers
+# the rest. These gate the two ways that goes wrong: showing so much it is
+# still a wall of dots, or hiding so much the graph stops being navigable.
+
+
+@pytest.fixture(scope="module")
+def crowded():
+    """A graph well past the budget — 12 clusters, 600 files.
+
+    The repo's own source scans to ~87 nodes, which fits on screen whole, so
+    it cannot exercise LOD at all. This is the size that made the feature
+    necessary: a `~/dev` scan, a big vault, a fleet mid-run.
+    """
+    themes = [{"id": c, "name": f"cluster{c}", "domain": "discovered",
+               "mode": "", "category": None} for c in range(12)]
+    files, edges, sims = [], [], []
+    for c in range(12):
+        ids = []
+        for j in range(50):
+            fid = c * 50 + j
+            ids.append(fid)
+            files.append({"id": fid, "path": f"/c{c}/f{j}.py", "title": f"c{c}f{j}",
+                          "kind": "code", "size": 100, "mtime": 0, "depth": 2})
+            edges.append({"theme_id": c, "file_id": fid, "score": 0.9})
+        for a, b in zip(ids, ids[1:]):
+            sims.append({"source": a, "target": b, "score": 0.5})
+    return {"root": "/synthetic", "source": "local", "truncated": False,
+            "themes": themes, "files": files, "edges": edges, "file_edges": sims}
+
+
+def test_zooming_out_actually_reduces_what_is_drawn(crowded):
+    """Otherwise the feature does nothing and the screen stays a texture."""
+    wide = layout(crowded)["lodSweep"][0]
+    assert wide["inView"] > wide["budget"], "corpus too small to exercise LOD"
+    assert wide["drawn"] < wide["inView"]
+
+
+def test_zooming_in_reveals_a_larger_share_of_what_is_on_screen(crowded):
+    """The user-facing promise: new elements appear as there is room for them.
+
+    The raw drawn count is NOT the property — it falls at high zoom simply
+    because less of the graph is in the viewport. What has to rise is the
+    fraction of on-screen nodes that survive the budget.
+    """
+    sweep = layout(crowded)["lodSweep"]
+    shares = [round(s["shown"], 3) for s in sweep]
+    assert shares[-1] >= 0.999, f"never reaches full detail: {shares}"
+    assert shares[-1] > shares[0], f"zooming in revealed nothing: {shares}"
+    # Monotone, allowing a hair of slack for the hysteresis deadband.
+    for a, b in zip(shares, shares[1:]):
+        assert b >= a - 0.02, f"detail went backwards on zoom: {shares}"
+
+
+def test_density_stays_within_budget(crowded):
+    """Constant screen-space density is the whole mechanism; if the drawn count
+    can exceed the budget the clutter comes straight back."""
+    out = layout(crowded)
+    # Hubs are exempt: they are the map, not detail on it. So the ceiling is
+    # the budget, plus the hysteresis deadband, plus the hub count — and that
+    # exemption has to stay small relative to the budget or it becomes the
+    # clutter it was meant to prevent.
+    ceiling = out["lodSweep"][0]["budget"] * LOD_HYSTERESIS + out["hubs"]
+    assert out["hubs"] < out["lodSweep"][0]["budget"] * 0.25
+    for s in out["lodSweep"]:
+        assert s["drawn"] <= ceiling, f"{s['drawn']} drawn, ceiling {ceiling:.0f}"
+
+
+def test_hubs_are_never_culled(crowded):
+    """A hub is a cluster's name. Dropping one deletes a region of the map
+    rather than a detail inside it."""
+    for s in layout(crowded)["lodSweep"]:
+        assert s["hubsCulled"] == 0
+
+
+def test_selection_is_never_culled(crowded):
+    """Search jumps to a node and selects it. If the budget then hides it, the
+    HUD has answered a query with a blank patch of canvas."""
+    assert layout(crowded)["selectionSurvives"] is True
+
+
+def test_small_graphs_are_drawn_whole(synthetic):
+    """44 nodes fit comfortably; LOD must not fire when there is nothing to
+    thin out, or it becomes a tax on every small view."""
+    out = layout(synthetic)
+    fitted = out["lodSweep"][2]          # k = 1, i.e. as fitted
+    assert fitted["drawn"] == fitted["inView"]
+
+
+def test_hidden_count_is_announced(crowded):
+    """The list view stays complete, and the description says so — a screen
+    reader user must not be told the graph is smaller than it is."""
+    out = layout(crowded)
+    desc = out["describeText"]
+    assert f"{out['nodes']} nodes" in desc
+    assert "hidden at this zoom" in desc
+    assert "list view" in desc

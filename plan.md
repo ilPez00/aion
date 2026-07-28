@@ -103,6 +103,20 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   gate decisions forced to reject. `./aion.sh up` opens Chrome, since the Web
   Speech API is Chrome-only.
 
+- **SSH peers** (`sshlink.py` + `./aion.sh peers` + `/api/peers`) — aion
+  instances on OTHER machines, reached through an `ssh -L` tunnel so the
+  existing HTTP transport, routing and gates work unchanged and neither end
+  binds a public interface. Per-peer keys, `restrict,permitopen=` in
+  authorized_keys (no shell, no pivot), argv-injection validation, orphaned
+  tunnels reaped. Peers appear in the Agents graph and as routing targets;
+  dispatch is still fail-closed. See `docs/ssh-peers.md`.
+
+- **Level of detail in the graph** — the renderer draws a fixed number of
+  nodes per unit of screen area and defers the rest, so zooming in reveals new
+  elements as room appears rather than crossing a tuned threshold. Hubs, the
+  selection and search hits are exempt; the list view and search stay complete;
+  the deferred count is on screen and in the screen-reader description.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin
@@ -132,6 +146,7 @@ AION_WEB_HOST=0.0.0.0 .venv/bin/python scripts/aion_web.py           # web HUD o
 
 ## Reference docs
 
+- `docs/ssh-peers.md` — reaching aion on another machine, and the key restrictions.
 - `docs/aion-cyclops-reconcile.md` — spec-vs-repo map (what the PRS got wrong).
 - `docs/physis-integration.md` — how the brain plugs into the loops.
 - `docs/install-mobile.md` — PWA/APK install path + the HTTPS caveat.

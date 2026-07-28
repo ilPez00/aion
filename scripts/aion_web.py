@@ -485,6 +485,137 @@ def _fleet_peers():
     return fleet.discover_local(include_self=True)
 
 
+# ---------------------------------------------------------------------------
+# SSH peers
+#
+# The tunnel pool is process-wide and lazy: nothing dials anything until a
+# request asks about peers. `~/.aion/peers.json` is the only source of hosts —
+# no endpoint here accepts a hostname, so the LAN-reachable HUD cannot be used
+# to make this machine open an ssh connection anywhere its owner did not
+# configure.
+# ---------------------------------------------------------------------------
+_SSH_POOL = None
+_SSH_CACHE: dict = {"at": 0.0, "rows": []}
+_SSH_TTL_S = 5.0
+
+
+def _sshlink_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import sshlink
+    return sshlink
+
+
+def ssh_rows(refresh: bool = False) -> list[dict]:
+    """Configured peers, each with its tunnel state and a polled /status.
+
+    Cached briefly: `route/plan` runs on every drag-hover in the HUD, and each
+    uncached call is one TCP connect per peer.
+    """
+    global _SSH_POOL
+    now = time.time()
+    if not refresh and now - _SSH_CACHE["at"] < _SSH_TTL_S:
+        return _SSH_CACHE["rows"]
+
+    sshlink = _sshlink_mod()
+    peers = sshlink.load_peers()
+    if not peers:
+        _SSH_CACHE.update(at=now, rows=[])
+        return []
+
+    if _SSH_POOL is None:
+        _SSH_POOL = sshlink.TunnelPool()
+    # `wait` is short on purpose: this runs inside an HTTP handler, and a peer
+    # that needs eight seconds to come up can come up by the next poll instead
+    # of holding the HUD's request open.
+    _SSH_POOL.ensure_all(peers, wait=3.0)
+    rows = sshlink.describe(peers, _SSH_POOL)
+
+    for row in rows:
+        row["status"] = _poll_peer(row) if row["up"] else {}
+    _SSH_CACHE.update(at=now, rows=rows)
+    return rows
+
+
+def _poll_peer(row: dict) -> dict:
+    """GET /status through the tunnel. {} means the far end is not answering.
+
+    An ssh forward outlives the remote aion process, so the local port
+    accepting proves only that ssh is alive. This is the liveness check.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.remotes import RemoteClient, RemoteNode
+    node = RemoteNode(id=row["id"], host="127.0.0.1", port=row["local_port"])
+    try:
+        return asyncio.run(RemoteClient(timeout=3.0).fetch_status(node)) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def peers_snapshot() -> dict:
+    """What the HUD draws for the fleet's off-machine half."""
+    try:
+        rows = ssh_rows()
+    except Exception as e:  # noqa: BLE001
+        return {"peers": [], "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    # Copy before flattening. `rows` are the cached objects shared with
+    # route_plan(), and popping "status" out of them in place made every peer
+    # look dead to the router the moment the HUD drew the peer list.
+    out = []
+    for row in rows:
+        status = row.get("status") or {}
+        flat = {k: v for k, v in row.items() if k != "status"}
+        flat.update(
+            running_count=int(status.get("running_count", 0) or 0),
+            active_harness=status.get("active_harness", ""),
+            hostname=status.get("hostname", ""),
+            reachable=bool(status),
+        )
+        out.append(flat)
+    return {"peers": out, "count": len(out),
+            "up": sum(1 for r in out if r["reachable"])}
+
+
+def _with_peers(snap: dict) -> dict:
+    """Fold SSH peers into a process-graph snapshot as extra instances.
+
+    They carry `remote: True` so the HUD can draw them differently — a box you
+    can reach is not the same thing as a box you are running on, and the graph
+    should not pretend otherwise.
+    """
+    try:
+        rows = ssh_rows()
+    except Exception:  # noqa: BLE001
+        return snap
+    if not rows:
+        return snap
+    peers = []
+    for row in rows:
+        status = row.get("status") or {}
+        peers.append({
+            "id": row["id"],
+            "hostname": status.get("hostname", "") or row["target"],
+            "pid": 0,
+            "port": row["local_port"],
+            "alive": bool(status),
+            "active_harness": status.get("active_harness", ""),
+            "running_count": int(status.get("running_count", 0) or 0),
+            "started_at": 0.0,
+            "updated_at": time.time() if status else 0.0,
+            "age_s": 0.0,
+            "remote": True,
+            "target": row["target"],
+            "error": row.get("error", ""),
+        })
+    out = dict(snap)
+    out["instances"] = list(snap.get("instances", [])) + peers
+    summary = dict(snap.get("summary", {}))
+    summary["instances"] = len(out["instances"])
+    summary["live_instances"] = sum(1 for i in out["instances"] if i.get("alive"))
+    summary["remote_instances"] = len(peers)
+    out["summary"] = summary
+    return out
+
+
 def _self_cpu() -> float:
     try:
         import psutil
@@ -499,6 +630,13 @@ def route_plan(harness: str = "", target_id: str | None = None) -> dict:
     known = [h["id"] for h in proc_snapshot().get("harnesses", [])]
     cands = routing.candidates_from_fleet(
         _fleet_peers(), harnesses=known, now_cpu=_self_cpu())
+    # SSH peers are candidates on exactly the same terms: rule 1 still holds,
+    # because the id is resolved against peers.json, and the host it maps to is
+    # always 127.0.0.1 — the local end of a tunnel this machine opened.
+    try:
+        cands += routing.candidates_from_ssh(ssh_rows())
+    except Exception:  # noqa: BLE001
+        pass  # a broken peer file must not make local routing unavailable
     return routing.plan(cands, harness=harness, target_id=target_id).as_dict()
 
 
@@ -1008,8 +1146,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._fs(lambda fg: fg.preview(q.get("path", [""])[0]))
         # ---- agent / process graph ----
         if p == "/api/agents":
-            return self._sendj(proc_snapshot(
-                include_finished=(q.get("finished", ["1"])[0] == "1")))
+            snap = proc_snapshot(
+                include_finished=(q.get("finished", ["1"])[0] == "1"))
+            # SSH peers join the graph as instances. Deliberately merged HERE
+            # and not inside procgraph.snapshot(): that function is pure and
+            # disk-only, it is what the live-push watcher fingerprints, and
+            # putting a network round trip inside it would make an idle HUD
+            # dial every peer four times a second.
+            return self._sendj(_with_peers(snap))
         # ---- the cockpit's own surfaces, read from shared state ----
         if p == "/api/voice/vocabulary":
             return self._sendj(voice_vocabulary())
@@ -1028,6 +1172,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sendj(_bridge(lambda b: b.settings()))
         if p == "/api/apps":
             return self._sendj(_bridge(lambda b: b.apps()))
+        if p == "/api/peers":
+            return self._sendj(peers_snapshot())
         if p == "/api/route/plan":
             return self._sendj(route_plan(
                 harness=q.get("harness", [""])[0],

@@ -38,6 +38,21 @@ const KIND_SHAPE = {
   note: 'circle', metric: 'circle', other: 'circle',
 };
 
+/* Level-of-detail budget. See `_lod()` for why this is expressed as screen
+ * area per node rather than as a zoom threshold.
+ *
+ * 5200 px² is roughly a 72x72 cell — enough for a node plus the breathing room
+ * its halo needs before neighbouring glows merge into a wash. On a 1280x800
+ * canvas that is ~197 nodes at once, which reads as a structure; the same
+ * canvas showing 600 reads as noise. Measured by eye across the Files, Agents
+ * and Vault graphs, which have very different degree distributions.
+ */
+const LOD_AREA_PER_NODE = 5200;
+const LOD_LABEL_FACTOR = 6;    // a label needs ~6 nodes' worth of room to sit in
+const LOD_MIN_NODES = 24;      // a phone in landscape still shows a graph
+const LOD_MARGIN_PX = 80;      // fade in before the centre crosses the edge
+const LOD_HYSTERESIS = 1.18;   // deadband so boundary nodes do not blink
+
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
@@ -115,9 +130,19 @@ class OrganicGraph {
       if (!leaf.anchor || l.w > leaf.anchorW) { leaf.anchor = hub; leaf.anchorW = l.w; }
     }
     this.hubs = this.nodes.filter(n => n.hub);
+    this._rankImportance();
     this.selected = this.selected && byId.get(this.selected.id) || null;
     this.focusIdx = -1;
     this.reheat();
+  }
+
+  /* Static per-node importance, used only to decide drawing order under the
+     LOD budget. Recomputed when the graph changes, never while panning — a
+     rank that moves with the viewport makes nodes strobe. */
+  _rankImportance() {
+    for (const n of this.nodes) {
+      n._imp = (n.hub ? 1000 : 0) + (n.weight || 0) * 10 + (n.deg || 0) * 0.5;
+    }
   }
 
   /* Apply a live update without rebuilding the graph.
@@ -197,6 +222,7 @@ class OrganicGraph {
       }
       this.hubs = this.nodes.filter(n => n.hub);
     }
+    this._rankImportance();
     // A nudge, not a reheat: enough for new nodes to find room, not enough to
     // rearrange the map under the user's cursor.
     this.alpha = Math.max(this.alpha, structural ? 0.30 : 0.10);
@@ -325,6 +351,96 @@ class OrganicGraph {
     if (this.alpha < 0.004) this.alpha = 0;
   }
 
+  /* ── level of detail ───────────────────────────────────────────────────
+   *
+   * A 600-node graph drawn all at once is a texture, not a picture. The rule
+   * here is CONSTANT SCREEN-SPACE DENSITY: a fixed number of nodes per unit of
+   * screen area, regardless of zoom.
+   *
+   * That is what makes detail zoom-dependent without any tuned zoom curve.
+   * Zooming in does not raise a threshold — it shrinks the slice of graph
+   * inside the viewport, so fewer nodes compete for the same pixels and more
+   * of them clear the budget. Detail appears because there is genuinely room
+   * for it, which is exactly the promise the gesture makes.
+   *
+   * Two things keep it from flickering:
+   *   - importance is STATIC per node (weight, degree, hub-ness). Rank by
+   *     anything viewport-dependent and nodes strobe as you pan.
+   *   - a hysteresis band: a node already drawn keeps its place until it is
+   *     well past the budget, so nodes sitting on the boundary do not blink.
+   *
+   * Hidden nodes stay in the simulation. LOD is a rendering decision, not a
+   * layout one — dropping them from the forces would make the whole graph
+   * re-settle on every zoom, and spatial memory is most of what makes this
+   * navigable. Nothing is hidden from the list view or from search either:
+   * the accessible twin stays complete, so LOD never removes information,
+   * only defers drawing it.
+   */
+  _lod() {
+    const { width: w, height: h } = this._size();
+    const budget = Math.max(LOD_MIN_NODES,
+                            Math.round((w * h) / LOD_AREA_PER_NODE));
+    const labelBudget = Math.max(6, Math.round(budget / LOD_LABEL_FACTOR));
+
+    // Viewport in world coordinates, with a margin so nodes fade in slightly
+    // before their centre crosses the edge rather than popping at it.
+    const m = LOD_MARGIN_PX / this.scale;
+    const x0 = -this.tx / this.scale - m, y0 = -this.ty / this.scale - m;
+    const x1 = (w - this.tx) / this.scale + m, y1 = (h - this.ty) / this.scale + m;
+
+    const sel = this.selected;
+    const near = sel ? new Set(this.links.flatMap(
+      l => (l.s === sel || l.t === sel) ? [l.s.id, l.t.id] : [])) : null;
+
+    const inView = [];
+    for (const p of this.nodes) {
+      p._wasVis = p._vis;
+      p._vis = false; p._lbl = false; p._inView = false;
+      if (p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1) continue;
+      p._inView = true;
+      inView.push(p);
+    }
+    // Static importance, so panning never reshuffles a node relative to its
+    // peers. Ties break on id to keep the order stable across frames.
+    inView.sort((a, b) => (b._imp - a._imp) || (a.id < b.id ? -1 : 1));
+
+    let drawn = 0;
+    for (const p of inView) {
+      // Things the user is currently working with are never a budget decision:
+      // hiding the selection, the keyboard focus or a search hit would make
+      // the graph lie about what it just told you it found.
+      const forced = p.hub || p === sel || p === this.hovered ||
+                     this.nodes[this.focusIdx] === p ||
+                     (near && near.has(p.id)) ||
+                     (this.filter && this.matches(p));
+      const limit = p._wasVis ? budget * LOD_HYSTERESIS : budget;
+      if (!forced && drawn >= limit) continue;
+      p._vis = true;
+      p._lbl = forced || drawn < labelBudget;
+      drawn++;
+    }
+    const hidden = this.nodes.length - drawn;
+    this._lodDrawn = drawn;
+    this._lodInView = inView.length;
+    this._lodBudget = budget;
+    this._lodTotal = this.nodes.length;
+    // Counted against the whole graph, not just what is in the viewport:
+    // "142 more" has to mean 142 more things exist, or the number is a lie
+    // the moment somebody pans.
+    if (hidden !== this._lodHidden) {
+      this._lodHidden = hidden;
+      if (this.onLod) this.onLod(this.lodInfo());
+    }
+  }
+
+  /* What the status line reports, so the graph says when it is holding
+     something back rather than quietly appearing smaller than it is. */
+  lodInfo() {
+    return { drawn: this._lodDrawn || 0, hidden: this._lodHidden || 0,
+             total: this._lodTotal || this.nodes.length,
+             inView: this._lodInView || 0, budget: this._lodBudget || 0 };
+  }
+
   /* ── render ────────────────────────────────────────────────────────── */
   _draw() {
     const ctx = this.ctx;
@@ -332,6 +448,7 @@ class OrganicGraph {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.fillStyle = this._theme.bg;
     ctx.fillRect(0, 0, w, h);
+    this._lod();
     ctx.save();
     ctx.translate(this.tx, this.ty);
     ctx.scale(this.scale, this.scale);
@@ -345,6 +462,9 @@ class OrganicGraph {
     // organic tissue rather than a circuit diagram, and separates the two
     // link kinds without relying on colour.
     for (const l of this.links) {
+      // An edge to a node that is not drawn is a line into nowhere: it reads
+      // as a dangling relationship rather than as omitted detail.
+      if (!(l.s._vis && l.t._vis)) continue;
       const active = sel && (l.s === sel || l.t === sel);
       const dim = this.filter && !(this.matches(l.s) || this.matches(l.t));
       ctx.globalAlpha = dim ? 0.05 : (active ? 0.85 : 0.24);
@@ -364,9 +484,9 @@ class OrganicGraph {
     // Nodes. Labels only where they can be read: hubs always, files once
     // zoomed in or when selected/hovered/focused — otherwise a 600-node
     // graph is a wall of overlapping text.
-    const showLabels = this.scale > 1.25;
     for (let i = 0; i < this.nodes.length; i++) {
       const p = this.nodes[i];
+      if (!p._vis) continue;
       const hit = this.visible(p);
       const isSel = p === sel, isHov = p === this.hovered, isFoc = i === this.focusIdx;
       const linked = near ? near.has(p.id) : false;
@@ -415,7 +535,7 @@ class OrganicGraph {
       ctx.fill();
       if (isSel || isFoc || isHov) ctx.stroke();
 
-      if (p.hub || isSel || isHov || isFoc || showLabels) {
+      if (p._lbl || isSel || isHov || isFoc) {
         ctx.globalAlpha = hit ? 1 : 0.2;
         ctx.font = `${p.hub ? 600 : 400} ${p.hub ? 12 : 10}px ${cssVar('--font', 'monospace')}`;
         ctx.textAlign = 'center';
@@ -505,7 +625,11 @@ class OrganicGraph {
     const { x, y } = this._toWorld(cx, cy);
     let best = null, bd = Infinity;
     for (const n of this.nodes) {
-      if (n === exclude || !this.visible(n)) continue;
+      // Only what is actually drawn is clickable. Picking a culled node would
+      // select something the user cannot see and never aimed at. Keyboard
+      // traversal deliberately still reaches everything — selecting a node
+      // forces it visible, so the keyboard is never limited by the budget.
+      if (n === exclude || n._vis === false || !this.visible(n)) continue;
       const d = Math.hypot(n.x - x, n.y - y);
       // generous slop so a 4px file node is still tappable on a phone
       if (d < Math.max(n.r + 10 / this.scale, 14 / this.scale) && d < bd) { bd = d; best = n; }
@@ -742,14 +866,25 @@ class OrganicGraph {
     this._zoomAt(k, r.left + r.width / 2, r.top + r.height / 2);
   }
 
+  /* Public: zoom about the canvas centre. The LOD badge uses this to make
+     "zoom in to reveal" an actual button rather than an instruction. */
+  zoomBy(k) { this._zoomCenter(k); }
+
   /* Text description of the current graph, announced to screen readers so the
      canvas is not a silent region. */
   describe() {
     const hubs = this.nodes.filter(n => n.hub).length;
     const focus = this._focusSet ? ' Isolated to one cluster; Escape to release.' : '';
+    // Say when drawing is being held back, and say that it is only drawing.
+    // A screen reader user must not be told the graph has fewer nodes than it
+    // does, and the list view still lists every one of them.
+    const lod = this._lodHidden > 0
+      ? ` ${this._lodHidden} more are hidden at this zoom to keep the view legible; ` +
+        `zoom in to reveal them, or use the list view for all of them.`
+      : '';
     return `${this.nodes.length} nodes in ${hubs} clusters, ${this.links.length} links. ` +
            `Arrow keys move between nodes, Tab walks linked neighbours, ` +
-           `Enter on a cluster isolates it.${focus}`;
+           `Enter on a cluster isolates it.${focus}${lod}`;
   }
 }
 
