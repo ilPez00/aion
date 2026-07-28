@@ -134,6 +134,21 @@ kbd {
   border-radius: 4px; padding: 1px 4px; color: var(--dim); background: var(--bg);
 }
 
+/* ── voice ────────────────────────────────────────────────────────────── */
+.voice-hud {
+  position: absolute; left: 50%; bottom: var(--s3); transform: translateX(-50%);
+  z-index: 12; display: flex; align-items: center; gap: var(--s1);
+  background: var(--panel); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 6px 14px; font-size: 13px;
+  max-width: 80%; box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+}
+.voice-hud.interim { color: var(--dim); border-color: var(--border); }
+.mic-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); flex: none;
+           animation: breathe 1.4s ease-in-out infinite; }
+#voice-btn[aria-pressed="true"] { background: var(--err); color: var(--bg); border-color: var(--err); }
+#gate-bar.flash { animation: gateflash 0.5s ease-in-out 3; }
+@keyframes gateflash { 50% { background: var(--sel); } }
+
 /* ── approval gates ───────────────────────────────────────────────────── */
 #gate-bar { display: grid; gap: 6px; padding: var(--s1) var(--s2);
             background: var(--panel); border-bottom: 1px solid var(--warn); }

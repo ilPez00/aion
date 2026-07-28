@@ -605,6 +605,28 @@ def gate_answer(gate_id: str, approved: bool, instance: str = "") -> dict:
     return {"ok": False, "error": "; ".join(errors) or "not answered"}
 
 
+def voice_interpret(text: str, confidence: float = 1.0) -> dict:
+    """Spoken phrase -> HUD action. Pure; executes nothing itself."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+        from aion import voicecmd
+        return voicecmd.parse(text, confidence).as_dict()
+    except Exception as e:  # noqa: BLE001
+        return {"action": "none", "ok": False, "args": {},
+                "say": f"{type(e).__name__}: {str(e)[:160]}",
+                "transcript": text, "confidence": confidence}
+
+
+def voice_vocabulary() -> dict:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+        from aion import voicecmd
+        return {"vocabulary": voicecmd.vocabulary(),
+                "min_confidence": voicecmd.MIN_CONFIDENCE}
+    except Exception as e:  # noqa: BLE001
+        return {"vocabulary": [], "error": str(e)[:160]}
+
+
 def _worktrees_mod():
     sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
     from aion import worktrees
@@ -981,6 +1003,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sendj(proc_snapshot(
                 include_finished=(q.get("finished", ["1"])[0] == "1")))
         # ---- the cockpit's own surfaces, read from shared state ----
+        if p == "/api/voice/vocabulary":
+            return self._sendj(voice_vocabulary())
         if p == "/api/gates":
             return self._sendj(gates_pending())
         if p == "/api/desktop":
@@ -1079,6 +1103,12 @@ class Handler(BaseHTTPRequestHandler):
             if act == "forget" and isinstance(val, int):
                 return self._sendj(_bridge(lambda b: b.memory_forget(val)))
             return self._sendj({"error": f"bad memory action {act!r}"}, 400)
+        if p == "/api/voice":
+            try:
+                conf = float(body.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                conf = 0.0        # unparseable confidence is NOT confidence
+            return self._sendj(voice_interpret(str(body.get("text", "")), conf))
         if p == "/api/gate":
             # `approved` must be the boolean true; anything else is a reject.
             return self._sendj(gate_answer(

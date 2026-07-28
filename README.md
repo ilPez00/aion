@@ -152,6 +152,44 @@ Some cockpit state is inherently in-process and is **not** faked: spawning a
 task on a harness needs a running cockpit (the HUD routes it instead — see
 cross-instance routing), as do HITL gates and the live operational mode.
 
+### Voice control
+
+Press **`v`** (or the MIC button) and talk to the whole HUD, not just the chat
+box. The transcript goes to a grammar in `src/aion/voicecmd.py`, which returns
+an *action* the browser performs:
+
+```
+go to agents · show vault · open settings      switch module
+scan ~/dev · open dev                          graph that directory
+filter parser · clear filter                   dim what does not match
+search for lexer                               open the palette on it
+isolate <cluster>                              show one cluster only
+list / graph / fit / refresh / back / up       view controls
+todo buy milk                                  delegated to the cockpit interpreter
+what do you think about X                      falls through to the agent
+```
+
+The grammar lives server-side rather than in the browser: it is testable
+without a microphone, it is the same vocabulary the TUI will want, and the one
+rule that matters belongs somewhere it can be verified.
+
+**Voice may deny an approval gate. It may never grant one.**
+
+A microphone hears the room — a podcast, a colleague, a video. Saying
+*"reject"* resolves a pending gate as denied; saying *"approve"* is **refused**
+and instead flashes the gate so the button is one tap away. Denial moves
+toward the state the engine already defaults to, so a mishearing costs a
+re-run; approval is the one direction where a mishearing is unrecoverable.
+This is deliberately stricter than the TUI, where the gate is answered by a
+physical device in your hand.
+
+Anything below ~0.55 recognition confidence is shown but not executed — in
+either direction. Unparseable confidence counts as no confidence. The chat
+composer keeps a separate MIC that dictates instead of commanding.
+
+Needs Chrome or Edge (Web Speech API); other browsers say so rather than
+failing silently.
+
 ### Approval gates (HITL)
 
 A gate pauses a privileged action — `rm -rf`, a force push, a

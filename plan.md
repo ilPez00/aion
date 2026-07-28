@@ -93,6 +93,11 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   authenticated transport. The published file is display-only; a forged
   approval in it releases nothing.
 
+- **Voice control of the web HUD** (`voicecmd.py` + `/api/voice`) — spoken
+  phrases drive navigation, scanning, filtering, isolation and view controls.
+  Voice can DENY an approval gate but never grant one; low confidence is shown,
+  not executed.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin

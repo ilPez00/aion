@@ -1270,35 +1270,170 @@ async function runPaletteAction() {
 }
 
 /* ── voice ────────────────────────────────────────────────────────────── */
+/* Voice used to only fill the chat box, and only in the Chat module. Now it
+ * drives the whole HUD: the transcript goes to the server's grammar
+ * (`voicecmd.py`), which returns an ACTION, and the browser performs it.
+ *
+ * The grammar is server-side rather than in here on purpose — it is the same
+ * vocabulary the TUI will want, it is testable without a microphone, and the
+ * one rule that matters (voice may deny an approval gate but never grant one)
+ * belongs somewhere it can be verified, not in a UI handler. */
 let recognition = null;
-function toggleVoice() {
+let voiceMode = 'command';      // 'command' drives the HUD, 'dictate' types
+
+function toggleVoice(mode = 'command') {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const btn = $('voice-btn');
-  if (!SR) { setStatus('voice not supported in this browser', true); return; }
+  if (!SR) {
+    setStatus('voice needs Chrome or Edge — this browser has no SpeechRecognition', true);
+    return;
+  }
   if (recognition) { recognition.stop(); return; }
+  voiceMode = mode;
   recognition = new SR();
   recognition.continuous = true;
   recognition.interimResults = true;
-  let finalText = '', silence = null;
+
+  let silence = null;
   recognition.onresult = e => {
     clearTimeout(silence);
-    silence = setTimeout(() => recognition && recognition.stop(), 1500);
-    let interim = '';
+    silence = setTimeout(() => recognition && recognition.stop(), 1400);
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalText += (finalText ? ' ' : '') + e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
+      const res = e.results[i];
+      const text = res[0].transcript.trim();
+      if (!res.isFinal) { showHeard(text, true); continue; }
+      showHeard(text, false);
+      if (voiceMode === 'dictate') {
+        const inp = $('chat-input');
+        inp.value = (inp.value ? inp.value + ' ' : '') + text;
+      } else {
+        // `confidence` is 0 on some engines for final results; treat a
+        // missing score as certain, and let the grammar's own threshold
+        // handle the genuinely uncertain ones.
+        runVoice(text, res[0].confidence == null ? 1 : res[0].confidence || 1);
+      }
     }
-    $('chat-input').value = finalText + interim;
   };
   const stop = () => {
     recognition = null;
     btn.setAttribute('aria-pressed', 'false');
-    if (finalText.trim()) sendMessage();
+    $('voice-hud').hidden = true;
+    if (voiceMode === 'dictate' && $('chat-input').value.trim()) sendMessage();
   };
   recognition.onend = stop;
-  recognition.onerror = stop;
+  recognition.onerror = ev => {
+    setStatus(`voice error: ${ev.error || 'unknown'}`, true);
+    stop();
+  };
   btn.setAttribute('aria-pressed', 'true');
+  $('voice-hud').hidden = false;
+  showHeard('listening…', true);
   recognition.start();
+}
+
+function showHeard(text, interim) {
+  const hud = $('voice-hud');
+  hud.hidden = false;
+  hud.className = 'voice-hud' + (interim ? ' interim' : '');
+  hud.replaceChildren(el('span', { class: 'mic-dot' }),
+                      el('span', { text }));
+}
+
+async function runVoice(text, confidence) {
+  try {
+    const a = await api('/api/voice', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, confidence }),
+    });
+    if (a.say) setStatus(a.say, !a.ok);
+    if (!a.ok) {
+      // A refusal still surfaces what it was about — an approval attempt
+      // highlights the waiting gate so the button is one tap away.
+      if (a.action === 'gate') $('gate-bar').classList.add('flash');
+      setTimeout(() => $('gate-bar').classList.remove('flash'), 1500);
+      return;
+    }
+    await performVoice(a);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+async function performVoice(a) {
+  const g = a.args || {};
+  switch (a.action) {
+    case 'goto': return go(g.module);
+    case 'scan': return scanDir(await resolveSpokenDir(g.dir));
+    case 'filter':
+      $('search').value = g.query || '';
+      graph.setFilter(g.query || '');
+      return setStatus(g.query ? `filtering “${g.query}”` : 'filter cleared');
+    case 'search': return openPalette(g.query || '');
+    case 'isolate': {
+      const hit = graph.nodes.find(n => n.hub &&
+        (n.label || '').toLowerCase().includes((g.query || '').toLowerCase()));
+      if (!hit) return setStatus(`no cluster matching “${g.query}”`, true);
+      graph.select(hit); graph.focusOn(hit); showFocusBadge(hit);
+      return setStatus(`isolated ${hit.label}`);
+    }
+    case 'view':
+      if ((S.view === 'list') !== (g.mode === 'list')) toggleView();
+      return;
+    case 'fit': graph.clearFocus(); showFocusBadge(null); return graph.fit();
+    case 'refresh': return go(S.module, { push: false });
+    case 'back': return history.back();
+    case 'up': {
+      if (S.module !== 'files' || !S.dir) return setStatus('not in a directory', true);
+      const up = S.dir.slice(0, S.dir.lastIndexOf('/')) || '/';
+      return up !== S.dir ? scanDir(up) : undefined;
+    }
+    case 'gate': {
+      const gate = (S.gates || [])[0];
+      if (!gate) return setStatus('no approval waiting', true);
+      return answerGate(gate, false);          // voice denies only
+    }
+    case 'help': return showVoiceHelp();
+    case 'command': return setStatus(`cockpit command: ${g.command}`);
+    case 'chat':
+      $('chat-input').value = g.text || '';
+      go('agent');
+      return sendMessage();
+    default: return;
+  }
+}
+
+/* Spoken paths are bare words ("dev", "aion"). Resolve them against the
+   bookmarked roots and the current directory before giving up. */
+async function resolveSpokenDir(spoken) {
+  const raw = (spoken || '').trim();
+  if (!raw) return S.dir;
+  if (raw.startsWith('/') || raw.startsWith('~')) return raw;
+  try {
+    const { roots } = await api('/api/fs/roots');
+    const hit = roots.find(r => r.name.toLowerCase() === raw.toLowerCase());
+    if (hit) return hit.path;
+  } catch (_) {}
+  return `${S.dir || ''}/${raw}`.replace(/\/+/g, '/');
+}
+
+async function showVoiceHelp() {
+  try {
+    const v = await api('/api/voice/vocabulary');
+    $('sheet') && go('desk');
+    setStatus('say: ' + v.vocabulary.slice(0, 4).map(x => x.say).join(' · '));
+    renderVoiceSheet(v.vocabulary);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function renderVoiceSheet(vocab) {
+  const box = $('route-confirm');
+  box.hidden = false;
+  box.replaceChildren(
+    el('div', { class: 'route-head', text: 'Say one of these' }),
+    el('div', { class: 'route-body mono-sm' }, vocab.map(v =>
+      el('div', {}, [el('span', { text: `“${v.say}” ` }),
+                     el('span', { class: 'muted', text: v.does })]))),
+    el('div', { class: 'row' }, [
+      el('button', { type: 'button', text: 'Close',
+                     on: { click: () => { box.hidden = true; } } })]));
 }
 
 /* ── live channel ─────────────────────────────────────────────────────── */
@@ -1426,7 +1561,8 @@ function boot() {
   $('open-editor').addEventListener('click', openInEditor);
   $('inspector-close').addEventListener('click', () => $('inspector').classList.remove('open'));
   $('send').addEventListener('click', sendMessage);
-  $('voice-btn').addEventListener('click', toggleVoice);
+  $('voice-btn').addEventListener('click', () => toggleVoice('command'));
+  $('dictate-btn').addEventListener('click', () => toggleVoice('dictate'));
   $('chat-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
@@ -1466,6 +1602,7 @@ function boot() {
     if (e.key === '/') { e.preventDefault(); $('search').focus(); }
     if (e.key === 'g' || e.key === 'l') toggleView();
     if (e.key === 'r') go(S.module, { push: false });
+    if (e.key === 'v') { e.preventDefault(); toggleVoice('command'); }
     if (e.key === '?') $('inspector').classList.toggle('open');
     // Backspace climbs one directory — the file-manager reflex.
     if (e.key === 'Backspace' && S.module === 'files' && S.dir) {
