@@ -294,9 +294,16 @@ class OrganicGraph {
     // 4. anchoring — a file is pulled toward its OWN hub, not toward the
     //    canvas centre. This is what makes the picture agree with the
     //    clustering: proximity on screen means membership, not luck.
+    //
+    //    The constant is balanced against force 1 (springs), and force 1 got
+    //    much stronger when fsgraph moved to content-led weighting: the
+    //    similarity mesh went from ~0.1 to ~2.2 edges per file, and all that
+    //    extra pull drags files across cluster boundaries. Agreement fell to
+    //    65% at the old 0.11 and the layout gate caught it. 0.22 restores
+    //    ~85% across four corpora without collapsing clusters into spokes.
     for (const p of this.nodes) {
       if (!p.anchor) continue;
-      const g = 0.110 * a * (0.5 + (p.anchorW || 0.5));
+      const g = 0.220 * a * (0.5 + (p.anchorW || 0.5));
       p.vx += (p.anchor.x - p.x) * g;
       p.vy += (p.anchor.y - p.y) * g;
     }

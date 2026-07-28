@@ -1280,16 +1280,47 @@ async function runPaletteAction() {
  * belongs somewhere it can be verified, not in a UI handler. */
 let recognition = null;
 let voiceMode = 'command';      // 'command' drives the HUD, 'dictate' types
+let voiceLoop = false;          // stay listening between utterances
+
+/* Turn-taking, the way a voice assistant behaves: you speak, it acts, it
+ * answers, and it is listening again — no button between turns. The loop
+ * ends only when you stop it, so `voiceLoop` (not the recogniser's own
+ * lifecycle) is what decides whether to come back up.
+ *
+ * Chrome ends a recognition session on every pause and on every abort, so
+ * "continuous" has to be rebuilt on top of that rather than trusted. */
+function restartRecognition() {
+  if (!voiceLoop || recognition) return;
+  setTimeout(() => {
+    if (!voiceLoop || recognition) return;
+    try { startRecognition(); } catch (_) { voiceLoop = false; }
+  }, 250);
+}
+
+function stopVoice() {
+  voiceLoop = false;
+  if (recognition) { try { recognition.abort(); } catch (_) {} }
+  recognition = null;
+  $('voice-btn').setAttribute('aria-pressed', 'false');
+  $('voice-hud').hidden = true;
+  try { speechSynthesis.cancel(); } catch (_) {}
+}
 
 function toggleVoice(mode = 'command') {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const btn = $('voice-btn');
   if (!SR) {
-    setStatus('voice needs Chrome or Edge — this browser has no SpeechRecognition', true);
+    setStatus('voice needs Chrome — this browser has no SpeechRecognition', true);
     return;
   }
-  if (recognition) { recognition.stop(); return; }
+  if (voiceLoop || recognition) { stopVoice(); return; }
   voiceMode = mode;
+  voiceLoop = (mode === 'command');   // dictation is one utterance, not a loop
+  startRecognition();
+}
+
+function startRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = $('voice-btn');
   recognition = new SR();
   recognition.continuous = true;
   recognition.interimResults = true;
@@ -1314,21 +1345,32 @@ function toggleVoice(mode = 'command') {
       }
     }
   };
-  const stop = () => {
+  recognition.onend = () => {
     recognition = null;
-    btn.setAttribute('aria-pressed', 'false');
-    $('voice-hud').hidden = true;
-    if (voiceMode === 'dictate' && $('chat-input').value.trim()) sendMessage();
+    if (voiceMode === 'dictate') {
+      btn.setAttribute('aria-pressed', 'false');
+      $('voice-hud').hidden = true;
+      if ($('chat-input').value.trim()) sendMessage();
+      return;
+    }
+    // A pause ended the session, not the conversation.
+    if (voiceLoop && !speechSynthesis.speaking) restartRecognition();
   };
-  recognition.onend = stop;
   recognition.onerror = ev => {
-    setStatus(`voice error: ${ev.error || 'unknown'}`, true);
-    stop();
+    const fatal = ev.error === 'not-allowed' || ev.error === 'service-not-allowed';
+    if (fatal) {
+      setStatus('microphone blocked — allow it in the address bar', true);
+      stopVoice();
+    } else if (ev.error !== 'no-speech' && ev.error !== 'aborted') {
+      // no-speech and aborted are just silence and our own barge-in
+      setStatus(`voice: ${ev.error}`, true);
+    }
   };
   btn.setAttribute('aria-pressed', 'true');
   $('voice-hud').hidden = false;
   showHeard('listening…', true);
-  recognition.start();
+  try { recognition.start(); }
+  catch (_) { /* already started — Chrome throws rather than no-oping */ }
 }
 
 function showHeard(text, interim) {
@@ -1339,11 +1381,25 @@ function showHeard(text, interim) {
                       el('span', { text }));
 }
 
+/* What the HUD is currently looking at. Sent with every utterance so the
+ * model can resolve "this folder", "go up one", "isolate that cluster" —
+ * the references that make speech feel conversational instead of a command
+ * line you have to say out loud. */
+function voiceContext() {
+  return {
+    module: S.module,
+    dir: S.module === 'files' ? S.dir : '',
+    gate: (S.gates || [])[0] ? (S.gates[0].action || '') : '',
+    clusters: graph && graph.hubs ? graph.hubs.map(h => h.label).slice(0, 8) : [],
+  };
+}
+
 async function runVoice(text, confidence) {
+  showHeard(text + ' …', true);
   try {
     const a = await api('/api/voice', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, confidence }),
+      body: JSON.stringify({ text, confidence, context: voiceContext() }),
     });
     if (a.say) setStatus(a.say, !a.ok);
     if (!a.ok) {
@@ -1351,10 +1407,60 @@ async function runVoice(text, confidence) {
       // highlights the waiting gate so the button is one tap away.
       if (a.action === 'gate') $('gate-bar').classList.add('flash');
       setTimeout(() => $('gate-bar').classList.remove('flash'), 1500);
+      speak(a.say);
+      showHeard(a.say, false);
       return;
     }
-    await performVoice(a);
-  } catch (e) { setStatus(e.message, true); }
+    const spoken = await performVoice(a);
+    const reply = a.say || spoken || confirmFor(a);
+    if (reply) { speak(reply); showHeard(reply, false); }
+  } catch (e) { setStatus(e.message, true); speak('that did not work'); }
+}
+
+/* A short spoken acknowledgement, so you know it heard you without looking. */
+function confirmFor(a) {
+  const g = a.args || {};
+  switch (a.action) {
+    case 'goto': return g.module;
+    case 'scan': return `scanning ${(g.dir || '').split('/').pop() || g.dir}`;
+    case 'filter': return g.query ? `filtering ${g.query}` : 'filter cleared';
+    case 'search': return `searching ${g.query}`;
+    case 'view': return g.mode === 'list' ? 'list' : 'graph';
+    case 'fit': return 'fitted';
+    case 'refresh': return 'refreshed';
+    case 'up': return 'up one';
+    case 'back': return 'back';
+    default: return '';
+  }
+}
+
+/* Speech out. The browser's own synthesiser is used rather than the server's
+ * edge-tts: no round trip, no audio file, and it works with the daemon on a
+ * different machine. Muted by default is wrong for a voice interface — but
+ * it does stop talking the moment you press the mic again. */
+let voiceMuted = localStorage.getItem('aion_voice_mute') === '1';
+
+function speak(text) {
+  if (voiceMuted || !text || !window.speechSynthesis) return;
+  try {
+    speechSynthesis.cancel();            // never queue up a backlog
+    const u = new SpeechSynthesisUtterance(String(text).slice(0, 240));
+    u.rate = 1.08;
+    u.pitch = 1.0;
+    // Speaking while the recogniser is live would feed the HUD its own
+    // voice; pause listening for the duration of the reply.
+    u.onstart = () => { if (recognition) try { recognition.abort(); } catch (_) {} };
+    u.onend = () => { if (voiceLoop) restartRecognition(); };
+    speechSynthesis.speak(u);
+  } catch (_) {}
+}
+
+function toggleMute() {
+  voiceMuted = !voiceMuted;
+  localStorage.setItem('aion_voice_mute', voiceMuted ? '1' : '0');
+  $('mute-btn').setAttribute('aria-pressed', String(voiceMuted));
+  $('mute-btn').textContent = voiceMuted ? 'MUTED' : 'SPEAK';
+  setStatus(voiceMuted ? 'replies muted' : 'replies spoken');
 }
 
 async function performVoice(a) {
@@ -1562,6 +1668,9 @@ function boot() {
   $('inspector-close').addEventListener('click', () => $('inspector').classList.remove('open'));
   $('send').addEventListener('click', sendMessage);
   $('voice-btn').addEventListener('click', () => toggleVoice('command'));
+  $('mute-btn').addEventListener('click', toggleMute);
+  $('mute-btn').setAttribute('aria-pressed', String(voiceMuted));
+  $('mute-btn').textContent = voiceMuted ? 'MUTED' : 'SPEAK';
   $('dictate-btn').addEventListener('click', () => toggleVoice('dictate'));
   $('chat-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }

@@ -605,16 +605,24 @@ def gate_answer(gate_id: str, approved: bool, instance: str = "") -> dict:
     return {"ok": False, "error": "; ".join(errors) or "not answered"}
 
 
-def voice_interpret(text: str, confidence: float = 1.0) -> dict:
-    """Spoken phrase -> HUD action. Pure; executes nothing itself."""
+def voice_interpret(text: str, confidence: float = 1.0,
+                    context: dict | None = None, allow_llm: bool = True) -> dict:
+    """Spoken phrase -> HUD action. Executes nothing itself.
+
+    Rules resolve the common phrasings instantly; anything else goes to the
+    model, whose reply is validated against a fixed schema before it can
+    become an action (see voicecmd._validate).
+    """
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
         from aion import voicecmd
-        return voicecmd.parse(text, confidence).as_dict()
+        act = voicecmd.understand(text, confidence, context=context,
+                                  allow_llm=allow_llm)
+        return act.as_dict()
     except Exception as e:  # noqa: BLE001
         return {"action": "none", "ok": False, "args": {},
                 "say": f"{type(e).__name__}: {str(e)[:160]}",
-                "transcript": text, "confidence": confidence}
+                "transcript": text, "confidence": confidence, "source": "error"}
 
 
 def voice_vocabulary() -> dict:
@@ -1108,7 +1116,10 @@ class Handler(BaseHTTPRequestHandler):
                 conf = float(body.get("confidence", 1.0))
             except (TypeError, ValueError):
                 conf = 0.0        # unparseable confidence is NOT confidence
-            return self._sendj(voice_interpret(str(body.get("text", "")), conf))
+            ctx = body.get("context") if isinstance(body.get("context"), dict) else None
+            return self._sendj(voice_interpret(
+                str(body.get("text", "")), conf, context=ctx,
+                allow_llm=body.get("llm") is not False))
         if p == "/api/gate":
             # `approved` must be the boolean true; anything else is a reject.
             return self._sendj(gate_answer(

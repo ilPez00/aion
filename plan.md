@@ -97,6 +97,11 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   phrases drive navigation, scanning, filtering, isolation and view controls.
   Voice can DENY an approval gate but never grant one; low confidence is shown,
   not executed.
+- **Conversational voice** — continuous listening with spoken replies, and an
+  LLM fallback (`voicecmd.understand`) that maps ANY phrasing onto a validated
+  action. The model's reply is untrusted: schema-checked, args whitelisted,
+  gate decisions forced to reject. `./aion.sh up` opens Chrome, since the Web
+  Speech API is Chrome-only.
 
 ## Roadmap — next
 

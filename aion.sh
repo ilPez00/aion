@@ -16,6 +16,32 @@ PY="$VENV/bin/python"
 HAS_UV=0
 command -v uv >/dev/null 2>&1 && HAS_UV=1
 
+# Open a URL in Chrome specifically.
+#
+# The HUD's voice control is the Web Speech API, which only Chrome and Edge
+# implement — xdg-open honours the desktop default, so on a Firefox box the
+# HUD would come up with its microphone permanently broken and no clue why.
+# Chromium counts; Firefox does not, and we say so rather than opening it and
+# letting voice mysteriously do nothing.
+open_in_chrome() {
+  url="$1"
+  for b in google-chrome google-chrome-stable chromium chromium-browser \
+           brave-browser microsoft-edge vivaldi-stable; do
+    if command -v "$b" >/dev/null 2>&1; then
+      echo "[aion] opening in $b"
+      setsid nohup "$b" --new-window "$url" >/dev/null 2>&1 </dev/null &
+      return 0
+    fi
+  done
+  if [ -d "/Applications/Google Chrome.app" ]; then
+    open -a "Google Chrome" "$url"; return 0
+  fi
+  echo "[aion] no Chrome-family browser found — voice control needs one" >&2
+  echo "[aion] opening your default browser instead; everything else works" >&2
+  command -v xdg-open >/dev/null 2>&1 && xdg-open "$url" >/dev/null 2>&1 || true
+  return 1
+}
+
 ensure_venv() {
   if [ ! -x "$PY" ]; then
     echo "[aion] creating virtualenv (.venv)..."
@@ -95,8 +121,8 @@ case "${1:-run}" in
     fi
     echo "[aion] ready → http://127.0.0.1:$PORT"
 
-    if [ "$OPEN" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "http://127.0.0.1:$PORT/" >/dev/null 2>&1 || true
+    if [ "$OPEN" -eq 1 ]; then
+      open_in_chrome "http://127.0.0.1:$PORT/" || true
     fi
     if [ "$COCKPIT" -eq 1 ]; then
       echo "[aion] launching the TUI cockpit (Ctrl-C leaves the HUD running)"
@@ -149,7 +175,7 @@ case "${1:-run}" in
     fi
     URL="http://127.0.0.1:${AION_WEB_PORT:-8742}/"
     echo "[aion] graph file manager → $TARGET"
-    ( sleep 2; command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL" >/dev/null 2>&1 || true ) &
+    ( sleep 2; open_in_chrome "$URL" >/dev/null 2>&1 || true ) &
     exec "$PY" scripts/aion_web.py
     ;;
   doctor)
