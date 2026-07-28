@@ -12,6 +12,12 @@
 
 const NOOP = () => {};
 
+// Canvas size drives the LOD budget, so it has to be settable: the budget
+// curve is sub-linear in area and capped, and a fixed 1200x700 shim could
+// not tell a correct curve from a straight line through one point.
+const CANVAS_W = Number(process.env.CANVAS_W || 1200);
+const CANVAS_H = Number(process.env.CANVAS_H || 700);
+
 function mkCtx() {
   // Every 2D context call is a no-op; we only care that _draw() runs clean.
   return new Proxy({}, {
@@ -27,14 +33,14 @@ function mkCtx() {
 function mkEl(tag = 'div') {
   return {
     tagName: tag, style: {}, children: [], attrs: {}, className: '', textContent: '',
-    clientWidth: 1200, clientHeight: 700, width: 0, height: 0,
+    clientWidth: CANVAS_W, clientHeight: CANVAS_H, width: 0, height: 0,
     getContext: mkCtx, addEventListener: NOOP, removeEventListener: NOOP,
     setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; },
     removeAttribute(k) { delete this.attrs[k]; },
     append(...k) { this.children.push(...k); },
     replaceChildren(...k) { this.children = k; },
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 700 }),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: CANVAS_W, height: CANVAS_H }),
     setPointerCapture: NOOP, focus: NOOP, remove: NOOP, matches: () => false,
   };
 }
@@ -75,6 +81,7 @@ process.stdin.on('end', () => {
   ];
 
   const og = new OrganicGraph(mkEl('canvas'), {});
+  if (process.env.DETAIL) og.setDetail(process.env.DETAIL);
   const t0 = Date.now();
   og.setData(nodes, links);
   for (let i = 0; i < 500 && og.alpha > 0; i++) og._step();
@@ -164,5 +171,8 @@ process.stdin.on('end', () => {
     minHubGap: Number.isFinite(minHubGap) ? Math.round(minHubGap) : null,
     emptyOk, describe: og.describe(), describeText,
     lodSweep, selectionSurvives,
+    canvas: { w: CANVAS_W, h: CANVAS_H }, detail: og.detail,
+    budgetCurve: [[1200,700],[390,700],[1920,1080],[2560,1400],[3840,2160]]
+      .map(([w, h]) => ({ w, h, budget: og.budgetFor(w * h) })),
   }));
 });

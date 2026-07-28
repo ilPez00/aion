@@ -43,9 +43,13 @@ pytestmark = pytest.mark.skipif(
     not shutil.which("node"), reason="node not installed; layout gate skipped")
 
 
-def layout(payload: dict, reduced: bool = False) -> dict:
+def layout(payload: dict, reduced: bool = False, size: tuple[int, int] = (1200, 700),
+           detail: str = "") -> dict:
     env = {**os.environ, "ORGANIC_JS": str(ORGANIC),
-           "REDUCED_MOTION": "1" if reduced else "0"}
+           "REDUCED_MOTION": "1" if reduced else "0",
+           "CANVAS_W": str(size[0]), "CANVAS_H": str(size[1])}
+    if detail:
+        env["DETAIL"] = detail
     proc = subprocess.run(
         ["node", str(HARNESS)], input=json.dumps(payload), env=env,
         capture_output=True, text=True, timeout=90)
@@ -259,3 +263,59 @@ def test_hidden_count_is_announced(crowded):
     assert f"{out['nodes']} nodes" in desc
     assert "hidden at this zoom" in desc
     assert "list view" in desc
+
+
+# ── budget vs screen size ────────────────────────────────────────────────────
+# The budget scales with the viewport, but sub-linearly in its AREA. Straight
+# area/constant was the first attempt and it failed on exactly the screens that
+# provoke the problem: a 2560x1400 monitor got ~690 nodes and culled almost
+# nothing.
+
+def test_budget_grows_with_screen_but_slower_than_area(repo_graph):
+    curve = {(c["w"], c["h"]): c["budget"] for c in layout(repo_graph)["budgetCurve"]}
+    small, big = curve[(1200, 700)], curve[(1920, 1080)]
+    area_ratio = (1920 * 1080) / (1200 * 700)
+    assert big > small, "a bigger screen must show more"
+    assert big < small * area_ratio, (
+        f"budget is linear in area: {small} -> {big} for {area_ratio:.1f}x the pixels")
+
+
+def test_budget_is_capped_on_huge_displays(repo_graph):
+    """Past a couple of hundred marks it is a texture no matter the monitor."""
+    curve = {(c["w"], c["h"]): c["budget"] for c in layout(repo_graph)["budgetCurve"]}
+    assert curve[(3840, 2160)] <= 240
+    assert curve[(2560, 1400)] <= 240
+
+
+def test_phone_gets_a_smaller_budget_than_a_desktop(repo_graph):
+    curve = {(c["w"], c["h"]): c["budget"] for c in layout(repo_graph)["budgetCurve"]}
+    assert curve[(390, 700)] < curve[(1200, 700)]
+    assert curve[(390, 700)] >= 24, "a phone still has to show a graph"
+
+
+def test_a_big_screen_actually_culls(crowded):
+    """The regression: on a large display the old linear budget drew nearly
+    everything, so the feature did nothing where it was needed most."""
+    out = layout(crowded, size=(2560, 1400))
+    wide = out["lodSweep"][0]
+    assert wide["drawn"] < wide["inView"] * 0.75, (
+        f"{wide['drawn']} of {wide['inView']} drawn on a 2560x1400 screen")
+
+
+def test_detail_setting_changes_the_budget(crowded):
+    sparse = layout(crowded, detail="sparse")["lodSweep"][0]["drawn"]
+    normal = layout(crowded, detail="normal")["lodSweep"][0]["drawn"]
+    dense = layout(crowded, detail="dense")["lodSweep"][0]["drawn"]
+    assert sparse < normal < dense
+
+
+def test_detail_all_draws_everything(crowded):
+    """An escape hatch that actually escapes — otherwise a user who wants the
+    whole graph has no way to get it."""
+    out = layout(crowded, detail="all")
+    fitted = out["lodSweep"][0]
+    assert fitted["drawn"] == fitted["inView"] == out["nodes"]
+
+
+def test_unknown_detail_falls_back_to_normal(crowded):
+    assert layout(crowded, detail="nonsense")["detail"] == "normal"

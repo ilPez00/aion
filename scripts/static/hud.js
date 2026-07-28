@@ -287,17 +287,39 @@ function showFocusBadge(anchor) {
  * rest (see organic.js `_lod`). Hiding things silently would be worse than
  * clutter — the user would have no way to know the picture is partial — so
  * the count is always on screen, and it says what to do about it. */
+const DETAIL_LEVELS = ['sparse', 'normal', 'dense', 'all'];
+
+function setDetail(name) {
+  localStorage.setItem('aion.detail', name);
+  $('detail').value = name;
+  graph.setDetail(name);
+  setStatus(`detail: ${name}`);
+}
+
+function cycleDetail() {
+  const i = DETAIL_LEVELS.indexOf($('detail').value);
+  setDetail(DETAIL_LEVELS[(i + 1) % DETAIL_LEVELS.length]);
+}
+
 function showLodBadge(info) {
   const bar = $('lod-badge');
   if (!bar) return;
   if (!info || info.hidden <= 0) { bar.hidden = true; return; }
   bar.hidden = false;
+  const level = $('detail').value;
+  const next = DETAIL_LEVELS[DETAIL_LEVELS.indexOf(level) + 1];
   bar.replaceChildren(
     el('span', { text: `${info.drawn} of ${info.total} shown` }),
     el('button', {
-      type: 'button', class: 'chip-x', text: 'zoom in to reveal',
+      type: 'button', class: 'chip-x', text: 'zoom in',
       on: { click: () => graph.zoomBy(1.6) },
-    }));
+    }),
+    // Zooming is the spatial answer; raising the density is the other one, and
+    // a user who finds the default too thin should not have to hunt for it.
+    ...(next ? [el('button', {
+      type: 'button', class: 'chip-x', text: `more (${next})`,
+      on: { click: () => setDetail(next) },
+    })] : []));
 }
 
 /* ── legend + list ────────────────────────────────────────────────────── */
@@ -1677,6 +1699,12 @@ function boot() {
     onLod: showLodBadge,
   });
 
+  // Density is a preference, not a constant — it survives reloads.
+  const savedDetail = localStorage.getItem('aion.detail') || 'normal';
+  $('detail').value = savedDetail;
+  graph.setDetail(savedDetail);
+  $('detail').addEventListener('change', e => setDetail(e.target.value));
+
   $('view-toggle').addEventListener('click', toggleView);
   $('refresh').addEventListener('click', () => go(S.module));
   $('fit').addEventListener('click', () => graph.fit());
@@ -1736,6 +1764,7 @@ function boot() {
     if (e.key === '/') { e.preventDefault(); $('search').focus(); }
     if (e.key === 'g' || e.key === 'l') toggleView();
     if (e.key === 'r') go(S.module, { push: false });
+    if (e.key === 'd') cycleDetail();
     if (e.key === 'v') { e.preventDefault(); toggleVoice('command'); }
     if (e.key === '?') $('inspector').classList.toggle('open');
     // Backspace climbs one directory — the file-manager reflex.

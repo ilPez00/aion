@@ -38,20 +38,36 @@ const KIND_SHAPE = {
   note: 'circle', metric: 'circle', other: 'circle',
 };
 
-/* Level-of-detail budget. See `_lod()` for why this is expressed as screen
- * area per node rather than as a zoom threshold.
+/* Level-of-detail budget: how many nodes may be drawn at once.
  *
- * 5200 px² is roughly a 72x72 cell — enough for a node plus the breathing room
- * its halo needs before neighbouring glows merge into a wash. On a 1280x800
- * canvas that is ~197 nodes at once, which reads as a structure; the same
- * canvas showing 600 reads as noise. Measured by eye across the Files, Agents
- * and Vault graphs, which have very different degree distributions.
+ * This scales with the viewport, but SUB-LINEARLY in its area. Straight
+ * area/constant was the first attempt and it is wrong: it assumes twice the
+ * pixels means twice the elements you can parse, so a 2560x1400 monitor got a
+ * budget of ~690 and culled almost nothing — the clutter came straight back on
+ * exactly the screens big enough to provoke it. A larger display at the same
+ * viewing distance mostly buys angular size, not proportionally more things
+ * the eye can track, so the count grows on a 0.6 exponent and then stops.
+ *
+ * Reference point is 1200x700 — a typical HUD pane, not a full screen.
+ *
+ *     1200x700   ->  100      390x700 (phone)  ->   51
+ *     1920x1080  ->  172      2560x1400        ->  240 (at the cap)
+ *
+ * LOD_MAX_NODES is the real ceiling: past a couple of hundred marks the
+ * picture is a texture again no matter how big the monitor is.
  */
-const LOD_AREA_PER_NODE = 5200;
-const LOD_LABEL_FACTOR = 6;    // a label needs ~6 nodes' worth of room to sit in
+const LOD_REF_AREA = 1200 * 700;
+const LOD_REF_NODES = 100;
+const LOD_AREA_EXP = 0.6;      // double the screen area -> ~1.5x the nodes
 const LOD_MIN_NODES = 24;      // a phone in landscape still shows a graph
+const LOD_MAX_NODES = 240;     // beyond this the eye is not reading it anyway
+const LOD_LABEL_FACTOR = 6;    // a label needs ~6 nodes' worth of room to sit in
 const LOD_MARGIN_PX = 80;      // fade in before the centre crosses the edge
 const LOD_HYSTERESIS = 1.18;   // deadband so boundary nodes do not blink
+
+/* How much is "the right amount" is a matter of eyesight, screen and taste, so
+ * it is a control rather than a constant. Multiplies the computed budget. */
+const LOD_DETAIL = { sparse: 0.5, normal: 1, dense: 2, all: Infinity };
 
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -74,6 +90,7 @@ class OrganicGraph {
     this.hovered = null;
     this.focusIdx = -1;          // keyboard cursor, independent of selection
     this.tx = 0; this.ty = 0; this.scale = 1;
+    this.detail = opts.detail || 'normal';
     this.alpha = 0;
     this.tick = 0;
     this.filter = '';
@@ -378,8 +395,7 @@ class OrganicGraph {
    */
   _lod() {
     const { width: w, height: h } = this._size();
-    const budget = Math.max(LOD_MIN_NODES,
-                            Math.round((w * h) / LOD_AREA_PER_NODE));
+    const budget = this.budgetFor(w * h);
     const labelBudget = Math.max(6, Math.round(budget / LOD_LABEL_FACTOR));
 
     // Viewport in world coordinates, with a margin so nodes fade in slightly
@@ -431,6 +447,23 @@ class OrganicGraph {
       this._lodHidden = hidden;
       if (this.onLod) this.onLod(this.lodInfo());
     }
+  }
+
+  /* Nodes drawable in `area` px² of viewport, at the current detail setting.
+     Separated out so the budget curve is testable without a canvas. */
+  budgetFor(area) {
+    const mult = LOD_DETAIL[this.detail] ?? 1;
+    if (!Number.isFinite(mult)) return Infinity;
+    const scaled = LOD_REF_NODES * Math.pow(area / LOD_REF_AREA, LOD_AREA_EXP);
+    return Math.max(LOD_MIN_NODES,
+                    Math.min(LOD_MAX_NODES * mult, Math.round(scaled * mult)));
+  }
+
+  /* sparse | normal | dense | all. The right density depends on the screen,
+     the eyes and the graph, so it is the user's call, not a constant. */
+  setDetail(name) {
+    this.detail = (name in LOD_DETAIL) ? name : 'normal';
+    this._start();
   }
 
   /* What the status line reports, so the graph says when it is holding
