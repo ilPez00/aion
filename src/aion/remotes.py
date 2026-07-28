@@ -79,6 +79,17 @@ class RemoteClient:
         body = json.dumps({"prompt": prompt, "harness": harness or node.active_harness})
         return await self._request(node, "POST", "/run", body)
 
+    async def resolve_gate(self, node: RemoteNode, gate_id: str,
+                           approved: bool) -> dict | None:
+        """POST /gate — answer a human-in-the-loop approval on that instance.
+
+        This is the ONLY way a gate gets released from outside the cockpit
+        process. The published gates.json is display state; approval travels
+        over this authenticated channel or not at all.
+        """
+        body = json.dumps({"gate_id": gate_id, "approved": bool(approved)})
+        return await self._request(node, "POST", "/gate", body)
+
     async def cancel_task(self, node: RemoteNode, task_id: str) -> dict | None:
         """POST /cancel → result dict or None."""
         body = json.dumps({"task_id": task_id})
@@ -143,6 +154,7 @@ class RemoteServer:
       on_status() → dict : current state snapshot
       on_run(prompt, harness) → dict : run a task, return {task_id, ...}
       on_cancel(task_id) → dict : cancel a task
+      on_gate(gate_id, approved) → dict : resolve an approval gate
     """
 
     def __init__(self, host: str | None = None, port: int = 8765,
@@ -156,6 +168,8 @@ class RemoteServer:
         self.on_status = lambda: {}
         self.on_run = lambda p, h: {}
         self.on_cancel = lambda tid: {}
+        # Fail-closed default: with no handler wired, nothing is ever approved.
+        self.on_gate = lambda gid, approved: {"error": "no gate handler"}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -208,6 +222,19 @@ class RemoteServer:
                     params.get("prompt", ""),
                     params.get("harness", ""),
                 ) if callable(self.on_run) else {"error": "no handler"}
+                await self._reply(writer, 200, result)
+            elif method == "POST" and path == "/gate":
+                try:
+                    params = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    params = {}
+                # `approved` must be the boolean true. Any other value — a
+                # string, a 1, a missing key — is a rejection, because this
+                # releases a privileged action.
+                result = self.on_gate(
+                    params.get("gate_id", ""),
+                    params.get("approved") is True,
+                ) if callable(self.on_gate) else {"error": "no handler"}
                 await self._reply(writer, 200, result)
             elif method == "POST" and path == "/cancel":
                 try:

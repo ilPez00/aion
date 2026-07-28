@@ -19,8 +19,10 @@ blocks on it, resolve() (or the Intent-driven resolve_latest()) releases it.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 RISK_LOW = "low"
@@ -119,3 +121,82 @@ class GateBook:
     def clear_resolved(self) -> None:
         """Drop resolved gates so the book doesn't grow unbounded."""
         self._gates = {k: g for k, g in self._gates.items() if not g.resolved}
+
+
+class GateStore:
+    """Publishes pending gates so other processes can SEE them.
+
+    The web HUD runs in a different process from the cockpit, so a gate that
+    exists only in `GateBook._gates` is invisible there — and an unnoticed
+    gate is indistinguishable from a denial, because `wait()` is fail-closed.
+    This writes the pending set to `~/.aion/instances/<id>/gates.json` on
+    every change.
+
+    THE FILE IS DISPLAY STATE, NOT A CONTROL CHANNEL
+    ------------------------------------------------
+    Nothing reads this file back into the book. Writing `"approved": true`
+    into it approves nothing: the only thing that can release a gate is
+    `GateBook.resolve()` running inside the cockpit, reached over the
+    authenticated fleet transport. That asymmetry is deliberate — the file
+    lives in the user's home directory with ordinary permissions, so if it
+    were an approval channel then anything that could write a file could
+    approve a destructive action. Reading is safe; writing must not be.
+
+    `GateBook` stays a pure state machine; this is the only part that touches
+    a disk.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        if path is None:
+            from .fleet import instance_path
+            path = instance_path("gates.json")
+        self.path = Path(path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+    def publish(self, book: "GateBook") -> None:
+        """Write the pending set. Never raises into a harness loop."""
+        from .fleet import write_json_atomic
+        try:
+            write_json_atomic(self.path, [g.as_dict() for g in book.pending()])
+        except Exception as e:  # noqa: BLE001
+            print(f"[hitl] publish failed: {e}")
+
+    def read(self) -> list[dict]:
+        """Pending gates as plain dicts. For DISPLAY in another process."""
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return []
+        return [g for g in raw if isinstance(g, dict) and "id" in g] \
+            if isinstance(raw, list) else []
+
+    def clear(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"[hitl] clear failed: {e}")
+
+
+def read_all_pending(root: Path | None = None) -> list[dict]:
+    """Every pending gate across every instance on this machine.
+
+    Used by the web HUD, which does not know or care which cockpit raised a
+    gate — only that something is blocked waiting for a human.
+    """
+    import os
+    root = root or (Path(os.environ.get("AION_HOME", os.path.expanduser("~/.aion")))
+                    / "instances")
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        for g in GateStore(d / "gates.json").read():
+            out.append({**g, "instance": d.name})
+    return out

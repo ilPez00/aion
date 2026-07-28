@@ -98,6 +98,7 @@ class Store:
         # human-in-the-loop approval gates. Fail-closed: nothing auto-approves
         # unless a policy vouches for it (none does by default).
         self.gates = GateBook()
+        self._gate_store = None      # lazy: constructing a Store must not touch disk
         self._external_agents_cache: tuple[float, list[dict]] = (0.0, [])
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
@@ -595,6 +596,29 @@ class Store:
 
     def _publish_gates(self) -> None:
         self.state.stats["hitl"] = [g.as_dict() for g in self.gates.pending()]
+        # Also publish to disk so the web HUD (a different process) can show
+        # them. A gate nobody notices is indistinguishable from a denial,
+        # because wait() is fail-closed.
+        try:
+            if self._gate_store is None:
+                from .hitl import GateStore
+                self._gate_store = GateStore()
+            self._gate_store.publish(self.gates)
+        except Exception as e:  # noqa: BLE001
+            print(f"[hitl] could not publish gates: {e}")
+
+    def resolve_gate_by_id(self, gate_id: str, approved: bool) -> dict:
+        """Resolve one gate by id — what the remote /gate endpoint calls."""
+        gate = self.gates.resolve(gate_id, approved)
+        if gate is None:
+            return {"ok": False, "error": f"no pending gate {gate_id!r}"}
+        verb = "approved" if approved else "rejected"
+        t = self.registry.tasks.get(gate.task_id)
+        if t is not None:
+            self.registry.log(t, f"[hitl] {verb} (remote): {gate.action[:80]}")
+        self.gates.clear_resolved()
+        self._publish_gates()
+        return {"ok": True, "gate": gate.as_dict()}
 
     def _needs_gate(self, h, prompt: str) -> bool:
         """Does spawning this harness+prompt need a human yes first?

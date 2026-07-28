@@ -152,6 +152,34 @@ Some cockpit state is inherently in-process and is **not** faked: spawning a
 task on a harness needs a running cockpit (the HUD routes it instead — see
 cross-instance routing), as do HITL gates and the live operational mode.
 
+### Approval gates (HITL)
+
+A gate pauses a privileged action — `rm -rf`, a force push, a
+`requires_approval` harness — until a human says yes. The engine is
+**fail-closed**: an unanswered gate is denied when the harness times out. That
+makes visibility a safety property, not a convenience, because *a gate nobody
+notices is indistinguishable from a rejection*.
+
+Pending gates now appear as a **banner above every module** in the web HUD —
+not a corner notification you can scroll past — colour- and label-coded by
+risk, with Approve/Reject. They arrive over the live socket the instant they
+open, with a polling fallback.
+
+The cockpit publishes its pending set to `~/.aion/instances/<id>/gates.json`
+so another process can *show* them. **That file is display state, never a
+control channel.** Writing `"approved": true` into it approves nothing — it is
+never read back into the book. Releasing a gate happens only through
+`GateBook.resolve()` inside the cockpit, reached over the token-authenticated
+fleet transport (`POST /gate`). The asymmetry is deliberate: the file sits in
+your home directory with ordinary permissions, so if it were an approval
+channel then anything that could write a file could authorise a destructive
+action. Both halves are pinned by tests, including a forged-file attempt.
+
+`approved` must be the literal boolean `true`; a truthy string is a rejection.
+A `RemoteServer` with no gate handler wired refuses rather than defaulting
+open, and an unreachable cockpit reports failure rather than a success the
+fleet never gave — the gate stays pending, and pending means denied.
+
 ### Cross-instance task routing
 
 Drag a task onto an instance in the **Agents** graph to run it there. The

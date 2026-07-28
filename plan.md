@@ -88,6 +88,11 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
 - **One-command run** — `./aion.sh up` (physis + HUD + browser), `down`,
   `status`.
 
+- **HITL gates in the web HUD** (`hitl.GateStore` + `/gate` transport) —
+  pending gates published for cross-process display and answered over the
+  authenticated transport. The published file is display-only; a forged
+  approval in it releases nothing.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin

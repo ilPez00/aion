@@ -65,6 +65,10 @@
       <span id="status" class="muted" role="status" aria-live="polite">booting…</span>
     </div>
 
+    <!-- Approval gates block a task and fail closed, so they interrupt every
+         module rather than living in one panel. -->
+    <div id="gate-bar" role="alert" aria-live="assertive" hidden></div>
+
     <nav id="crumbs" aria-label="Directory path" hidden></nav>
 
     <div id="stage">

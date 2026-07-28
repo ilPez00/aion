@@ -134,6 +134,19 @@ kbd {
   border-radius: 4px; padding: 1px 4px; color: var(--dim); background: var(--bg);
 }
 
+/* ── approval gates ───────────────────────────────────────────────────── */
+#gate-bar { display: grid; gap: 6px; padding: var(--s1) var(--s2);
+            background: var(--panel); border-bottom: 1px solid var(--warn); }
+.gate { display: flex; align-items: center; gap: var(--s1); font-size: 13px;
+        border-left: 3px solid var(--warn); padding-left: var(--s1); min-height: 40px; }
+.gate .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gate-risk { font-size: 9px; letter-spacing: 0.08em; padding: 2px 6px;
+             border-radius: 3px; background: var(--warn); color: var(--bg); }
+.gate.risk-high { border-left-color: var(--err); }
+.gate.risk-high .gate-risk { background: var(--err); }
+.gate.risk-low { border-left-color: var(--dim); }
+.gate.risk-low .gate-risk { background: var(--dim); }
+
 /* ── breadcrumbs ──────────────────────────────────────────────────────── */
 #crumbs {
   display: flex; align-items: center; gap: 2px; flex-wrap: wrap;

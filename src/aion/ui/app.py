@@ -247,6 +247,12 @@ class AiOSApp(App):
         self._remote_server.on_cancel = lambda tid: (
             self.store.registry.cancel(tid) or {}
         )
+        # Answering an approval gate from the web HUD / another cockpit. The
+        # transport is token-authenticated; the published gates.json is only
+        # ever display state.
+        self._remote_server.on_gate = lambda gid, approved: (
+            self.store.resolve_gate_by_id(gid, approved)
+        )
         asyncio.create_task(self._start_remote_server())
         # advertise this instance to same-host peers + keep the beat going
         beat_s = _fleet.settings().heartbeat_s

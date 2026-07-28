@@ -767,6 +767,58 @@ async function loadSystem() {
   } catch (e) { setStatus(e.message, true); }
 }
 
+/* ── approval gates ───────────────────────────────────────────────────── */
+/* A gate blocks a task until a human answers, and the engine is fail-closed:
+ * an unanswered gate is eventually a denial. So this is the one thing in the
+ * HUD allowed to interrupt — a banner above every module, on every screen,
+ * regardless of which view you are in. It is not a notification you can miss
+ * in a corner. */
+function renderGates(gates) {
+  S.gates = gates || [];
+  const bar = $('gate-bar');
+  if (!S.gates.length) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
+  bar.replaceChildren(...S.gates.slice(0, 4).map(g => el('div', {
+    class: 'gate risk-' + (g.risk || 'med'),
+  }, [
+    el('span', { class: 'gate-risk', text: (g.risk || 'med').toUpperCase() }),
+    el('span', { class: 'grow', title: g.action, text: g.action || g.id }),
+    el('span', { class: 'mono-sm muted', text: g.instance ? `on ${g.instance}` : '' }),
+    el('button', { class: 'primary', type: 'button', text: 'Approve',
+                   on: { click: () => answerGate(g, true) } }),
+    el('button', { type: 'button', text: 'Reject',
+                   on: { click: () => answerGate(g, false) } }),
+  ])));
+  if (S.gates.length > 4) {
+    bar.append(el('div', { class: 'muted mono-sm',
+                           text: `+${S.gates.length - 4} more waiting` }));
+  }
+}
+
+async function answerGate(gate, approved) {
+  setStatus(`${approved ? 'approving' : 'rejecting'} ${gate.id}…`);
+  try {
+    const r = await api('/api/gate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gate_id: gate.id, approved,
+                             instance: gate.instance || '' }),
+    });
+    if (r.ok) {
+      setStatus(`${gate.id} ${approved ? 'approved' : 'rejected'}`);
+      // Do not optimistically drop it from the bar: the gate is only really
+      // gone when the cockpit says so, and it republishes immediately.
+      loadGates();
+    } else {
+      setStatus(r.error || 'gate not answered', true);
+    }
+  } catch (e) { setStatus(e.message, true); }
+}
+
+async function loadGates() {
+  try { renderGates((await api('/api/gates')).gates); }
+  catch (_) { /* the banner keeps its last known state */ }
+}
+
 /* ── module: Desk (the cockpit's Desktop workspace) ───────────────────── */
 /* Todos, memory facts, installed apps, operational modes and the disk-scan
  * profile — everything the TUI's Desktop panel shows, read from the same
@@ -1270,6 +1322,7 @@ function connectEvents() {
     let d; try { d = JSON.parse(e.data); } catch (_) { return; }
     if (d.type === 'stats') applyVitals(d);
     else if (d.type === 'agents') applyAgentEvent(d);
+    else if (d.type === 'gates') renderGates(d.gates);
     else if (d.type === 'agents_error') setStatus(d.error, true);
   };
   const retry = () => {
@@ -1424,8 +1477,12 @@ function boot() {
 
   loadRoots().then(() => { if (!applyHash(false)) go(S.module, { push: false }); });
   connectEvents();
+  loadGates();
   pollVitals();
   setInterval(pollVitals, 3000);
+  // Safety net: gates arrive over the socket, but a blocked agent is too
+  // important to depend on one transport.
+  setInterval(() => { if (!S.live) loadGates(); }, 5000);
   // Safety net only: the socket pushes fleet changes, so this catches the
   // case where the daemon is up but the websocket never connected.
   setInterval(() => { if (S.module === 'agents' && !S.live) loadAgents(); }, 5000);

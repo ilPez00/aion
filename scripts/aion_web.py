@@ -549,6 +549,62 @@ def _bridge(fn, *a, **kw):
         return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+# ---------------------------------------------------------------------------
+# Human-in-the-loop gates
+#
+# A gate blocks a task until a human answers, and `GateBook.wait()` is
+# fail-closed — so a gate nobody SEES is a gate that will be denied. The
+# cockpit publishes its pending set to gates.json; this reads that for
+# display and answers over the authenticated fleet transport.
+#
+# The published file is never a control channel: writing approved=true into
+# it releases nothing. Only the cockpit's in-memory GateBook can do that, and
+# only via POST /gate on its token-guarded listener.
+# ---------------------------------------------------------------------------
+def gates_pending():
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+        from aion import hitl
+        return {"gates": hitl.read_all_pending()}
+    except Exception as e:  # noqa: BLE001
+        return {"gates": [], "error": f"{type(e).__name__}: {str(e)[:180]}"}
+
+
+def gate_answer(gate_id: str, approved: bool, instance: str = "") -> dict:
+    """Answer a gate on the cockpit that raised it."""
+    if not gate_id:
+        return {"ok": False, "error": "no gate id"}
+    peers = {p.id: p for p in _fleet_peers()}
+    if instance and instance not in peers:
+        return {"ok": False,
+                "error": f"instance {instance!r} is not running — the gate "
+                         "cannot be answered until its cockpit is back"}
+    targets = [peers[instance]] if instance else list(peers.values())
+    if not targets:
+        return {"ok": False, "error": "no live cockpit to answer on"}
+
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.remotes import RemoteClient, RemoteNode
+    client = RemoteClient()
+    errors = []
+    for peer in targets:
+        node = RemoteNode(id=peer.id, host="127.0.0.1", port=peer.port)
+        try:
+            res = asyncio.run(client.resolve_gate(node, gate_id, approved))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{peer.id}: {type(e).__name__}")
+            continue
+        if res and res.get("ok"):
+            return {"ok": True, "instance": peer.id, **res}
+        if res and res.get("error"):
+            errors.append(f"{peer.id}: {res['error']}")
+        else:
+            errors.append(f"{peer.id}: no response")
+    # Never report success we did not get: the gate stays pending, and
+    # pending means denied once the harness times out.
+    return {"ok": False, "error": "; ".join(errors) or "not answered"}
+
+
 def _worktrees_mod():
     sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
     from aion import worktrees
@@ -925,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sendj(proc_snapshot(
                 include_finished=(q.get("finished", ["1"])[0] == "1")))
         # ---- the cockpit's own surfaces, read from shared state ----
+        if p == "/api/gates":
+            return self._sendj(gates_pending())
         if p == "/api/desktop":
             return self._sendj(_bridge(lambda b: b.desktop()))
         if p == "/api/todos":
@@ -1021,6 +1079,12 @@ class Handler(BaseHTTPRequestHandler):
             if act == "forget" and isinstance(val, int):
                 return self._sendj(_bridge(lambda b: b.memory_forget(val)))
             return self._sendj({"error": f"bad memory action {act!r}"}, 400)
+        if p == "/api/gate":
+            # `approved` must be the boolean true; anything else is a reject.
+            return self._sendj(gate_answer(
+                str(body.get("gate_id", "")),
+                body.get("approved") is True,
+                str(body.get("instance", "") or "")))
         if p == "/api/route":
             # Fail-closed: no `confirm` means plan only, dispatch nothing.
             return self._sendj(route_dispatch(
@@ -1126,6 +1190,7 @@ async def events_ws(ws):
     pg = _procgraph_mod()
     prev_snap = None
     prev_fp = None
+    prev_gates = None
     stats_at = 0.0
     try:
         while True:
@@ -1134,6 +1199,13 @@ async def events_ws(ws):
                 stats_at = now
                 await ws.send(json.dumps({"type": "stats", **system_stats()}))
             try:
+                # Gates are the one thing that must never wait for a poll:
+                # the harness is blocked and fail-closed the whole time.
+                gates = gates_pending().get("gates", [])
+                gate_sig = json.dumps(sorted(g["id"] for g in gates))
+                if gate_sig != prev_gates:
+                    prev_gates = gate_sig
+                    await ws.send(json.dumps({"type": "gates", "gates": gates}))
                 fp = pg.fingerprint()
                 if fp != prev_fp:
                     prev_fp = fp
