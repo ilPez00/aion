@@ -534,19 +534,75 @@ class Store:
 
     def _control(self, action: str) -> None:
         task = self._focused_task()
+        if task is not None:
+            self.control_task(task.id, action)
+
+    def control_task(self, task_id: str, action: str) -> dict:
+        """Apply an action to a task. The ONE implementation of these rules.
+
+        Both the TUI keybindings and the web HUD (over the remote transport)
+        land here, so the two can never disagree about whether a finished task
+        can be paused. Returns an `agentctl.Outcome` dict — a refusal always
+        carries its reason, because a button that silently does nothing is the
+        worst answer available.
+        """
+        from . import agentctl
+
+        task = self.registry.tasks.get(task_id)
         if task is None:
-            return
+            return agentctl.Outcome(False, action, task_id,
+                                    "no such task").as_dict()
+        state = task.state.value
+        ok, why = agentctl.legal(action, state, task.paused)
+        if not ok:
+            return agentctl.Outcome(False, action, task_id, why, state).as_dict()
+
         h = self.harnesses.get(task.harness, self.harnesses.get(self.state.active_harness))
         if h is None:
-            return
-        if action == "pause" and task.state.value == "running":
+            return agentctl.Outcome(False, action, task_id,
+                                    f"harness {task.harness!r} is not loaded",
+                                    state).as_dict()
+
+        if action == "pause":
             h.pause(task)
-        elif action == "resume" and task.state.value == "running" and task.paused:
+        elif action == "resume":
             h.resume(task)
         elif action == "cancel":
             h.cancel(task)
-        elif action == "rerun" and task.state.value in ("interrupted", "cancelled", "failed"):
+        elif action == "rerun":
             asyncio.create_task(self._respawn(task))
+
+        self.registry.log(task, f"[control] {agentctl.describe(action)}")
+        return agentctl.Outcome(True, action, task_id, "",
+                                agentctl.next_state(action) or state).as_dict()
+
+    def spawn_task(self, harness_id: str, prompt: str) -> dict:
+        """Start a task from outside the TUI's own input path.
+
+        Deliberately routed through `_spawn`, not around it, so a spawn from
+        the web HUD gets the same physis classification and — crucially — the
+        same HITL gate as one typed into the cockpit. The web never runs a
+        harness itself; it asks this process to, and this process is where
+        approval lives.
+        """
+        from . import agentctl
+
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return agentctl.Outcome(False, "spawn", reason="empty prompt").as_dict()
+        hid = harness_id or self.state.active_harness
+        if hid not in self.harnesses:
+            return agentctl.Outcome(
+                False, "spawn", reason=f"no harness {hid!r}").as_dict()
+        before = set(self.registry.tasks)
+        asyncio.create_task(self._spawn(hid, prompt))
+        out = agentctl.Outcome(True, "spawn", reason="", state="pending").as_dict()
+        # The task id is assigned inside the coroutine, so it is not available
+        # yet. Say so rather than inventing one; the graph picks it up on the
+        # next push either way.
+        out["harness"] = hid
+        out["pending_before"] = len(before)
+        return out
 
     def _activate(self) -> None:
         ws = self.cfg["workspaces"][self.state.active_ws]["id"]
@@ -674,7 +730,13 @@ class Store:
         if h is None:
             return
         task = self.registry.create(f"{h.name}: {old.label[:24]}", h.id)
-        asyncio.create_task(h.run(task, old.label))
+        # Through the gate, not around it. This used to call h.run() directly,
+        # which meant a prompt dangerous enough to need approval the first time
+        # could be re-run with none — and "rerun" is one button press, now
+        # reachable from the web HUD as well as the cockpit.
+        prompt = self._task_prompts.get(old.id, old.label)
+        self._task_prompts[task.id] = prompt
+        asyncio.create_task(self._gated_run(h, task, prompt))
 
     async def _run_command(self, text: str, _interpreted: bool = False) -> None:
         self.state.history.append(text)

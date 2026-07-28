@@ -673,6 +673,94 @@ def route_dispatch(prompt: str, harness: str = "",
     return plan
 
 
+# ---------------------------------------------------------------------------
+# Agent control
+#
+# The HUD does not run harnesses. It asks a cockpit to, over the same
+# authenticated transport routing uses, and that cockpit applies its own HITL
+# gates. Keeping execution on one side of the wire is what makes an approval
+# gate mean anything while this page is open on a phone.
+#
+# Same three rules as routing apply, for the same reason (/run and rerun are
+# remote code execution):
+#   1. the instance is resolved from discovery, never from a host in the body
+#   2. spawning needs an explicit confirm; control actions act on work that
+#      already exists and do not
+#   3. the target instance validates the action against the task's real state
+# ---------------------------------------------------------------------------
+def _instance_node(instance: str):
+    """Resolve an instance id to a RemoteNode, or (None, reason).
+
+    Local peers first, then SSH peers with a live tunnel. A caller may name an
+    id; it may never name a machine.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.remotes import RemoteNode
+
+    for peer in _fleet_peers():
+        if peer.id == instance:
+            return RemoteNode(id=peer.id, host=peer.host, port=peer.port), ""
+    try:
+        for row in ssh_rows():
+            if row["id"] == instance:
+                if not row["up"]:
+                    return None, f"{instance}: tunnel down ({row.get('error') or 'not connected'})"
+                return RemoteNode(id=instance, host="127.0.0.1",
+                                  port=row["local_port"]), ""
+    except Exception:  # noqa: BLE001
+        pass
+    return None, f"no instance named {instance!r}"
+
+
+def _ask_instance(instance: str, coro_factory) -> dict:
+    """Send one command to an instance and report honestly what came back."""
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion.remotes import RemoteClient
+
+    node, why = _instance_node(instance)
+    if node is None:
+        return {"ok": False, "reason": why}
+    try:
+        result = asyncio.run(coro_factory(RemoteClient(timeout=8.0), node))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
+    if result is None:
+        # RemoteClient swallows transport errors into None. Saying "done"
+        # here would report a success nothing acknowledged.
+        return {"ok": False, "reason": (
+            f"{instance} did not answer (no cockpit running on it, or token "
+            f"mismatch). Agent control needs a live cockpit: run ./aion.sh")}
+    return result
+
+
+def agent_control(instance: str, task_id: str, action: str) -> dict:
+    """pause / resume / cancel / rerun a task on an instance."""
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import agentctl
+
+    if action not in agentctl.ACTIONS:
+        return {"ok": False, "reason": f"unknown action {action!r}"}
+    if not task_id:
+        return {"ok": False, "reason": "no task"}
+    return _ask_instance(instance, lambda c, n: c.control_task(n, task_id, action))
+
+
+def agent_spawn(instance: str, harness: str, prompt: str,
+                confirm: bool = False) -> dict:
+    """Start a task on a harness. Fail-closed: no confirm, nothing runs."""
+    if not (prompt or "").strip():
+        return {"ok": False, "reason": "no prompt"}
+    if not harness:
+        return {"ok": False, "reason": "no harness"}
+    if confirm is not True:
+        return {"ok": False, "dispatched": False,
+                "reason": f"would run on {harness} at {instance} — "
+                          "resend with confirm to start it"}
+    out = _ask_instance(instance, lambda c, n: c.run_task(n, prompt, harness))
+    out.setdefault("ok", True)
+    return out
+
+
 def _bridge_mod():
     sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
     from aion import bridge
@@ -1272,6 +1360,18 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("gate_id", "")),
                 body.get("approved") is True,
                 str(body.get("instance", "") or "")))
+        if p == "/api/agents/control":
+            return self._sendj(agent_control(
+                str(body.get("instance", "")),
+                str(body.get("task_id", "")),
+                str(body.get("action", ""))))
+        if p == "/api/agents/spawn":
+            # Fail-closed, same as /api/route: no `confirm` means preview only.
+            return self._sendj(agent_spawn(
+                str(body.get("instance", "")),
+                str(body.get("harness", "")),
+                str(body.get("prompt", "")),
+                confirm=body.get("confirm") is True))
         if p == "/api/route":
             # Fail-closed: no `confirm` means plan only, dispatch nothing.
             return self._sendj(route_dispatch(

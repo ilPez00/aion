@@ -240,12 +240,21 @@ class AiOSApp(App):
             "stats": {k: v for k, v in self.store.state.stats.items()
                       if k in ("system", "stats")},
         }
+        # A named harness is honoured. This used to drop `h` on the floor and
+        # send everything through the command parser, so routing a task to a
+        # specific harness silently ran it on whatever happened to be active.
         self._remote_server.on_run = lambda p, h: (
-            self.store.handle.__wrapped__(Intent.command(p)) if hasattr(self.store.handle, '__wrapped__')
-            else self.store.handle(Intent.command(p)) or {"task_id": "?"}
+            self.store.spawn_task(h, p) if h
+            else (self.store.handle(Intent.command(p)) or {"ok": True, "task_id": "?"})
         )
+        # registry.cancel() takes a Task, not an id. Passing the id raised
+        # inside the handler and the transport turned every remote cancel into
+        # a 500 — it has never once worked.
         self._remote_server.on_cancel = lambda tid: (
-            self.store.registry.cancel(tid) or {}
+            self.store.control_task(tid, "cancel")
+        )
+        self._remote_server.on_task = lambda tid, action: (
+            self.store.control_task(tid, action)
         )
         # Answering an approval gate from the web HUD / another cockpit. The
         # transport is token-authenticated; the published gates.json is only

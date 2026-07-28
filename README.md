@@ -163,9 +163,32 @@ room for it. Cluster hubs, the current selection and search hits are never
 deferred, the badge always says how many are held back, and the list view and
 Ctrl-K search stay complete — nothing is hidden from search, only from paint.
 
-Some cockpit state is inherently in-process and is **not** faked: spawning a
-task on a harness needs a running cockpit (the HUD routes it instead — see
-cross-instance routing), as do HITL gates and the live operational mode.
+### Managing agents from the HUD
+
+Select a **harness** node in Agents and you get a prompt box: type what it
+should do, pick which instance runs it, confirm. Select a **task** node and you
+get pause / resume / cancel / rerun, greyed out where they do not apply.
+
+The HUD **never runs a harness itself.** Every button asks a live cockpit over
+the token-authenticated transport, and that cockpit applies its own HITL gates.
+That asymmetry is the whole point: an approval gate still means something when
+this page is open on a phone, because the process that would execute the work
+is the process that blocks on the human.
+
+Consequences worth knowing:
+
+- **A live cockpit is required** (`./aion.sh` in a terminal). With none running
+  the panel says so and names the fix, rather than failing silently.
+- **Spawning is fail-closed.** The first POST returns a preview; nothing runs
+  without an explicit `confirm`. Same rule as cross-instance routing, because
+  it is the same act — running an arbitrary prompt on a machine.
+- **The instance decides.** Whether an action is legal for a task's current
+  state is answered by `aion.agentctl.legal` inside the cockpit, not by the
+  browser. The buttons' enabled/disabled state is an affordance; if the two
+  ever disagree the cockpit wins and says why ("still running — cancel it
+  first").
+
+Still in-process and not faked: the live operational mode.
 
 ### Voice control
 

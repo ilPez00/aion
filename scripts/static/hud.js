@@ -212,6 +212,7 @@ function showSelection(n) {
   if (!n) {
     body.replaceChildren(el('p', { class: 'muted', text: 'Select a node.' }));
     $('preview').textContent = '—';
+    renderAgentActions(null);
     return;
   }
   const dl = el('dl');
@@ -225,6 +226,7 @@ function showSelection(n) {
   if (n.detail) add('value', n.detail);
   add('links', n.deg ?? 0);
   body.replaceChildren(dl);
+  renderAgentActions(n);
   if (n.path) { $('dest').value = n.path; previewFile(n.path); }
   else if (n.noteId) { previewNote(n.noteId); }
   else if (n.taskLog) {
@@ -234,6 +236,145 @@ function showSelection(n) {
       ? n.taskLog.join('\n') : '(no output captured)';
   } else { $('preview').textContent = n.detail || '—'; }
   if (window.innerWidth <= 1023) $('inspector').classList.add('open');
+}
+
+/* ── agent control ────────────────────────────────────────────────────────
+ *
+ * The HUD does not run anything. Every button here POSTs to the daemon, which
+ * asks a live cockpit over the authenticated transport, and that cockpit
+ * applies its HITL gates. So a spawn that needs approval still blocks on a
+ * human, and the gate banner is how you find out.
+ *
+ * The enable/disable table below is an AFFORDANCE, not a check. The instance
+ * validates every action against the task's real state (aion.agentctl.legal);
+ * if the two disagree the server wins and its reason is shown. Duplicating the
+ * rules here as a gate would be the drift that putting them in one Python
+ * module was meant to prevent.
+ */
+const CAN = {
+  pause: s => s === 'running',
+  resume: s => s === 'running',
+  cancel: s => !['done', 'failed', 'cancelled', 'interrupted'].includes(s),
+  rerun: s => ['interrupted', 'cancelled', 'failed'].includes(s),
+};
+
+function liveInstances() {
+  return (S.agents?.instances || []).filter(i => i.alive);
+}
+
+function renderAgentActions(n) {
+  const box = $('agent-box');
+  if (!box) return;
+  box.replaceChildren();
+  if (S.module !== 'agents' || !n) { box.hidden = true; return; }
+
+  if (n.taskId) return renderTaskActions(box, n);
+  if (n.harnessId) return renderHarnessActions(box, n);
+  box.hidden = true;
+}
+
+function renderTaskActions(box, n) {
+  box.hidden = false;
+  const row = el('div', { class: 'row', style: 'flex-wrap:wrap' });
+  for (const action of ['pause', 'resume', 'cancel', 'rerun']) {
+    const b = el('button', {
+      type: 'button', text: action,
+      on: { click: () => controlTask(n, action) },
+    });
+    if (!CAN[action](n.state)) b.disabled = true;
+    row.append(b);
+  }
+  box.append(el('h3', { text: 'Control' }), row,
+             el('p', { class: 'muted mono-sm',
+                       text: `${n.harness || '?'} on ${n.instance || '?'} · ${n.state}` }));
+}
+
+function renderHarnessActions(box, n) {
+  const live = liveInstances();
+  box.hidden = false;
+  box.append(el('h3', { text: 'Run a task' }));
+
+  if (!live.length) {
+    // Be specific about the fix. "Nothing happened" after typing a prompt is
+    // the failure mode this whole panel exists to avoid.
+    box.append(el('p', {
+      class: 'muted',
+      text: 'No live cockpit to run it. Start one with ./aion.sh — the HUD ' +
+            'asks a cockpit to run work, it does not run work itself.' }));
+    return;
+  }
+
+  const target = el('select', { id: 'spawn-instance' });
+  for (const i of live) target.append(el('option', { value: i.id, text: i.id }));
+  const prompt = el('input', {
+    type: 'text', id: 'spawn-prompt', placeholder: `what should ${n.label} do?`,
+  });
+  const go = el('button', {
+    type: 'button', class: 'primary', text: 'Run',
+    on: { click: () => spawnTask(n, target.value, prompt.value) },
+  });
+  prompt.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); go.click(); }
+  });
+  box.append(prompt, el('div', { class: 'row' }, [target, go]));
+  if (n.gated) {
+    box.append(el('p', { class: 'muted mono-sm',
+                         text: 'gated harness — this will wait for approval' }));
+  }
+}
+
+async function controlTask(n, action) {
+  setStatus(`${action}…`);
+  try {
+    const j = await api('/api/agents/control', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance: n.instance, task_id: n.taskId, action }),
+    });
+    if (!j.ok) { setStatus(j.reason || `${action} refused`, true); return; }
+    setStatus(`${n.taskId}: ${action}`);
+    go('agents', { push: false });
+  } catch (e) { setStatus(e.message, true); }
+}
+
+/* Two steps on purpose. Running a prompt on a harness is arbitrary code
+ * execution on that machine, so the daemon refuses without `confirm` and this
+ * shows what is about to happen before sending it. */
+async function spawnTask(n, instance, prompt) {
+  if (!prompt.trim()) { setStatus('nothing to run', true); return; }
+  try {
+    const preview = await api('/api/agents/spawn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance, harness: n.harnessId, prompt }),
+    });
+    const ok = await confirmRun(preview.reason ||
+      `Run on ${n.harnessId} at ${instance}?`, prompt);
+    if (!ok) { setStatus('not started'); return; }
+    const j = await api('/api/agents/spawn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance, harness: n.harnessId, prompt, confirm: true }),
+    });
+    if (j.ok === false) { setStatus(j.reason || 'refused', true); return; }
+    setStatus(`started on ${n.harnessId}`);
+    $('spawn-prompt').value = '';
+    go('agents', { push: false });
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function confirmRun(headline, prompt) {
+  const box = $('route-confirm');
+  return new Promise(resolve => {
+    const done = ok => { box.hidden = true; box.replaceChildren(); resolve(ok); };
+    box.hidden = false;
+    box.replaceChildren(
+      el('div', { class: 'route-head', text: headline }),
+      el('div', { class: 'route-body' },
+         [el('code', { text: prompt.slice(0, 300) })]),
+      el('div', { class: 'row' }, [
+        el('button', { type: 'button', class: 'primary', text: 'Run it',
+                       on: { click: () => done(true) } }),
+        el('button', { type: 'button', text: 'Cancel',
+                       on: { click: () => done(false) } })]));
+  });
 }
 
 async function previewFile(path) {
@@ -490,6 +631,7 @@ async function loadAgents() {
         hub: true, kind: 'hub', group: i.alive ? (i.remote ? 3 : 2) : 0, weight: 1,
         detail: `${where} · ${i.remote ? 'remote' : `pid ${i.pid || '—'}`} · ` +
                 `${state} · ${i.running_count} running`,
+        instanceId: i.id, alive: !!i.alive,
       });
     }
     // Harnesses that never ran anything would trebble the node count for no
@@ -504,6 +646,7 @@ async function loadAgents() {
         detail: `${h.tier} · ${h.type}${h.vram_mb ? ` · ${h.vram_mb}MB` : ''}` +
                 `${h.orphan ? ' · ORPHAN (not in config)' : ''}` +
                 `${h.requires_approval ? ' · gated' : ''}`,
+        harnessId: h.id, gated: !!h.requires_approval, orphan: !!h.orphan,
       });
       for (const i of a.instances) {
         if (i.active_harness === h.id) {
@@ -520,6 +663,7 @@ async function loadAgents() {
         detail: `${t.state} · ${Math.round((t.progress || 0) * 100)}%` +
                 `${t.eta ? ` · eta ${t.eta}s` : ''}${t.domain ? ` · ${t.domain}` : ''}`,
         taskLog: t.log, state: t.state, instance: t.instance, harness: t.harness,
+        taskId: t.id,
       });
       if (nodes.some(n => n.id === `h${t.harness}`)) {
         links.push({ source: `h${t.harness}`, target: id,

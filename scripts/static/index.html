@@ -145,6 +145,10 @@ Hello
         <div class="pane">
           <h3>Selection</h3>
           <div id="sel-body"><p class="muted">Select a node.</p></div>
+          <!-- Agent control. Every button here asks a live cockpit over the
+               authenticated transport; the HUD never runs a harness itself,
+               which is what keeps approval gates meaningful. -->
+          <div id="agent-box" class="pane" hidden></div>
           <div id="open-box" hidden style="margin-top:12px">
             <button id="open-editor" type="button">Open in editor</button>
           </div>

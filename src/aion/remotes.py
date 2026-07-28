@@ -95,6 +95,17 @@ class RemoteClient:
         body = json.dumps({"task_id": task_id})
         return await self._request(node, "POST", "/cancel", body)
 
+    async def control_task(self, node: RemoteNode, task_id: str,
+                           action: str) -> dict | None:
+        """POST /task — pause / resume / cancel / rerun a task over there.
+
+        Separate from /run because these act on work that already exists. The
+        instance decides whether the action is legal for the task's current
+        state; the caller does not get to assert it.
+        """
+        body = json.dumps({"task_id": task_id, "action": action})
+        return await self._request(node, "POST", "/task", body)
+
     async def _request(self, node: RemoteNode, method: str, path: str,
                        body: str | None = None) -> dict | None:
         """Raw HTTP/1.1 request via stdlib asyncio."""
@@ -170,6 +181,7 @@ class RemoteServer:
         self.on_cancel = lambda tid: {}
         # Fail-closed default: with no handler wired, nothing is ever approved.
         self.on_gate = lambda gid, approved: {"error": "no gate handler"}
+        self.on_task = lambda tid, action: {"ok": False, "reason": "no task handler"}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -235,6 +247,19 @@ class RemoteServer:
                     params.get("gate_id", ""),
                     params.get("approved") is True,
                 ) if callable(self.on_gate) else {"error": "no handler"}
+                await self._reply(writer, 200, result)
+            elif method == "POST" and path == "/task":
+                try:
+                    params = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    params = {}
+                # The action is validated on THIS side against the task's real
+                # state (see agentctl.legal). A caller may ask; it may not
+                # assert that the task is in a state where the ask is valid.
+                result = self.on_task(
+                    str(params.get("task_id", "")),
+                    str(params.get("action", "")),
+                ) if callable(self.on_task) else {"error": "no handler"}
                 await self._reply(writer, 200, result)
             elif method == "POST" and path == "/cancel":
                 try:

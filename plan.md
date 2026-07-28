@@ -111,6 +111,16 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Agent control from the web HUD** (`agentctl.py` + `/api/agents/{control,spawn}`
+  + `/task` on the transport) — spawn a task on a harness, pause/resume/cancel/
+  rerun a running one, from the browser. The HUD never runs a harness: it asks a
+  live cockpit over the authenticated transport and that cockpit applies its
+  HITL gates. Legality lives in ONE place (`agentctl.legal`), shared by the TUI
+  keybindings and the web, so they cannot drift. Fixed three bugs on that path:
+  `on_run` dropped the harness argument, `on_cancel` passed an id where a Task
+  was required (every remote cancel 500'd), and `_respawn` bypassed the gate so
+  an approved destructive prompt could be re-run with no approval.
+
 - **Level of detail in the graph** — the renderer draws a fixed number of
   nodes per unit of screen area and defers the rest, so zooming in reveals new
   elements as room appears rather than crossing a tuned threshold. Hubs, the
