@@ -41,6 +41,10 @@ const ICON = {
   latex: 'M5 5h14M5 12h9M5 19h14',
   graph: 'M6 18a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.5 13.5l7-6',
   list: 'M4 6h16M4 12h16M4 18h16',
+  desk: 'M3 5h18v10H3zM7 19h10M12 15v4',
+  board: 'M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v13h-4z',
+  term: 'M4 4h16v16H4zM7 9l3 3-3 3M13 15h4',
+  settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 11.5 4a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9 2 2 0 1 1 0 4 1.7 1.7 0 0 0-1.2 1.1z',
   repos: 'M6 3v12M6 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9v2a4 4 0 0 1-4 4H9',
   open: 'M14 4h6v6M20 4l-8 8M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6',
 };
@@ -71,13 +75,17 @@ async function api(path, opts) {
 
 /* ── app state ────────────────────────────────────────────────────────── */
 const MODULES = [
+  { id: 'desk', label: 'Desk', icon: 'desk', kind: 'sheet' },
   { id: 'files', label: 'Files', icon: 'files', kind: 'graph' },
   { id: 'agents', label: 'Agents', icon: 'graph', kind: 'graph' },
   { id: 'repos', label: 'Repos', icon: 'repos', kind: 'graph' },
   { id: 'vault', label: 'Vault', icon: 'vault', kind: 'graph' },
   { id: 'system', label: 'System', icon: 'system', kind: 'graph' },
+  { id: 'board', label: 'Board', icon: 'board', kind: 'sheet' },
+  { id: 'term', label: 'Term', icon: 'term', kind: 'sheet' },
   { id: 'agent', label: 'Chat', icon: 'agent', kind: 'panel' },
   { id: 'latex', label: 'LaTeX', icon: 'latex', kind: 'panel' },
+  { id: 'settings', label: 'Settings', icon: 'settings', kind: 'sheet' },
 ];
 
 const S = {
@@ -109,8 +117,9 @@ function buildNav() {
 }
 
 const LOADERS = {
-  files: loadFiles, agents: loadAgents, repos: loadRepos, vault: loadVault,
-  system: loadSystem, agent: loadAgent, latex: loadLatex,
+  desk: loadDesk, files: loadFiles, agents: loadAgents, repos: loadRepos,
+  vault: loadVault, system: loadSystem, board: loadBoard, term: loadTerm,
+  agent: loadAgent, latex: loadLatex, settings: loadSettings,
 };
 
 /* Navigate. `push` writes a history entry so the browser back button — the
@@ -129,7 +138,10 @@ function go(id, opts = {}) {
   $('module-title').textContent = mod.label.toUpperCase();
   const wrap = $('canvas-wrap');
   wrap.classList.toggle('panel-mode', mod.kind === 'panel');
+  wrap.classList.toggle('sheet-mode', mod.kind === 'sheet');
   $('graph-tools').hidden = mod.kind !== 'graph';
+  $('stage').classList.toggle('no-inspector', mod.kind === 'sheet');
+  if (id !== 'term') closeTerm();
   $('fs-tools').hidden = id !== 'files';
   $('crumbs').hidden = id !== 'files';
   applyView();
@@ -753,6 +765,264 @@ async function loadSystem() {
     setStatus(`${s.date} ${s.time}`);
     $('graph-desc').textContent = graph.describe();
   } catch (e) { setStatus(e.message, true); }
+}
+
+/* ── module: Desk (the cockpit's Desktop workspace) ───────────────────── */
+/* Todos, memory facts, installed apps, operational modes and the disk-scan
+ * profile — everything the TUI's Desktop panel shows, read from the same
+ * shared stores it writes. Todos and memory are editable here: they are the
+ * user's own notes, and round-tripping them through a cockpit that may not be
+ * running would make the web HUD read-only for no reason. */
+function panel(title, kids, opts = {}) {
+  return el('section', { class: 'card' + (opts.wide ? ' wide' : '') }, [
+    el('h3', { text: title }), ...[].concat(kids),
+  ]);
+}
+
+async function loadDesk() {
+  setStatus('reading cockpit state…');
+  try {
+    const d = await api('/api/desktop');
+    S.desk = d;
+    const root = $('sheet');
+    const cards = [];
+
+    // todos
+    const todoList = el('ul', { class: 'plain' }, (d.todos.items || []).map((t, i) =>
+      el('li', { class: 'todo' + (t.done ? ' done' : '') }, [
+        el('button', {
+          class: 'tick', type: 'button', 'aria-pressed': String(!!t.done),
+          title: t.done ? 'already done' : 'mark done',
+          text: t.done ? '✓' : '○',
+          on: { click: () => todoAction('done', i) },
+        }),
+        el('span', { class: 'grow', text: t.text }),
+        el('button', { class: 'tick', type: 'button', text: '✕', title: 'remove',
+                       on: { click: () => todoAction('rm', i) } }),
+      ])));
+    const todoInput = el('input', { type: 'text', placeholder: 'new todo…',
+                                    'aria-label': 'New todo' });
+    todoInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.value.trim()) {
+        todoAction('add', e.target.value.trim());
+        e.target.value = '';
+      }
+    });
+    cards.push(panel(`Todos · ${d.todos.open || 0} open`,
+      [todoList, el('div', { class: 'row' }, [todoInput])]));
+
+    // memory
+    const factList = el('ul', { class: 'plain' }, (d.memory.facts || []).map((f, i) =>
+      el('li', { class: 'todo' }, [
+        el('span', { class: 'grow', text: String(f.text ?? f) }),
+        el('button', { class: 'tick', type: 'button', text: '✕', title: 'forget',
+                       on: { click: () => memoryAction('forget', i) } }),
+      ])));
+    const factInput = el('input', { type: 'text', placeholder: 'remember a fact…',
+                                    'aria-label': 'New memory fact' });
+    factInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.value.trim()) {
+        memoryAction('add', e.target.value.trim());
+        e.target.value = '';
+      }
+    });
+    cards.push(panel(`Memory · ${d.memory.count || 0} facts`,
+      [factList, el('div', { class: 'row' }, [factInput])]));
+
+    // apps — availability is the useful half; a missing one shows its hint
+    cards.push(panel(`Apps · ${d.apps.installed || 0} installed`,
+      el('ul', { class: 'plain' }, (d.apps.apps || []).map(a =>
+        el('li', { class: 'todo' + (a.available ? '' : ' muted') }, [
+          el('span', { class: 'grow', text: a.label || a.name || a.id }),
+          el('span', { class: 'mono-sm ' + (a.available ? 'ok' : 'muted'),
+                       text: a.available ? (a.binary || 'ready')
+                                         : (a.hint || a.install || 'not installed') }),
+        ])))));
+
+    // modes
+    cards.push(panel('Modes', el('ul', { class: 'plain' },
+      (d.modes.modes || []).map(m => el('li', { class: 'todo' }, [
+        el('span', { class: 'grow', text: m.id || m.name }),
+        el('span', { class: 'mono-sm muted', text: (m.description || '').slice(0, 60) }),
+      ])))));
+
+    // agent entities
+    if ((d.agents.agents || []).length) {
+      cards.push(panel(`Agents · ${d.agents.agents.length}`,
+        el('ul', { class: 'plain' }, d.agents.agents.map(a =>
+          el('li', { class: 'todo' }, [
+            el('span', { class: 'grow', text: a.name || a.id }),
+            el('span', { class: 'mono-sm muted', text: a.status || '' }),
+          ])))));
+    }
+
+    // profile / trackers
+    const prof = d.profile.profile || {};
+    if (Object.keys(prof).length) {
+      cards.push(panel('Profile', el('dl', {}, Object.entries(prof).flatMap(
+        ([k, v]) => [el('dt', { text: k }),
+                     el('dd', { text: Array.isArray(v) ? v.join(', ') : String(v) })]))));
+    }
+
+    const errs = Object.entries(d).filter(([, v]) => v && v.error);
+    if (errs.length) {
+      cards.push(panel('Unavailable', el('ul', { class: 'plain' }, errs.map(
+        ([k, v]) => el('li', { class: 'err mono-sm', text: `${k}: ${v.error}` })))));
+    }
+
+    root.replaceChildren(...cards);
+    setStatus(`${d.todos.open || 0} todos · ${d.memory.count || 0} facts · ` +
+      `${d.apps.installed || 0} apps`);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+async function todoAction(action, value) {
+  try {
+    await api('/api/todos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, value }),
+    });
+    loadDesk();
+  } catch (e) { setStatus(e.message, true); }
+}
+
+async function memoryAction(action, value) {
+  try {
+    await api('/api/memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, value }),
+    });
+    loadDesk();
+  } catch (e) { setStatus(e.message, true); }
+}
+
+/* ── module: Board (kanban) ───────────────────────────────────────────── */
+async function loadBoard() {
+  setStatus('reading boards…');
+  try {
+    const d = await api('/api/board');
+    const root = $('sheet');
+    if (d.error) { setStatus(d.error, true); }
+    const boards = d.boards || [];
+    if (!boards.length) {
+      root.replaceChildren(panel('No boards yet', el('p', { class: 'muted',
+        text: 'Create one from the cockpit with: board new <title>' })));
+      setStatus('no boards');
+      return;
+    }
+    root.replaceChildren(...boards.map(b => {
+      const cols = (b.columns || ['backlog', 'active', 'done']).map(colName => {
+        const cards = (b.cards || []).filter(c => c.column === colName);
+        return el('div', { class: 'kcol' }, [
+          el('h4', { text: `${colName} · ${cards.length}` }),
+          ...cards.map(c => el('div', { class: 'kcard' }, [
+            el('div', { text: c.title || c.id }),
+            c.assignee ? el('div', { class: 'mono-sm muted', text: c.assignee }) : null,
+          ])),
+        ]);
+      });
+      return panel(b.title || b.id, el('div', { class: 'kanban' }, cols), { wide: true });
+    }));
+    const total = boards.reduce((n, b) => n + (b.cards || []).length, 0);
+    setStatus(`${boards.length} board(s) · ${total} cards`);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+/* ── module: Settings ─────────────────────────────────────────────────── */
+async function loadSettings() {
+  setStatus('reading settings…');
+  try {
+    const d = await api('/api/settings');
+    const root = $('sheet');
+    const cards = [];
+
+    // Presence only — the key value is never sent to the browser, since this
+    // HUD is reachable from the LAN.
+    cards.push(panel(`Providers · ${d.configured}/${d.providers.length} configured`,
+      el('ul', { class: 'plain' }, d.providers.map(p =>
+        el('li', { class: 'todo' }, [
+          el('span', { class: 'grow', text: p.name }),
+          el('span', { class: 'mono-sm ' + (p.present ? 'ok' : 'muted'),
+                       text: p.present ? 'configured' : `set ${p.env}` }),
+        ])))));
+
+    cards.push(panel('Paths', el('dl', {}, Object.entries(d.paths).flatMap(
+      ([k, v]) => [el('dt', { text: k }), el('dd', { text: v || '(default)' })]))));
+
+    const sk = d.skills || [];
+    cards.push(panel(`Skills · ${sk.length}`,
+      d.skills_error
+        ? el('p', { class: 'err mono-sm', text: d.skills_error })
+        : el('ul', { class: 'plain' }, sk.slice(0, 40).map(s =>
+            el('li', { class: 'todo' }, [
+              el('span', { class: 'grow', text: s.name || s.id || String(s) }),
+              el('span', { class: 'mono-sm muted',
+                           text: (s.description || '').slice(0, 70) }),
+            ])))));
+
+    root.replaceChildren(...cards);
+    setStatus(`${d.configured} providers · ${sk.length} skills`);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+/* ── module: Term (a real PTY) ────────────────────────────────────────── */
+/* The daemon has had a working PTY host since the beginning; nothing was ever
+ * wired to it. Frames arrive as a full screen snapshot rather than a byte
+ * stream, so rendering is just replacing text — no terminal emulator needed
+ * in the browser, because pyte already did that work server-side. */
+let termWs = null;
+
+function loadTerm() {
+  const root = $('sheet');
+  const screen = el('pre', { id: 'term-screen', tabindex: '0',
+                             'aria-label': 'Terminal output' });
+  root.replaceChildren(panel('Terminal', [
+    screen,
+    el('p', { class: 'muted mono-sm',
+              text: 'type to send keys · loopback only, never LAN-reachable' }),
+  ], { wide: true }));
+
+  screen.addEventListener('keydown', e => {
+    if (!termWs || termWs.readyState !== 1) return;
+    let data = null;
+    if (e.key === 'Enter') data = '\r';
+    else if (e.key === 'Backspace') data = '\x7f';
+    else if (e.key === 'Tab') data = '\t';
+    else if (e.key === 'Escape') data = '\x1b';
+    else if (e.key === 'ArrowUp') data = '\x1b[A';
+    else if (e.key === 'ArrowDown') data = '\x1b[B';
+    else if (e.key === 'ArrowRight') data = '\x1b[C';
+    else if (e.key === 'ArrowLeft') data = '\x1b[D';
+    else if (e.ctrlKey && e.key.length === 1) {
+      const code = e.key.toLowerCase().charCodeAt(0) - 96;
+      if (code > 0 && code < 27) data = String.fromCharCode(code);
+    } else if (e.key.length === 1) data = e.key;
+    if (data === null) return;
+    e.preventDefault();
+    termWs.send(JSON.stringify({ type: 'input', data }));
+  });
+
+  connectTerm(screen);
+  screen.focus();
+  setStatus('terminal attached');
+}
+
+function connectTerm(screen) {
+  if (termWs) { try { termWs.close(); } catch (_) {} }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const port = (Number(location.port) || 8742) + 1;
+  termWs = new WebSocket(`${proto}//${location.hostname}:${port}/ws/term`);
+  termWs.onmessage = e => {
+    let d; try { d = JSON.parse(e.data); } catch (_) { return; }
+    if (d.type === 'screen') screen.textContent = (d.lines || []).join('\n');
+  };
+  termWs.onclose = () => {
+    if (S.module === 'term') setStatus('terminal disconnected', true);
+  };
+}
+
+function closeTerm() {
+  if (termWs) { try { termWs.close(); } catch (_) {} termWs = null; }
 }
 
 /* ── module: Agent (chat) + LaTeX ─────────────────────────────────────── */

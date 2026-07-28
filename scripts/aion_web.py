@@ -370,6 +370,10 @@ _COMMANDS = [
     ("Agent — chat", "agent", "Talk to the LLM"),
     ("LaTeX — compile", "latex", "Edit, compile, preview"),
     ("Repos — git worktrees", "repos", "Repositories, worktrees, branches"),
+    ("Desk — todos, memory, apps", "desk", "The cockpit's Desktop workspace"),
+    ("Board — kanban", "board", "Task boards and cards"),
+    ("Term — real terminal", "term", "A live PTY in the browser"),
+    ("Settings — providers, skills, paths", "settings", "What is configured"),
 ]
 
 
@@ -395,6 +399,13 @@ def search_everything(query, scan_dir=None, limit=60):
     try:
         pgm = _procgraph_mod()
         for h in pgm.search(query, limit=20):
+            out.append({**h, "rank": 1})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # cockpit surfaces: todos, memory facts, board cards, apps
+    try:
+        for h in _bridge_mod().search(query, limit=15):
             out.append({**h, "rank": 1})
     except Exception:  # noqa: BLE001
         pass
@@ -522,6 +533,20 @@ def route_dispatch(prompt: str, harness: str = "",
     plan["dispatched"] = True
     plan["result"] = result
     return plan
+
+
+def _bridge_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import bridge
+    return bridge
+
+
+def _bridge(fn, *a, **kw):
+    """Call a bridge function, degrading to an error payload not a 500."""
+    try:
+        return fn(_bridge_mod(), *a, **kw)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
 def _worktrees_mod():
@@ -899,6 +924,20 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/agents":
             return self._sendj(proc_snapshot(
                 include_finished=(q.get("finished", ["1"])[0] == "1")))
+        # ---- the cockpit's own surfaces, read from shared state ----
+        if p == "/api/desktop":
+            return self._sendj(_bridge(lambda b: b.desktop()))
+        if p == "/api/todos":
+            return self._sendj(_bridge(lambda b: b.todos()))
+        if p == "/api/memory":
+            return self._sendj(_bridge(
+                lambda b: b.memory(q.get("q", [""])[0])))
+        if p == "/api/board":
+            return self._sendj(_bridge(lambda b: b.boards()))
+        if p == "/api/settings":
+            return self._sendj(_bridge(lambda b: b.settings()))
+        if p == "/api/apps":
+            return self._sendj(_bridge(lambda b: b.apps()))
         if p == "/api/route/plan":
             return self._sendj(route_plan(
                 harness=q.get("harness", [""])[0],
@@ -962,6 +1001,26 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/search":
             qq = body.get("query", "")
             return self._sendj({"results": web_search(qq), "query": qq})
+        # ---- mutating the cockpit's shared stores ----
+        # Todos and memory are the user's own notes; the web HUD writes them
+        # directly rather than round-tripping through a cockpit that may not
+        # be running. Anything that EXECUTES still goes through routing.
+        if p == "/api/todos":
+            act, val = body.get("action", ""), body.get("value")
+            if act == "add" and isinstance(val, str) and val.strip():
+                return self._sendj(_bridge(lambda b: b.todo_add(val.strip())))
+            if act == "done" and isinstance(val, int):
+                return self._sendj(_bridge(lambda b: b.todo_done(val)))
+            if act == "rm" and isinstance(val, int):
+                return self._sendj(_bridge(lambda b: b.todo_remove(val)))
+            return self._sendj({"error": f"bad todo action {act!r}"}, 400)
+        if p == "/api/memory":
+            act, val = body.get("action", ""), body.get("value")
+            if act == "add" and isinstance(val, str) and val.strip():
+                return self._sendj(_bridge(lambda b: b.memory_add(val.strip())))
+            if act == "forget" and isinstance(val, int):
+                return self._sendj(_bridge(lambda b: b.memory_forget(val)))
+            return self._sendj({"error": f"bad memory action {act!r}"}, 400)
         if p == "/api/route":
             # Fail-closed: no `confirm` means plan only, dispatch nothing.
             return self._sendj(route_dispatch(

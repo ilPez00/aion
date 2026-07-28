@@ -32,9 +32,16 @@ push live task progress + stats through an async bus.
 ## Quick start
 
 `aion.sh` bootstraps the venv and deps on first run, so there is nothing to
-install by hand:
+install by hand. **One command starts everything:**
 
 ```bash
+./aion.sh up           # physis brain + web HUD + browser
+./aion.sh down         # stop it
+./aion.sh status       # what is running right now
+```
+
+```bash
+./aion.sh up --cockpit # ...and drop into the TUI once the HUD is up
 ./aion.sh              # the TUI cockpit
 ./aion.sh web          # the web HUD          -> http://127.0.0.1:8742
 ./aion.sh graph ~/dev  # web HUD opened on the graph file manager for ~/dev
@@ -123,15 +130,27 @@ Six, on keys `1`–`6`. Four of them are the *same* organic force-directed
 graph fed by different adapters — one renderer, so the whole HUD reads as one
 instrument:
 
-| Key | Module | What the graph shows |
+| Key | Module | What it shows |
 |-----|--------|----------------------|
-| 1 | **Files** | the graph file manager (below) |
-| 2 | **Agents** | aion's own work: fleet instances → harnesses → tasks, plus the swarm dependency DAG. Colour = state, size = progress |
-| 3 | **Repos** | git repositories → worktrees → branches, with any task working in a tree attached to it |
-| 4 | **Vault** | your Obsidian vault: `[[wikilinks]]` as edges, node size = link degree, colour = first tag |
-| 5 | **System** | telemetry as a constellation: CPU/RAM/DISK/GPU orbiting the host, per-core satellites off the CPU node, size + colour band = load |
-| 6 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
-| 7 | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
+| 1 | **Desk** | the cockpit's Desktop workspace: todos, memory facts, installed apps, modes, agent cards, disk-scan profile. Todos and memory are **editable here** |
+| 2 | **Files** | the graph file manager (below) |
+| 3 | **Agents** | aion's own work: fleet instances → harnesses → tasks, plus the swarm dependency DAG. Colour = state, size = progress |
+| 4 | **Repos** | git repositories → worktrees → branches, with any task working in a tree attached to it |
+| 5 | **Vault** | your Obsidian vault: `[[wikilinks]]` as edges, node size = link degree, colour = first tag |
+| 6 | **System** | telemetry as a constellation: CPU/RAM/DISK/GPU orbiting the host, per-core satellites off the CPU node, size + colour band = load |
+| 7 | **Board** | kanban boards and cards from the Tasks workspace |
+| 8 | **Term** | a **real PTY** — `bash` in the browser, rendered from pyte server-side. Loopback only, never LAN-reachable |
+| 9 | **Chat** | LLM chat (SSE streaming, Web Speech voice input) |
+| — | **LaTeX** | edit → `latexmk` → PDF preview in-HUD |
+| — | **Settings** | configured providers (presence only, never the key), installed skills, and where aion keeps its files |
+
+Four of these are the same organic graph; the rest are card surfaces or panels.
+The TUI cockpit and the web HUD now read the *same* shared state
+(`~/.aion/shared/`), so a todo added in one shows up in the other.
+
+Some cockpit state is inherently in-process and is **not** faked: spawning a
+task on a harness needs a running cockpit (the HUD routes it instead — see
+cross-instance routing), as do HITL gates and the live operational mode.
 
 ### Cross-instance task routing
 

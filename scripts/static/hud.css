@@ -243,6 +243,55 @@ table.data tbody tr { cursor: pointer; }
 table.data tbody tr:hover { background: var(--sel); }
 table.data tbody tr[aria-selected="true"] { background: var(--sel); outline: 1px solid var(--accent); }
 
+/* ── sheet modules (Desk / Board / Term / Settings) ───────────────────── */
+#sheet { display: none; overflow: auto; height: 100%; padding: var(--s2);
+         grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+         gap: var(--s2); align-content: start; }
+#canvas-wrap.sheet-mode #sheet { display: grid; }
+#canvas-wrap.sheet-mode canvas,
+#canvas-wrap.sheet-mode #legend,
+#canvas-wrap.sheet-mode #hint,
+#canvas-wrap.sheet-mode #focus-badge { display: none; }
+
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--s2); min-width: 0;
+  display: flex; flex-direction: column; gap: var(--s1);
+}
+.card.wide { grid-column: 1 / -1; }
+.card h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--dim); font-weight: 600;
+}
+.card h4 { font-size: 11px; color: var(--dim); font-weight: 600; }
+.card dl { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--s2); font-size: 12px; }
+.card dt { color: var(--dim); }
+.card dd { color: var(--fg); overflow-wrap: anywhere; }
+ul.plain { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.todo { display: flex; align-items: center; gap: var(--s1); font-size: 13px; min-height: 30px; }
+.todo.done .grow { text-decoration: line-through; color: var(--dim); }
+.todo .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tick {
+  min-height: 28px; min-width: 28px; padding: 0 6px; font-size: 12px;
+  background: none; border-color: transparent; color: var(--dim);
+}
+.tick:hover { background: var(--sel); color: var(--fg); }
+
+/* kanban */
+.kanban { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(200px, 1fr);
+          gap: var(--s2); overflow-x: auto; }
+.kcol { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.kcard { background: var(--bg); border: 1px solid var(--border);
+         border-radius: 6px; padding: 6px var(--s1); font-size: 12px; overflow-wrap: anywhere; }
+
+/* terminal */
+#term-screen {
+  background: #05080b; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: var(--s1); font-size: 12px; line-height: 1.35; white-space: pre;
+  overflow: auto; min-height: 60vh; color: var(--fg); cursor: text;
+}
+#term-screen:focus-visible { border-color: var(--accent); }
+
 /* ── inspector ────────────────────────────────────────────────────────── */
 #inspector {
   background: var(--panel); border-left: 1px solid var(--border);

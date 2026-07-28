@@ -50,6 +50,84 @@ case "${1:-run}" in
     shift || true
     exec "$PY" scripts/aion_web.py "$@"
     ;;
+  up)
+    # The "just start everything" command. Physis brain if it's there, the web
+    # HUD, and a browser pointed at it. Everything else is opt-in flags.
+    ensure_venv
+    shift || true
+    OPEN=1; COCKPIT=0
+    for a in "$@"; do
+      case "$a" in
+        --no-open) OPEN=0 ;;
+        --cockpit) COCKPIT=1 ;;
+        *) echo "[aion] unknown flag: $a (try --no-open, --cockpit)" >&2; exit 1 ;;
+      esac
+    done
+
+    PHYSIS_BIN="${PHYSIS_PRO_BIN:-$HOME/physis_pro/target/debug/physis-pro-web}"
+    if command -v curl >/dev/null 2>&1 && \
+       curl -sS -m 2 http://127.0.0.1:19876/api/v1/embedder >/dev/null 2>&1; then
+      echo "[aion] physis brain: live"
+    elif [ -x "$PHYSIS_BIN" ]; then
+      echo "[aion] physis brain: starting"
+      PHYSIS_PORT=19876 nohup "$PHYSIS_BIN" >/tmp/physis_web.log 2>&1 &
+    else
+      echo "[aion] physis brain: not installed (coherence panels stay offline)"
+    fi
+
+    PORT="${AION_WEB_PORT:-8742}"
+    if curl -sS -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+      echo "[aion] web HUD already up on :$PORT"
+    else
+      echo "[aion] web HUD: starting on :$PORT"
+      # setsid so the HUD outlives this shell; the log is where to look first
+      setsid nohup "$PY" scripts/aion_web.py >/tmp/aion_web.log 2>&1 </dev/null &
+      for _ in $(seq 1 40); do
+        curl -sS -m 1 "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break
+        sleep 0.25
+      done
+    fi
+
+    if ! curl -sS -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+      echo "[aion] web HUD failed to start — see /tmp/aion_web.log" >&2
+      tail -5 /tmp/aion_web.log >&2 2>/dev/null || true
+      exit 1
+    fi
+    echo "[aion] ready → http://127.0.0.1:$PORT"
+
+    if [ "$OPEN" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "http://127.0.0.1:$PORT/" >/dev/null 2>&1 || true
+    fi
+    if [ "$COCKPIT" -eq 1 ]; then
+      echo "[aion] launching the TUI cockpit (Ctrl-C leaves the HUD running)"
+      exec "$PY" -m aion.ui.app
+    fi
+    echo "[aion] stop it with: ./aion.sh down"
+    ;;
+  down)
+    # Stop what `up` started. Never touches a cockpit you are sitting in.
+    if pkill -f "scripts/aion_web.py" 2>/dev/null; then
+      echo "[aion] web HUD stopped"
+    else
+      echo "[aion] web HUD was not running"
+    fi
+    ;;
+  status)
+    PORT="${AION_WEB_PORT:-8742}"
+    if curl -sS -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+      echo "[aion] web HUD  : up   → http://127.0.0.1:$PORT"
+    else
+      echo "[aion] web HUD  : down"
+    fi
+    if curl -sS -m 2 http://127.0.0.1:19876/api/v1/embedder >/dev/null 2>&1; then
+      echo "[aion] physis    : up"
+    else
+      echo "[aion] physis    : down"
+    fi
+    ls -1 "$HOME/.aion/instances" 2>/dev/null | while read -r i; do
+      echo "[aion] cockpit   : $i"
+    done
+    ;;
   graph)
     # Open the graph file manager straight at a directory (default: cwd).
     # Saves the "which module, which path, which port" dance every time you
@@ -119,6 +197,10 @@ PYEOF
     cat <<'EOF'
 aion — splitscreen HUD + application desktop
 
+  ./aion.sh up              START EVERYTHING: physis + web HUD + browser
+  ./aion.sh down            stop the web HUD
+  ./aion.sh status          what is running right now
+
   ./aion.sh                 launch the TUI cockpit
   ./aion.sh daily           start the physis brain, then the cockpit
   ./aion.sh web             serve the web HUD    → http://127.0.0.1:8742
@@ -129,9 +211,14 @@ aion — splitscreen HUD + application desktop
   ./aion.sh test            run the test suite
   ./aion.sh shell [ARGS]    run the venv python
 
-Web HUD modules (keys 1-5):  Files · Vault · System · Agent · LaTeX
-  g / l    toggle organic graph <-> list view      / focus filter
-  r        rescan               0  fit graph       ? inspector
+  ./aion.sh up --cockpit    also drop into the TUI once the HUD is up
+  ./aion.sh up --no-open    do not launch a browser
+
+Web HUD modules (keys 1-9)
+  Desk · Files · Agents · Repos · Vault · System · Board · Term · Chat ·
+  LaTeX · Settings
+  ctrl-K   search everything    g / l  graph <-> list    / filter nodes
+  r        rescan               0      fit graph         ? inspector
 
 Environment
   AION_WEB_HOST=0.0.0.0     expose on the LAN (token-gated, see README)

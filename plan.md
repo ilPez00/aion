@@ -81,6 +81,13 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   target resolved from discovery only, every decision explained with a score
   breakdown and per-candidate rejection reasons.
 
+- **TUI surfaces in the web HUD** (`bridge.py`) — Desk (todos/memory/apps/
+  modes/agents/profile), Board (kanban), Settings (providers/skills/paths) and
+  a real PTY Term. Reads the same `~/.aion/shared/` stores the cockpit writes;
+  todos and memory are editable from the browser.
+- **One-command run** — `./aion.sh up` (physis + HUD + browser), `down`,
+  `status`.
+
 ## Roadmap — next
 
 1. **Colmi accel offsets** — run the verify harness against the real ring, pin
