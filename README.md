@@ -190,6 +190,36 @@ Consequences worth knowing:
 
 Still in-process and not faked: the live operational mode.
 
+### Settings
+
+Eight sections — Fleet, Persona, Voice, Graph, Deck, Ring, Notifications,
+Paths — plus a per-harness table (enable, tier, VRAM, and **requires approval**,
+so putting a human in the loop for a given harness is one click rather than a
+config-file edit).
+
+Every field is declared once in `aion/settings.py` and rendered generically, so
+adding an option is one Python entry and no JavaScript. More usefully, there is
+one validator rather than one per control:
+
+- **Unknown keys are dropped, not merged.** A key the schema does not know is a
+  typo or a probe; merging it would write browser-chosen content into
+  `config/layout.json`.
+- **Out-of-range values are rejected, not clamped.** Silently turning a
+  heartbeat of `0` into `1` hands you a setting you did not choose.
+- **Paths are read-only**, set by environment. They decide what the process can
+  reach, and a LAN-reachable page must not be able to widen its own sandbox.
+- **Secrets never come back.** Provider keys report presence only; the webhook
+  URL reads as `••••••••`, and sending those dots back is a no-op rather than a
+  new value.
+- **Restart-required is declared** next to the field, because `instance` and
+  `listen` are read once at boot.
+- **Rejections are itemised.** A save that quietly drops two of five fields is
+  worse than one that fails.
+
+Graph detail is a per-device browser preference (`d` cycles it) and is
+deliberately *not* written to the shared config — one person's phone should not
+change what everyone else sees.
+
 ### Voice control
 
 Press **`v`** (or the MIC button) and talk to the whole HUD, not just the chat

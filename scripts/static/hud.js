@@ -1171,12 +1171,160 @@ async function loadBoard() {
 }
 
 /* ── module: Settings ─────────────────────────────────────────────────── */
+/* One control per declared field. The schema comes from aion.settings, so a
+ * new setting is one Python entry and zero lines here — and, more to the
+ * point, there is no second copy of the validation rules to drift. Whatever
+ * this builds, the server re-checks; the min/max/choices below are hints that
+ * make the widget usable, never the enforcement. */
+function settingControl(sectionId, f, value, onChange) {
+  const id = `set-${sectionId}-${f.key}`;
+  let input;
+  if (f.type === 'bool') {
+    input = el('input', { type: 'checkbox', id });
+    input.checked = !!value;
+    input.addEventListener('change', () => onChange(f.key, input.checked));
+  } else if (f.type === 'choice') {
+    input = el('select', { id }, f.choices.map(c =>
+      el('option', { value: c, text: c })));
+    input.value = String(value ?? f.default);
+    input.addEventListener('change', () => onChange(f.key, input.value));
+  } else {
+    const numeric = f.type === 'int' || f.type === 'float';
+    input = el('input', {
+      id,
+      type: f.type === 'secret' ? 'password' : (numeric ? 'number' : 'text'),
+      value: value == null ? '' : String(value),
+    });
+    if (numeric) {
+      if (f.min != null) input.min = f.min;
+      if (f.max != null) input.max = f.max;
+      if (f.type === 'float') input.step = '0.5';
+    }
+    input.addEventListener('change', () => onChange(f.key, input.value));
+  }
+  if (f.readonly) input.disabled = true;
+
+  const notes = [];
+  if (f.env) notes.push(f.env);
+  if (f.restart) notes.push('restart required');
+  if (f.readonly) notes.push('set by environment');
+
+  return el('div', { class: 'setting' }, [
+    el('label', { for: id, class: 'setting-label', text: f.label }),
+    input,
+    notes.length ? el('span', { class: 'mono-sm muted', text: notes.join(' · ') }) : null,
+    f.help ? el('p', { class: 'muted setting-help', text: f.help }) : null,
+  ]);
+}
+
+function settingsSection(section, values, dirtyMap) {
+  const pending = {};
+  dirtyMap.set(section.id, pending);
+  const rows = section.fields.map(f =>
+    settingControl(section.id, f, (values || {})[f.key],
+                   (k, v) => { pending[k] = v; markDirty(section.id, true); }));
+  const status = el('span', { class: 'mono-sm muted', id: `set-status-${section.id}` });
+  const save = el('button', {
+    type: 'button', class: 'primary', id: `set-save-${section.id}`, text: 'Save',
+    on: { click: () => saveSection(section.id, pending, status) },
+  });
+  const editable = section.fields.some(f => !f.readonly);
+  return panel(section.label, [
+    section.help ? el('p', { class: 'muted', text: section.help }) : null,
+    el('div', { class: 'settings-grid' }, rows),
+    editable ? el('div', { class: 'row' }, [save, status]) : null,
+  ]);
+}
+
+function markDirty(sectionId, dirty) {
+  const b = $(`set-save-${sectionId}`);
+  if (b) b.classList.toggle('primary', dirty);
+}
+
+async function saveSection(sectionId, pending, status) {
+  if (!Object.keys(pending).length) { status.textContent = 'nothing changed'; return; }
+  status.textContent = 'saving…';
+  try {
+    const j = await api('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section: sectionId, values: pending }),
+    });
+    // Itemised, because a save that quietly drops two of five fields is worse
+    // than one that fails outright.
+    const bad = Object.entries(j.rejected || {});
+    const good = Object.keys(j.applied || {});
+    status.className = 'mono-sm ' + (bad.length ? 'err' : 'ok');
+    status.textContent = bad.length
+      ? bad.map(([k, why]) => `${k}: ${why}`).join(' · ')
+      : `saved ${good.length}${(j.restart_needed || []).length
+          ? ' — restart for ' + j.restart_needed.join(', ') : ''}`;
+    if (!bad.length) { for (const k of good) delete pending[k]; markDirty(sectionId, false); }
+    if (sectionId === 'graph' && j.applied && j.applied.detail) setDetail(j.applied.detail);
+  } catch (e) { status.className = 'mono-sm err'; status.textContent = e.message; }
+}
+
+function harnessRow(h) {
+  const status = el('span', { class: 'mono-sm muted' });
+  const send = values => api('/api/settings/harness', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: h.id, values }),
+  }).then(j => {
+    const bad = Object.entries(j.rejected || {});
+    status.className = 'mono-sm ' + (bad.length ? 'err' : 'ok');
+    status.textContent = bad.length
+      ? bad.map(([k, w]) => `${k}: ${w}`).join(' · ') : 'saved — restart to apply';
+  }).catch(e => { status.className = 'mono-sm err'; status.textContent = e.message; });
+
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = h.enabled;
+  enabled.addEventListener('change', () => send({ enabled: enabled.checked }));
+
+  // Turning this ON is a safety improvement and turning it OFF removes a
+  // human from the loop, so it is a visible control rather than a config-file
+  // secret.
+  const gated = el('input', { type: 'checkbox' });
+  gated.checked = h.requires_approval;
+  gated.addEventListener('change', () => send({ requires_approval: gated.checked }));
+
+  const tier = el('select', {}, ['local', 'standard', 'heavy', 'remote'].map(t =>
+    el('option', { value: t, text: t })));
+  tier.value = h.tier;
+  tier.addEventListener('change', () => send({ tier: tier.value }));
+
+  return el('tr', {}, [
+    el('td', { text: h.name || h.id }),
+    el('td', { class: 'mono-sm muted', text: h.type }),
+    el('td', {}, [tier]),
+    el('td', {}, [enabled]),
+    el('td', {}, [gated]),
+    el('td', { class: 'mono-sm muted', text: h.vram_mb ? `${h.vram_mb}MB` : '—' }),
+    el('td', {}, [status]),
+  ]);
+}
+
 async function loadSettings() {
   setStatus('reading settings…');
   try {
     const d = await api('/api/settings');
     const root = $('sheet');
     const cards = [];
+    if (d.error) cards.push(panel('Settings', el('p', { class: 'err', text: d.error })));
+
+    // Editable sections, straight from the schema.
+    const dirty = new Map();
+    for (const section of (d.schema || [])) {
+      cards.push(settingsSection(section, (d.values || {})[section.id], dirty));
+    }
+
+    // Harnesses are a list rather than a block, so they get a table.
+    if ((d.harnesses || []).length) {
+      const table = el('table', { class: 'data' }, [
+        el('thead', {}, [el('tr', {}, ['harness', 'type', 'tier', 'on', 'gated', 'vram', '']
+          .map(h => el('th', { text: h })))]),
+        el('tbody', {}, d.harnesses.map(harnessRow)),
+      ]);
+      cards.push(panel(`Harnesses · ${d.harnesses.length}`, table, { wide: true }));
+    }
 
     // Presence only — the key value is never sent to the browser, since this
     // HUD is reachable from the LAN.
@@ -1203,7 +1351,9 @@ async function loadSettings() {
             ])))));
 
     root.replaceChildren(...cards);
-    setStatus(`${d.configured} providers · ${sk.length} skills`);
+    const editable = (d.schema || []).filter(s => (d.persisted || []).includes(s.id));
+    setStatus(`${editable.length} editable sections · ${d.configured} providers · ` +
+              `${(d.harnesses || []).length} harnesses · ${sk.length} skills`);
   } catch (e) { setStatus(e.message, true); }
 }
 

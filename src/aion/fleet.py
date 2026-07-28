@@ -217,8 +217,15 @@ def write_json_atomic(path: str | Path, data: object) -> None:
                                     suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh, indent=2)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # ensure_ascii=False, because these files are read and edited by
+            # people. The default escapes every non-ASCII character, so saving
+            # one setting rewrote all of config/layout.json turning the
+            # workspace icons into ⬡ — and did the same to any accented
+            # word in a todo or a memory fact. Encoding is pinned rather than
+            # left to the locale, since that is what makes it safe to write
+            # non-ASCII at all.
+            json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)      # atomic; tmp no longer exists after this

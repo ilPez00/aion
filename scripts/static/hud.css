@@ -288,6 +288,26 @@ table.data tbody tr[aria-selected="true"] { background: var(--sel); outline: 1px
   display: flex; flex-direction: column; gap: var(--s1);
 }
 .card.wide { grid-column: 1 / -1; }
+
+/* Settings. One row per declared field; the label column is fixed so a
+   section reads as a list rather than as ragged pairs, and it collapses to
+   stacked rows on narrow screens where two columns would squeeze the input
+   down to nothing. */
+.settings-grid { display: grid; gap: var(--s2); }
+.setting {
+  display: grid; grid-template-columns: 190px minmax(0, 1fr) auto;
+  gap: var(--s1) var(--s2); align-items: center;
+}
+.setting-label { color: var(--dim); font-size: 12px; }
+.setting > input[type="checkbox"] { width: 18px; height: 18px; min-height: auto; justify-self: start; }
+.setting > input:disabled, .setting > select:disabled { opacity: 0.55; cursor: not-allowed; }
+.setting-help {
+  grid-column: 2 / -1; font-size: 11px; line-height: 1.45; margin-top: -2px;
+}
+@media (max-width: 760px) {
+  .setting { grid-template-columns: 1fr; }
+  .setting-help { grid-column: 1; }
+}
 .card h3 {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--dim); font-weight: 600;

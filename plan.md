@@ -111,6 +111,17 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Settings, expanded** (`settings.py` + `/api/settings{,/harness}`) — 8
+  sections, 29 fields, declared once as a schema and rendered generically, so a
+  new option is one Python entry and zero JS. Fleet thresholds, persona, web
+  voice, graph detail, deck, ring, notifications, paths; plus a per-harness
+  table (enable, tier, VRAM, and `requires_approval` — inserting a human into
+  the loop is now one click). Validation is server-side and total: unknown keys
+  dropped, out-of-range rejected with a reason rather than clamped, read-only
+  paths refused, secrets redacted on read and never echoed back. Fixed
+  `write_json_atomic` escaping non-ASCII, which turned every workspace icon
+  into `\uXXXX` on any save.
+
 - **Agent control from the web HUD** (`agentctl.py` + `/api/agents/{control,spawn}`
   + `/task` on the transport) — spawn a task on a harness, pause/resume/cancel/
   rerun a running one, from the browser. The HUD never runs a harness: it asks a

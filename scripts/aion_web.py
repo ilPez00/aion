@@ -761,6 +761,49 @@ def agent_spawn(instance: str, harness: str, prompt: str,
     return out
 
 
+# ---------------------------------------------------------------------------
+# Settings
+#
+# Every value the HUD can change is declared in aion.settings, and validated
+# there rather than here. This layer only decides WHAT may be addressed:
+# section writes and per-harness writes, nothing else. In particular there is
+# no generic "write this key to the config file" endpoint, because that is
+# indistinguishable from arbitrary file write once the HUD is on a LAN.
+# ---------------------------------------------------------------------------
+def _settings_mod():
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    from aion import settings
+    return settings
+
+
+def settings_snapshot() -> dict:
+    try:
+        return _settings_mod().snapshot()
+    except Exception as e:  # noqa: BLE001
+        return {"schema": [], "values": {}, "harnesses": [], "providers": [],
+                "skills": [], "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def settings_write(section: str, values: dict) -> dict:
+    if not isinstance(values, dict):
+        return {"ok": False, "rejected": {"_body": "values must be an object"}}
+    try:
+        return _settings_mod().write(str(section), values).as_dict()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "section": section,
+                "rejected": {"_write": f"{type(e).__name__}: {str(e)[:160]}"}}
+
+
+def settings_harness(harness_id: str, values: dict) -> dict:
+    if not isinstance(values, dict):
+        return {"ok": False, "rejected": {"_body": "values must be an object"}}
+    try:
+        return _settings_mod().set_harness(str(harness_id), values)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "id": harness_id,
+                "rejected": {"_write": f"{type(e).__name__}: {str(e)[:160]}"}}
+
+
 def _bridge_mod():
     sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
     from aion import bridge
@@ -1257,7 +1300,11 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/board":
             return self._sendj(_bridge(lambda b: b.boards()))
         if p == "/api/settings":
-            return self._sendj(_bridge(lambda b: b.settings()))
+            # The read-only surfaces (providers, skills, paths) plus the whole
+            # editable schema and its current values, in one request.
+            snap = settings_snapshot()
+            snap.update(_bridge(lambda b: b.settings()))
+            return self._sendj(snap)
         if p == "/api/apps":
             return self._sendj(_bridge(lambda b: b.apps()))
         if p == "/api/peers":
@@ -1360,6 +1407,12 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("gate_id", "")),
                 body.get("approved") is True,
                 str(body.get("instance", "") or "")))
+        if p == "/api/settings":
+            return self._sendj(settings_write(
+                str(body.get("section", "")), body.get("values") or {}))
+        if p == "/api/settings/harness":
+            return self._sendj(settings_harness(
+                str(body.get("id", "")), body.get("values") or {}))
         if p == "/api/agents/control":
             return self._sendj(agent_control(
                 str(body.get("instance", "")),
