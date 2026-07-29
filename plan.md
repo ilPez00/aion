@@ -111,6 +111,16 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Swarm control from the web HUD** (`SwarmOrchestrator.control/run_ready/
+  stop_all/add_checked` + `/swarm` on the transport + `/api/swarm`) — start,
+  cancel, retry and remove one agent; add an agent with dependencies; run every
+  ready agent or stop everything. Refusals name the blocking dependency rather
+  than saying "blocked". Removal is refused while anything still depends on the
+  agent (deps are by NAME, so deleting the node silently makes them
+  unsatisfiable). Fixed `agents_ready()` counting a FAILED or CANCELLED
+  dependency as satisfied — it and `blocked_agents()` disagreed about the same
+  agent, and `swarm run` would start a step whose input never arrived.
+
 - **Settings, expanded** (`settings.py` + `/api/settings{,/harness}`) — 8
   sections, 29 fields, declared once as a schema and rendered generically, so a
   new option is one Python entry and zero JS. Fleet thresholds, persona, web

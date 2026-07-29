@@ -285,30 +285,46 @@ class SwarmOrchestrator:
         return plan
 
     def agents_ready(self) -> list[SwarmAgent]:
-        """Return agents whose dependencies are all satisfied."""
-        ready = []
-        for a in self.agents.values():
-            if a.status != AgentStatus.IDLE:
-                continue
-            if all(self._is_done(dep) for dep in a.dependencies):
-                ready.append(a)
-        return ready
+        """Agents that can start right now: idle, with every dependency DONE.
+
+        This used to accept a dependency that had FAILED or been CANCELLED as
+        satisfied, because it asked `_is_done`, which means "reached a terminal
+        state". So `swarm run` would start a step whose input never arrived —
+        and `blocked_agents()` would report the very same agent as blocked, a
+        flat contradiction between two functions over one graph. Readiness now
+        asks the same question the blocked list asks.
+        """
+        return [a for a in self.agents.values()
+                if self.dep_state(a)[0] == "ready"]
+
+    def dep_state(self, a: SwarmAgent) -> tuple[str, str]:
+        """(state, reason) for one agent's dependencies.
+
+        One place, so "ready", "waiting" and "blocked" cannot disagree. The
+        reason names the dependency, because "blocked" on its own tells you
+        nothing about which of five steps to go and look at.
+        """
+        if a.status != AgentStatus.IDLE:
+            return "not-idle", f"status is {a.status.value}"
+        for dep in a.dependencies:
+            other = self.agent_by_name(dep)
+            if other is None:
+                return "blocked", f"depends on {dep!r}, which does not exist"
+            if other.status == AgentStatus.FAILED:
+                return "blocked", f"{dep} failed"
+            if other.status == AgentStatus.CANCELLED:
+                return "blocked", f"{dep} was cancelled"
+            if other.status != AgentStatus.DONE:
+                return "waiting", f"waiting for {dep} ({other.status.value})"
+        return "ready", ""
 
     def agents_by_status(self, status: AgentStatus) -> list[SwarmAgent]:
         return [a for a in self.agents.values() if a.status == status]
 
     def blocked_agents(self) -> list[SwarmAgent]:
-        """Agents stuck waiting on a dependency that failed or doesn't exist."""
-        blocked = []
-        for a in self.agents.values():
-            if a.status != AgentStatus.IDLE:
-                continue
-            for dep in a.dependencies:
-                dep_agent = self.agent_by_name(dep)
-                if dep_agent is None or dep_agent.status == AgentStatus.FAILED:
-                    blocked.append(a)
-                    break
-        return blocked
+        """Agents stuck on a dependency that failed, was cancelled, or is gone."""
+        return [a for a in self.agents.values()
+                if self.dep_state(a)[0] == "blocked"]
 
     def status_summary(self) -> dict:
         """Dashboard-ready summary."""
@@ -324,6 +340,149 @@ class SwarmOrchestrator:
             "plans": len(self.plans),
             "active_plan": self.plans[-1].as_dict() if self.plans else None,
         }
+
+    # ---- Control ---------------------------------------------------------
+    # Per-agent verbs, so the swarm can be steered from the web HUD rather than
+    # only from `swarm run` / `swarm stop`, which were all-or-nothing. Same
+    # shape as agentctl: legality is a pure question with a REASON attached,
+    # and a refusal always says which dependency or which state is in the way.
+
+    ACTIONS = ("start", "cancel", "retry", "remove")
+
+    def can(self, agent_id: str, action: str) -> tuple[bool, str]:
+        a = self.agents.get(agent_id)
+        if a is None:
+            return False, "no such agent"
+        if action not in self.ACTIONS:
+            return False, f"unknown action {action!r}"
+        state = a.status
+
+        if action == "start":
+            if state != AgentStatus.IDLE:
+                return False, f"only an idle agent can start (this is {state.value})"
+            kind, why = self.dep_state(a)
+            return (True, "") if kind == "ready" else (False, why)
+
+        if action == "cancel":
+            if state in (AgentStatus.DONE, AgentStatus.FAILED, AgentStatus.CANCELLED):
+                return False, f"already {state.value}"
+            return True, ""
+
+        if action == "retry":
+            if state not in (AgentStatus.FAILED, AgentStatus.CANCELLED):
+                return False, f"only a failed or cancelled agent can be retried "\
+                              f"(this is {state.value})"
+            return True, ""
+
+        # remove: refuse while anything still names it. Deleting a node out of
+        # a DAG that others point at leaves those pointing at nothing, and the
+        # dependency is by NAME, so it would silently become unsatisfiable.
+        dependents = sorted(o.name for o in self.agents.values()
+                            if a.name in o.dependencies and o.id != a.id)
+        if dependents:
+            verb = "depends" if len(dependents) == 1 else "depend"
+            return False, f"{', '.join(dependents)} {verb} on it"
+        return True, ""
+
+    @staticmethod
+    def _as_agent(out: dict) -> dict:
+        """Outcome carries its subject as `task_id`; these are agents.
+
+        Leaving the key alone would have the swarm endpoint answering with a
+        task id that is not a task, which is the sort of thing that reads fine
+        until someone writes a client against it.
+        """
+        out = dict(out)
+        out["agent_id"] = out.pop("task_id", "")
+        return out
+
+    def control(self, agent_id: str, action: str) -> dict:
+        """Apply an action to one agent. Returns an agentctl.Outcome dict."""
+        from .agentctl import Outcome
+
+        ok, why = self.can(agent_id, action)
+        a = self.agents.get(agent_id)
+        state = a.status.value if a else ""
+        if not ok:
+            return self._as_agent(Outcome(False, action, agent_id, why, state).as_dict())
+
+        if action == "start":
+            self.set_status(agent_id, AgentStatus.WORKING)
+        elif action == "cancel":
+            self.set_status(agent_id, AgentStatus.CANCELLED)
+        elif action == "retry":
+            # Back to idle rather than straight to working: its dependencies
+            # may have changed since it failed, and `start` is the thing that
+            # checks them.
+            a.error = ""
+            a.progress = 0.0
+            a.completed = None
+            a.started = None
+            self.set_status(agent_id, AgentStatus.IDLE)
+        elif action == "remove":
+            self.agents.pop(agent_id, None)
+            self.checkpoint()
+            return self._as_agent(
+                Outcome(True, action, agent_id, "", "removed").as_dict())
+
+        self.log(agent_id, f"[control] {action}")
+        return self._as_agent(Outcome(
+            True, action, agent_id, "", self.agents[agent_id].status.value).as_dict())
+
+    def run_ready(self) -> dict:
+        """Start every agent whose dependencies are satisfied."""
+        ready = self.agents_ready()
+        for a in ready:
+            self.set_status(a.id, AgentStatus.WORKING)
+        blocked = self.blocked_agents()
+        return {"ok": bool(ready), "started": [a.name for a in ready],
+                "blocked": [{"name": a.name, "reason": self.dep_state(a)[1]}
+                            for a in blocked],
+                "reason": "" if ready else (
+                    "nothing is ready" + (f" — {len(blocked)} blocked" if blocked else ""))}
+
+    def stop_all(self) -> dict:
+        """Cancel everything currently in flight. Idle agents are left alone."""
+        live = (AgentStatus.WORKING, AgentStatus.PLANNING, AgentStatus.WAITING)
+        stopped = [a for a in self.agents.values() if a.status in live]
+        for a in stopped:
+            self.set_status(a.id, AgentStatus.CANCELLED)
+        return {"ok": True, "stopped": [a.name for a in stopped]}
+
+    def add_checked(self, name: str, goal: str,
+                    deps: list[str] | None = None) -> dict:
+        """add_agent with the validation a public entry point needs.
+
+        Names are the dependency key, so a duplicate name does not create a
+        second agent — it creates an ambiguity that `agent_by_name` resolves
+        arbitrarily, and every dependency on that name becomes a coin flip.
+        """
+        from .agentctl import Outcome
+
+        name = (name or "").strip()
+        goal = (goal or "").strip()
+        if not name:
+            return self._as_agent(Outcome(False, "add", reason="a name is required").as_dict())
+        if not goal:
+            return self._as_agent(Outcome(False, "add", reason="a goal is required").as_dict())
+        if self.agent_by_name(name) is not None:
+            return self._as_agent(Outcome(False, "add", reason=(
+                f"an agent named {name!r} already exists — dependencies are "
+                f"by name, so two would be ambiguous")).as_dict())
+        clean, missing = [], []
+        for d in (deps or []):
+            d = str(d).strip()
+            if not d:
+                continue
+            (clean if self.agent_by_name(d) else missing).append(d)
+        if missing:
+            return self._as_agent(Outcome(False, "add", reason=(
+                f"no agent named {', '.join(missing)} — add dependencies "
+                f"before what depends on them")).as_dict())
+        a = self.add_agent(name, goal, deps=clean)
+        out = self._as_agent(Outcome(True, "add", a.id, "", a.status.value).as_dict())
+        out["name"] = a.name
+        return out
 
     def _is_done(self, name: str) -> bool:
         a = self.agent_by_name(name)

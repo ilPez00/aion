@@ -188,6 +188,25 @@ Consequences worth knowing:
   ever disagree the cockpit wins and says why ("still running — cancel it
   first").
 
+**Swarm agents** get their own verbs: select one for start / cancel / retry /
+remove, or use the Agents toolbar for `+ agent`, `run ready` and `stop all`.
+
+A swarm is a DAG, so the useful question is rarely "what state is this in" but
+"what upstream of it is in the way" — refusals name the dependency:
+
+```
+start writer   → waiting for scout (idle)
+start writer   → scout failed
+remove scout   → writer depends on it
+run ready      → started 0 · blocked — writer: scout failed
+```
+
+Removal is refused while anything still depends on the agent. Dependencies are
+by **name**, so deleting the node they point at does not rewrite them, it
+silently makes them unsatisfiable. Retry returns a failed agent to *idle*
+rather than straight to working, because its dependencies may have changed
+since it failed and `start` is what checks them.
+
 Still in-process and not faked: the live operational mode.
 
 ### Settings

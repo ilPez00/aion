@@ -143,6 +143,7 @@ function go(id, opts = {}) {
   $('stage').classList.toggle('no-inspector', mod.kind === 'sheet');
   if (id !== 'term') closeTerm();
   $('fs-tools').hidden = id !== 'files';
+  $('agent-tools').hidden = id !== 'agents';
   $('crumbs').hidden = id !== 'files';
   applyView();
   graph && graph.clearFocus();
@@ -270,7 +271,106 @@ function renderAgentActions(n) {
 
   if (n.taskId) return renderTaskActions(box, n);
   if (n.harnessId) return renderHarnessActions(box, n);
+  if (n.swarmId) return renderSwarmActions(box, n);
   box.hidden = true;
+}
+
+/* Swarm agents are a DAG, not a list, so the interesting failure is not "this
+ * agent broke" but "this agent cannot start because something upstream did".
+ * The buttons are the easy half; naming the blocking dependency is the half
+ * that saves you reading a graph. */
+const SWARM_CAN = {
+  start: s => s === 'idle',
+  cancel: s => !['done', 'failed', 'cancelled'].includes(s),
+  retry: s => ['failed', 'cancelled'].includes(s),
+  remove: () => true,
+};
+
+function renderSwarmActions(box, n) {
+  box.hidden = false;
+  const row = el('div', { class: 'row', style: 'flex-wrap:wrap' });
+  for (const action of ['start', 'cancel', 'retry', 'remove']) {
+    const b = el('button', {
+      type: 'button', text: action,
+      on: { click: () => swarmAct({ action, agent_id: n.swarmId }, n.instance) },
+    });
+    if (!SWARM_CAN[action](n.state)) b.disabled = true;
+    row.append(b);
+  }
+  box.append(el('h3', { text: 'Swarm agent' }), row);
+  if ((n.deps || []).length) {
+    box.append(el('p', { class: 'muted mono-sm',
+                         text: `depends on ${n.deps.join(', ')}` }));
+  }
+  box.append(el('div', { class: 'row' }, [
+    el('button', { type: 'button', text: 'run ready',
+                   on: { click: () => swarmAct({ action: 'run_ready' }, n.instance) } }),
+    el('button', { type: 'button', text: 'stop all',
+                   on: { click: () => swarmAct({ action: 'stop_all' }, n.instance) } }),
+  ]));
+}
+
+async function swarmAct(params, instance) {
+  setStatus(`swarm ${params.action}…`);
+  try {
+    const j = await api('/api/swarm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance: instance || swarmInstance(), ...params }),
+    });
+    if (j.ok === false) { setStatus(j.reason || `${params.action} refused`, true); return; }
+    // run_ready reports what it could not start, and why. That list is the
+    // whole point of a DAG view: "nothing happened" would hide it.
+    if (params.action === 'run_ready') {
+      const blocked = (j.blocked || []).map(b => `${b.name}: ${b.reason}`).join(' · ');
+      setStatus(`started ${(j.started || []).length}` + (blocked ? ` · blocked — ${blocked}` : ''),
+                !!blocked && !(j.started || []).length);
+    } else if (params.action === 'stop_all') {
+      setStatus(`stopped ${(j.stopped || []).length}`);
+    } else {
+      setStatus(`swarm: ${params.action}`);
+    }
+    go('agents', { push: false });
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function swarmInstance() {
+  const withSwarm = (S.agents?.swarm || []).find(s => s.instance);
+  return withSwarm ? withSwarm.instance : (liveInstances()[0] || {}).id || '';
+}
+
+/* Adding an agent is the one swarm verb with no node to select first, so it
+ * opens a form rather than living in the inspector. An inline panel, not
+ * window.prompt(): three chained modals to enter one agent is miserable, and a
+ * blocking dialog freezes the graph's animation loop behind it. */
+function swarmAdd() {
+  const box = $('route-confirm');
+  const name = el('input', { type: 'text', placeholder: 'name (deps refer to this)' });
+  const goal = el('input', { type: 'text', placeholder: 'goal' });
+  const deps = el('input', { type: 'text', placeholder: 'depends on: a, b (optional)' });
+  const close = () => { box.hidden = true; box.replaceChildren(); };
+  const submit = async () => {
+    close();
+    await swarmAct({
+      action: 'add', name: name.value.trim(), goal: goal.value.trim(),
+      deps: deps.value.split(',').map(d => d.trim()).filter(Boolean),
+    });
+  };
+  for (const f of [name, goal, deps]) {
+    f.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+  }
+  box.hidden = false;
+  box.replaceChildren(
+    el('div', { class: 'route-head', text: 'New swarm agent' }),
+    el('div', { class: 'route-body' }, [name, goal, deps]),
+    el('div', { class: 'row' }, [
+      el('button', { type: 'button', class: 'primary', text: 'Add',
+                     on: { click: submit } }),
+      el('button', { type: 'button', text: 'Cancel', on: { click: close } }),
+    ]));
+  name.focus();
 }
 
 function renderTaskActions(box, n) {
@@ -683,6 +783,8 @@ async function loadAgents() {
         group: STATE_GROUP[s.status] ?? 0, weight: 0.3 + 0.7 * (s.progress || 0),
         detail: `${s.status} · ${s.goal || ''}`.slice(0, 120),
         swarmGoal: s.goal, taskLog: s.logs,
+        swarmId: s.id, state: s.status, deps: s.deps || [],
+        instance: s.instance,
       });
       for (const d of (s.deps || [])) {
         const dep = swarmByName.get(d);
@@ -1998,6 +2100,10 @@ function boot() {
   $('detail').value = savedDetail;
   graph.setDetail(savedDetail);
   $('detail').addEventListener('change', e => setDetail(e.target.value));
+
+  $('swarm-add').addEventListener('click', swarmAdd);
+  $('swarm-run').addEventListener('click', () => swarmAct({ action: 'run_ready' }));
+  $('swarm-stop').addEventListener('click', () => swarmAct({ action: 'stop_all' }));
 
   $('view-toggle').addEventListener('click', toggleView);
   $('refresh').addEventListener('click', () => go(S.module));

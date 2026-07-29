@@ -745,6 +745,31 @@ def agent_control(instance: str, task_id: str, action: str) -> dict:
     return _ask_instance(instance, lambda c, n: c.control_task(n, task_id, action))
 
 
+SWARM_ACTIONS = ("start", "cancel", "retry", "remove", "add", "run_ready", "stop_all")
+
+
+def swarm_command(instance: str, params: dict) -> dict:
+    """Steer the dependency DAG on an instance.
+
+    The action name is checked here so a typo never becomes a request to a
+    machine; everything else -- whether this agent may start, whose
+    dependencies are unmet -- is answered by the orchestrator that owns the
+    graph, because only it knows.
+    """
+    action = str((params or {}).get("action", "")).strip()
+    if action not in SWARM_ACTIONS:
+        return {"ok": False, "reason": f"unknown swarm action {action!r}"}
+    deps = (params or {}).get("deps") or []
+    if not isinstance(deps, list):
+        return {"ok": False, "reason": "deps must be a list of names"}
+    return _ask_instance(instance, lambda c, n: c.control_swarm(
+        n, action,
+        agent_id=str((params or {}).get("agent_id", "")),
+        name=str((params or {}).get("name", "")),
+        goal=str((params or {}).get("goal", "")),
+        deps=[str(d) for d in deps]))
+
+
 def agent_spawn(instance: str, harness: str, prompt: str,
                 confirm: bool = False) -> dict:
     """Start a task on a harness. Fail-closed: no confirm, nothing runs."""
@@ -1418,6 +1443,9 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("instance", "")),
                 str(body.get("task_id", "")),
                 str(body.get("action", ""))))
+        if p == "/api/swarm":
+            return self._sendj(swarm_command(
+                str(body.get("instance", "")), body))
         if p == "/api/agents/spawn":
             # Fail-closed, same as /api/route: no `confirm` means preview only.
             return self._sendj(agent_spawn(

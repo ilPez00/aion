@@ -256,6 +256,9 @@ class AiOSApp(App):
         self._remote_server.on_task = lambda tid, action: (
             self.store.control_task(tid, action)
         )
+        self._remote_server.on_swarm = lambda params: (
+            self.store.swarm_command(params)
+        )
         # Answering an approval gate from the web HUD / another cockpit. The
         # transport is token-authenticated; the published gates.json is only
         # ever display state.

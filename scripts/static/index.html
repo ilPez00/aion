@@ -71,6 +71,14 @@
         </label>
       </div>
 
+      <div id="agent-tools" class="row" hidden>
+        <button id="swarm-add" type="button"
+                title="Add a swarm agent (its name is how others depend on it)">+ agent</button>
+        <button id="swarm-run" type="button"
+                title="Start every agent whose dependencies are done">run ready</button>
+        <button id="swarm-stop" type="button" title="Cancel everything in flight">stop all</button>
+      </div>
+
       <span class="grow"></span>
       <span id="live-dot" class="live-dot" title="offline — polling" aria-hidden="true"></span>
       <span id="status" class="muted" role="status" aria-live="polite">booting…</span>

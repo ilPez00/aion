@@ -576,6 +576,36 @@ class Store:
         return agentctl.Outcome(True, action, task_id, "",
                                 agentctl.next_state(action) or state).as_dict()
 
+    def swarm_command(self, params: dict) -> dict:
+        """One entry point for every swarm verb, used by the web HUD.
+
+        Dispatch lives here rather than in the transport so the parameter
+        shapes are checked once, in the process that owns the DAG. The
+        orchestrator answers whether an action is legal and why not; this only
+        decides which question to ask it.
+        """
+        params = params if isinstance(params, dict) else {}
+        action = str(params.get("action", "")).strip()
+        agent_id = str(params.get("agent_id", "")).strip()
+
+        if action == "add":
+            deps = params.get("deps") or []
+            if not isinstance(deps, list):
+                return {"ok": False, "reason": "deps must be a list of names"}
+            return self.swarm.add_checked(
+                str(params.get("name", "")), str(params.get("goal", "")),
+                [str(d) for d in deps])
+        if action == "run_ready":
+            return self.swarm.run_ready()
+        if action == "stop_all":
+            return self.swarm.stop_all()
+        if action in self.swarm.ACTIONS:
+            if not agent_id:
+                return {"ok": False, "action": action, "reason": "no agent"}
+            return self.swarm.control(agent_id, action)
+        return {"ok": False, "action": action,
+                "reason": f"unknown swarm action {action!r}"}
+
     def spawn_task(self, harness_id: str, prompt: str) -> dict:
         """Start a task from outside the TUI's own input path.
 

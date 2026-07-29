@@ -95,6 +95,14 @@ class RemoteClient:
         body = json.dumps({"task_id": task_id})
         return await self._request(node, "POST", "/cancel", body)
 
+    async def control_swarm(self, node: RemoteNode, action: str,
+                            agent_id: str = "", name: str = "",
+                            goal: str = "", deps: list | None = None) -> dict | None:
+        """POST /swarm — steer the dependency DAG on that instance."""
+        body = json.dumps({"action": action, "agent_id": agent_id,
+                           "name": name, "goal": goal, "deps": deps or []})
+        return await self._request(node, "POST", "/swarm", body)
+
     async def control_task(self, node: RemoteNode, task_id: str,
                            action: str) -> dict | None:
         """POST /task — pause / resume / cancel / rerun a task over there.
@@ -182,6 +190,7 @@ class RemoteServer:
         # Fail-closed default: with no handler wired, nothing is ever approved.
         self.on_gate = lambda gid, approved: {"error": "no gate handler"}
         self.on_task = lambda tid, action: {"ok": False, "reason": "no task handler"}
+        self.on_swarm = lambda params: {"ok": False, "reason": "no swarm handler"}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -260,6 +269,16 @@ class RemoteServer:
                     str(params.get("task_id", "")),
                     str(params.get("action", "")),
                 ) if callable(self.on_task) else {"error": "no handler"}
+                await self._reply(writer, 200, result)
+            elif method == "POST" and path == "/swarm":
+                try:
+                    params = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    params = {}
+                if not isinstance(params, dict):
+                    params = {}
+                result = self.on_swarm(params) if callable(self.on_swarm) \
+                    else {"error": "no handler"}
                 await self._reply(writer, 200, result)
             elif method == "POST" and path == "/cancel":
                 try:
