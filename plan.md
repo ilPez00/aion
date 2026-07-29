@@ -111,6 +111,18 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Swarm executor** (`swarmrun.py`) — the DAG now RUNS. Nothing previously set
+  a swarm agent to DONE, so `run_ready()` moved layer one to WORKING and layer
+  two waited forever (`run_all()` existed only in a docstring). An agent's goal
+  is now spawned as a real task through the cockpit's gated path — inheriting
+  HITL, physis classification, checkpointing and cancellation — and its
+  terminal state advances the agent, which pumps the scheduler again. Pure
+  `admit()` enforces max-parallel and a VRAM budget (naming any agent too big
+  to ever fit, rather than starving it silently); pure `prompt_for()` feeds
+  upstream output into downstream prompts, so a dependency means "take input
+  from", not just "wait for". `stalled()` explains a stopped DAG, cycles
+  included.
+
 - **Swarm control from the web HUD** (`SwarmOrchestrator.control/run_ready/
   stop_all/add_checked` + `/swarm` on the transport + `/api/swarm`) — start,
   cancel, retry and remove one agent; add an agent with dependencies; run every

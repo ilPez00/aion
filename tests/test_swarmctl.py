@@ -224,18 +224,37 @@ def test_added_agent_is_immediately_part_of_the_dag(swarm):
 # ── store dispatch ───────────────────────────────────────────────────────────
 @pytest.fixture()
 def store(swarm):
+    """A Store stripped to the swarm surface, with a runner that records
+    spawns instead of starting harnesses. These tests are about DISPATCH —
+    which verb reaches which engine call — not about execution."""
     from aion.store import Store
+    from aion.swarmrun import SwarmRunner
     s = Store.__new__(Store)
     s.swarm = swarm
+    s.spawned = []
+    s._swarm_runner = SwarmRunner(
+        swarm,
+        spawn=lambda agent, prompt: (s.spawned.append(agent.name)
+                                     or f"task{len(s.spawned)}"),
+        harness="demo")
     return s
 
 
 def test_store_dispatches_every_verb(store, swarm):
+    """run_ready now SPAWNS rather than flipping a status flag."""
     assert store.swarm_command({"action": "run_ready"})["started"] == ["scout"]
-    assert store.swarm_command({"action": "stop_all"})["stopped"] == ["scout"]
+    assert store.spawned == ["scout"]
     aid = by_name(swarm, "scout").id
+    assert store.swarm_command({"action": "cancel", "agent_id": aid})["ok"] is True
     assert store.swarm_command({"action": "retry", "agent_id": aid})["ok"] is True
     assert store.swarm_command({"action": "start", "agent_id": aid})["ok"] is True
+    assert store.spawned == ["scout", "scout"]
+
+
+def test_status_reports_why_a_swarm_is_stuck(store, swarm):
+    store.swarm_command({"action": "run_ready"})
+    st = store.swarm_command({"action": "status"})
+    assert st["in_flight"] == 1 and st["total"] == 3
 
 
 def test_store_refuses_an_unknown_verb(store):

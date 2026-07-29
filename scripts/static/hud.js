@@ -323,9 +323,14 @@ async function swarmAct(params, instance) {
     // run_ready reports what it could not start, and why. That list is the
     // whole point of a DAG view: "nothing happened" would hide it.
     if (params.action === 'run_ready') {
-      const blocked = (j.blocked || []).map(b => `${b.name}: ${b.reason}`).join(' · ');
-      setStatus(`started ${(j.started || []).length}` + (blocked ? ` · blocked — ${blocked}` : ''),
-                !!blocked && !(j.started || []).length);
+      // `deferred` is the budget holding work back; `reason` is why nothing
+      // could start at all. A DAG that quietly stops is the failure this whole
+      // feature exists to remove, so both are said out loud.
+      const held = (j.deferred || []).map(d => `${d.name}: ${d.reason}`).join(' · ');
+      const started = (j.started || []).length;
+      setStatus(`started ${started}` + (held ? ` · held: ${held}` : '') +
+                (!started && j.reason ? ` — ${j.reason}` : ''),
+                !started);
     } else if (params.action === 'stop_all') {
       setStatus(`stopped ${(j.stopped || []).length}`);
     } else {

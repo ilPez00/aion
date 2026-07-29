@@ -576,6 +576,36 @@ class Store:
         return agentctl.Outcome(True, action, task_id, "",
                                 agentctl.next_state(action) or state).as_dict()
 
+    @property
+    def swarm_runner(self):
+        """The thing that actually advances the DAG.
+
+        Lazy because it needs the harness table for VRAM accounting, and a
+        Store is constructed in tests without one.
+        """
+        if getattr(self, "_swarm_runner", None) is None:
+            from .swarmrun import SwarmRunner
+
+            # getattr throughout: this property is lazy precisely because a
+            # Store gets built in pieces, and a runner that explodes on a
+            # half-built one would be worse than one that runs with defaults.
+            def vram(hid: str) -> int:
+                h = getattr(self, "harnesses", {}).get(hid)
+                return int(getattr(h, "vram_mb", 0) or 0) if h else 0
+
+            def default_harness() -> str:
+                return getattr(getattr(self, "state", None), "active_harness", "")
+
+            self._swarm_runner = SwarmRunner(
+                self.swarm,
+                spawn=lambda agent, prompt: self._spawn_now(
+                    getattr(agent, "harness", "") or default_harness(),
+                    prompt, label=f"swarm/{agent.name}"),
+                harness=default_harness(),
+                harness_vram=vram,
+            )
+        return self._swarm_runner
+
     def swarm_command(self, params: dict) -> dict:
         """One entry point for every swarm verb, used by the web HUD.
 
@@ -594,15 +624,60 @@ class Store:
                 return {"ok": False, "reason": "deps must be a list of names"}
             return self.swarm.add_checked(
                 str(params.get("name", "")), str(params.get("goal", "")),
-                [str(d) for d in deps])
+                [str(d) for d in deps], harness=str(params.get("harness", "")))
         if action == "run_ready":
-            return self.swarm.run_ready()
+            # Was: flip every ready agent to WORKING and hope. Now it spawns
+            # real tasks, respects the parallel and VRAM budgets, and reports
+            # what it held back and why.
+            out = self.swarm_runner.pump()
+            out["ok"] = bool(out["started"]) or not out["deferred"]
+            out["reason"] = "" if out["started"] else (
+                self.swarm_runner.stalled() or "nothing is ready")
+            return out
         if action == "stop_all":
-            return self.swarm.stop_all()
+            out = self.swarm.stop_all()
+            for aid, task_id in list(self.swarm_runner.task_of.items()):
+                try:
+                    self.control_task(task_id, "cancel")
+                except Exception:  # noqa: BLE001
+                    pass          # the agent is stopped; the task is a courtesy
+                self.swarm_runner._forget(aid)
+            return out
+        if action == "status":
+            return self.swarm_runner.status()
         if action in self.swarm.ACTIONS:
             if not agent_id:
                 return {"ok": False, "action": action, "reason": "no agent"}
-            return self.swarm.control(agent_id, action)
+            # `start` goes through the runner so it gets a real task, the
+            # upstream context and the budget checks -- not just a status flip.
+            if action == "start":
+                ok, why = self.swarm.can(agent_id, "start")
+                if not ok:
+                    return {"ok": False, "action": "start",
+                            "agent_id": agent_id, "reason": why}
+                out = self.swarm_runner.pump()
+                started = agent_id in [a.id for a in self.swarm.agents.values()
+                                       if a.id in self.swarm_runner.task_of]
+                return {"ok": started, "action": "start", "agent_id": agent_id,
+                        **out,
+                        "reason": "" if started else "held back by the budget"}
+            result = self.swarm.control(agent_id, action)
+            # An agent stopped while its task runs must take the task with it,
+            # or the work continues with nothing left watching for it.
+            if result.get("ok") and action in ("cancel", "remove"):
+                task_id = self.swarm_runner.task_of.get(agent_id)
+                if task_id:
+                    # Best effort, and the mapping is dropped either way: the
+                    # agent is already stopped, and leaving it pointing at a
+                    # task would let that task's completion resurrect it.
+                    try:
+                        self.control_task(task_id, "cancel")
+                    except Exception as e:  # noqa: BLE001
+                        self.swarm.log(agent_id,
+                                       f"[run] could not cancel {task_id}: "
+                                       f"{type(e).__name__}")
+                    self.swarm_runner._forget(agent_id)
+            return result
         return {"ok": False, "action": action,
                 "reason": f"unknown swarm action {action!r}"}
 
@@ -720,6 +795,21 @@ class Store:
             "rm -rf", "drop table", "force push", "git push --force",
             "mkfs", "dd if=", ":(){", "sudo rm",
         ))
+
+    def _spawn_now(self, harness_id: str, prompt: str, label: str = "") -> str:
+        """Create a task, start it through the gate, and return its id.
+
+        The synchronous half of `_spawn`. The swarm runner needs the task id
+        to map an agent to its work, and `_spawn` cannot give it one — the id
+        is assigned inside a coroutine nobody awaits.
+        """
+        h = self.harnesses.get(harness_id, self.harnesses.get(self.state.active_harness))
+        if h is None:
+            return ""
+        task = self.registry.create(label or f"{h.name}: {prompt[:30]}", h.id)
+        self._task_prompts[task.id] = prompt
+        asyncio.create_task(self._gated_run(h, task, prompt))
+        return task.id
 
     async def _spawn(self, harness_id: str, prompt: str) -> None:
         h = self.harnesses.get(harness_id, self.harnesses.get(self.state.active_harness))
@@ -1445,6 +1535,18 @@ class Store:
         tid = task.id
         cur = task.state
         prev = self._prev_task_states.get(tid)
+        # Advance the swarm. This is the whole reason a DAG can now finish:
+        # an agent's task reaching a terminal state completes the agent, which
+        # unblocks its dependents, which the next pump starts. Guarded so a
+        # swarm problem cannot take down ordinary task bookkeeping.
+        if getattr(self, "_swarm_runner", None) is not None and cur != prev:
+            try:
+                self._swarm_runner.on_task_state(
+                    tid, cur.value,
+                    output="\n".join(task.log[-20:]),
+                    error=(task.log[-1] if task.log else ""))
+            except Exception as e:  # noqa: BLE001
+                self.state.logs.append(f"swarm: {type(e).__name__}: {str(e)[:120]}")
         if prev is not None and cur != prev:
             persona = Persona()
             resp = persona.respond(cur.value, task_id=tid, label=task.label)
