@@ -261,8 +261,19 @@ def test_hidden_count_is_announced(crowded):
     out = layout(crowded)
     desc = out["describeText"]
     assert f"{out['nodes']} nodes" in desc
-    assert "hidden at this zoom" in desc
+    assert "not drawn" in desc
     assert "list view" in desc
+
+
+def test_deferred_counts_only_what_is_on_screen(crowded):
+    """An off-viewport node is one pan away and was never hidden from you.
+    Counting those made the number BALLOON as you zoomed in — the opposite of
+    what the badge is telling you."""
+    for s in layout(crowded)["lodSweep"]:
+        assert s["inView"] - s["drawn"] >= 0
+    zoomed = layout(crowded)["lodSweep"][-1]
+    assert zoomed["drawn"] == zoomed["inView"], (
+        "at high zoom everything on screen fits, so nothing is deferred")
 
 
 # ── budget vs screen size ────────────────────────────────────────────────────
@@ -319,3 +330,19 @@ def test_detail_all_draws_everything(crowded):
 
 def test_unknown_detail_falls_back_to_normal(crowded):
     assert layout(crowded, detail="nonsense")["detail"] == "normal"
+
+
+def test_the_lod_callback_actually_fires(crowded):
+    """`this.onLod` was never assigned from opts, so the graph quietly drew a
+    subset and the badge that says so never appeared. Reading lodInfo() in the
+    harness rather than going through opts is exactly why the tests missed it."""
+    out = layout(crowded)
+    assert out["lodCalls"] > 0, "onLod never fired"
+    assert out["lodCallMaxHidden"] > 0
+
+
+def test_no_callback_when_nothing_is_deferred(synthetic):
+    """44 nodes fit, so there is nothing to announce and no badge to show —
+    including on the very first paint, where an uninitialised counter made
+    `hidden !== undefined` fire a spurious "0 deferred"."""
+    assert layout(synthetic)["lodCalls"] == 0

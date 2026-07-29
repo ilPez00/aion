@@ -86,11 +86,20 @@ class OrganicGraph {
     // Dragging one node onto another is a gesture, not a layout accident —
     // the Agents view uses it to route a task to an instance.
     this.onDrop = opts.onDrop || (() => {});
+    // Fires when the number of deferred nodes changes. Without this the LOD
+    // badge never appeared: _lod() called `this.onLod`, which nothing ever
+    // assigned, so the graph quietly drew a subset and never said so. The
+    // headless harness read lodInfo() directly and so never caught it.
+    this.onLod = opts.onLod || (() => {});
     this.selected = null;
     this.hovered = null;
     this.focusIdx = -1;          // keyboard cursor, independent of selection
     this.tx = 0; this.ty = 0; this.scale = 1;
     this.detail = opts.detail || 'normal';
+    // Starts at 0, not undefined: `hidden !== this._lodHidden` would
+    // otherwise be true on the first paint of every graph and fire a
+    // "0 deferred" callback that nothing wants.
+    this._lodHidden = 0;
     this.alpha = 0;
     this.tick = 0;
     this.filter = '';
@@ -435,14 +444,15 @@ class OrganicGraph {
       p._lbl = forced || drawn < labelBudget;
       drawn++;
     }
-    const hidden = this.nodes.length - drawn;
+    // Deferred means "on screen, but over budget" — NOT "off screen". An
+    // off-viewport node is one pan away and was never hidden from you;
+    // counting it here made the number balloon as you zoomed in, which is the
+    // exact opposite of what the badge is trying to tell you.
+    const hidden = inView.length - drawn;
     this._lodDrawn = drawn;
     this._lodInView = inView.length;
     this._lodBudget = budget;
     this._lodTotal = this.nodes.length;
-    // Counted against the whole graph, not just what is in the viewport:
-    // "142 more" has to mean 142 more things exist, or the number is a lie
-    // the moment somebody pans.
     if (hidden !== this._lodHidden) {
       this._lodHidden = hidden;
       if (this.onLod) this.onLod(this.lodInfo());
@@ -912,8 +922,9 @@ class OrganicGraph {
     // A screen reader user must not be told the graph has fewer nodes than it
     // does, and the list view still lists every one of them.
     const lod = this._lodHidden > 0
-      ? ` ${this._lodHidden} more are hidden at this zoom to keep the view legible; ` +
-        `zoom in to reveal them, or use the list view for all of them.`
+      ? ` ${this._lodHidden} of the ${this._lodInView} nodes on screen are not ` +
+        `drawn, to keep the view legible; zoom in to reveal them, or use the ` +
+        `list view, which always lists every node.`
       : '';
     return `${this.nodes.length} nodes in ${hubs} clusters, ${this.links.length} links. ` +
            `Arrow keys move between nodes, Tab walks linked neighbours, ` +

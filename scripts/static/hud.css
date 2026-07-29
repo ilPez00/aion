@@ -8,6 +8,21 @@
  * Density is deliberately high (8/10): this is an operations cockpit, not a
  * marketing page. Spacing scale runs 8 -> 32, not 24 -> 96.
  */
+
+/* The whole HUD hides things with the `hidden` attribute, but the UA rule for
+ * it is `[hidden] { display: none }` -- attribute specificity (0,0,1,0), which
+ * ANY `#id { display: flex }` rule outranks. Six elements were setting display
+ * at id specificity and toggling `hidden`: the command palette (with its
+ * full-screen backdrop) rendered over the HUD on every page load, and the gate
+ * bar, focus badge, routing confirm dialog, voice readout and the Agents
+ * toolbar were permanently on screen.
+ *
+ * !important is the right tool here and the only one that works: `hidden`
+ * means hidden, and no layout rule anywhere should be able to argue with it.
+ * Anything needing a hide/show that is not "remove from the page" should use a
+ * class, not this attribute. */
+[hidden] { display: none !important; }
+
 :root {
   --bg: #0a0f14;
   --panel: #131d26;
@@ -216,7 +231,12 @@ kbd {
 }
 
 #stage { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+/* Sheet modules (Desk, Board, Term, Settings) have nothing to inspect.
+   Collapsing the column is not enough on its own: #inspector is still a grid
+   child, so it just wrapped into an implicit row UNDER the sheet — an empty
+   "Selection / Preview" panel at the bottom of every Settings page. */
 #stage.no-inspector { grid-template-columns: 1fr; }
+#stage.no-inspector #inspector { display: none; }
 #canvas-wrap { position: relative; min-width: 0; min-height: 0; background: var(--bg); }
 #canvas-wrap canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 #canvas-wrap canvas:active { cursor: grabbing; }
@@ -293,16 +313,27 @@ table.data tbody tr[aria-selected="true"] { background: var(--sel); outline: 1px
    section reads as a list rather than as ragged pairs, and it collapses to
    stacked rows on narrow screens where two columns would squeeze the input
    down to nothing. */
-.settings-grid { display: grid; gap: var(--s2); }
-.setting {
-  display: grid; grid-template-columns: 190px minmax(0, 1fr) auto;
-  gap: var(--s1) var(--s2); align-items: center;
+/* Two columns of settings on a wide screen, one on a narrow one — the rows
+   are short, so a single column on a 27" display is a lot of scrolling for no
+   reason. */
+.settings-grid {
+  display: grid; gap: var(--s2) var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  align-items: start;
 }
+.setting {
+  display: grid; grid-template-columns: minmax(120px, 190px) minmax(0, 1fr);
+  gap: 2px var(--s2); align-items: center;
+}
+/* Notes (env var, "restart required") belong under the control, not in a third
+   column: as a column they collapsed to one word per line. */
+.setting > .mono-sm { grid-column: 2; font-size: 10px; }
 .setting-label { color: var(--dim); font-size: 12px; }
 .setting > input[type="checkbox"] { width: 18px; height: 18px; min-height: auto; justify-self: start; }
 .setting > input:disabled, .setting > select:disabled { opacity: 0.55; cursor: not-allowed; }
 .setting-help {
-  grid-column: 2 / -1; font-size: 11px; line-height: 1.45; margin-top: -2px;
+  grid-column: 2; font-size: 11px; line-height: 1.45; margin: 0;
+  max-width: 52ch;
 }
 @media (max-width: 760px) {
   .setting { grid-template-columns: 1fr; }

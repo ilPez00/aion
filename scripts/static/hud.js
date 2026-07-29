@@ -140,7 +140,9 @@ function go(id, opts = {}) {
   wrap.classList.toggle('panel-mode', mod.kind === 'panel');
   wrap.classList.toggle('sheet-mode', mod.kind === 'sheet');
   $('graph-tools').hidden = mod.kind !== 'graph';
-  $('stage').classList.toggle('no-inspector', mod.kind === 'sheet');
+  // Panel modules (Chat, LaTeX) have no nodes either, so the inspector sat
+  // there saying "Select a node." next to a chat window forever.
+  $('stage').classList.toggle('no-inspector', mod.kind !== 'graph');
   if (id !== 'term') closeTerm();
   $('fs-tools').hidden = id !== 'files';
   $('agent-tools').hidden = id !== 'agents';
@@ -550,7 +552,9 @@ function showLodBadge(info) {
   const level = $('detail').value;
   const next = DETAIL_LEVELS[DETAIL_LEVELS.indexOf(level) + 1];
   bar.replaceChildren(
-    el('span', { text: `${info.drawn} of ${info.total} shown` }),
+    // "of what is on screen", not "of the whole graph" — the rest is a pan
+    // away, not deferred.
+    el('span', { text: `${info.drawn} of ${info.inView} on screen drawn` }),
     el('button', {
       type: 'button', class: 'chip-x', text: 'zoom in',
       on: { click: () => graph.zoomBy(1.6) },
@@ -1331,11 +1335,14 @@ function settingsSection(section, values, dirtyMap) {
     on: { click: () => saveSection(section.id, pending, status) },
   });
   const editable = section.fields.some(f => !f.readonly);
+  // Full width: a setting row is label + control + notes, which needs more
+  // than the ~300px an auto-fill card gets. Squeezed into a card column the
+  // notes wrapped one word per line and the selects were clipped mid-word.
   return panel(section.label, [
     section.help ? el('p', { class: 'muted', text: section.help }) : null,
     el('div', { class: 'settings-grid' }, rows),
     editable ? el('div', { class: 'row' }, [save, status]) : null,
-  ]);
+  ], { wide: true });
 }
 
 function markDirty(sectionId, dirty) {
@@ -1520,18 +1527,27 @@ function closeTerm() {
 }
 
 /* ── module: Agent (chat) + LaTeX ─────────────────────────────────────── */
+/* Both roots live in #panel-view for the life of the page and are toggled,
+ * never re-parented. `replaceChildren(a)` DETACHES b, so the very next line's
+ * getElementById(b) returned null and threw — after which the other module was
+ * gone from the document for good: opening Chat permanently broke LaTeX, and
+ * opening LaTeX permanently broke Chat. Each was a one-way door.
+ *
+ * (Toggling `hidden` only started working at all once hud.css stopped letting
+ * an inline `display:flex` outrank the attribute.) */
+function showPanel(id) {
+  $('chat-root').hidden = id !== 'chat-root';
+  $('latex-root').hidden = id !== 'latex-root';
+}
+
 function loadAgent() {
-  $('panel-view').replaceChildren($('chat-root'));
-  $('chat-root').hidden = false;
-  $('latex-root').hidden = true;
+  showPanel('chat-root');
   if (!S.sessionId) initSessions();
   setStatus('agent ready');
 }
 
 function loadLatex() {
-  $('panel-view').replaceChildren($('latex-root'));
-  $('latex-root').hidden = false;
-  $('chat-root').hidden = true;
+  showPanel('latex-root');
   setStatus('latex ready');
 }
 

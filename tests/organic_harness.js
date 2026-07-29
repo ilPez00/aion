@@ -80,7 +80,12 @@ process.stdin.on('end', () => {
     ...g.file_edges.map(e => ({ source: 'f' + e.source, target: 'f' + e.target, weight: e.score, kind: 'sim' })),
   ];
 
-  const og = new OrganicGraph(mkEl('canvas'), {});
+  // Callbacks are wired through opts, so the harness must go through opts too
+  // -- reading lodInfo() directly is what let a never-assigned this.onLod ship.
+  const lodCalls = [];
+  const og = new OrganicGraph(mkEl('canvas'), {
+    onLod: (info) => lodCalls.push(info),
+  });
   if (process.env.DETAIL) og.setDetail(process.env.DETAIL);
   const t0 = Date.now();
   og.setData(nodes, links);
@@ -170,7 +175,8 @@ process.stdin.on('end', () => {
     hubs: hubNodes.length,
     minHubGap: Number.isFinite(minHubGap) ? Math.round(minHubGap) : null,
     emptyOk, describe: og.describe(), describeText,
-    lodSweep, selectionSurvives,
+    lodSweep, selectionSurvives, lodCalls: lodCalls.length,
+    lodCallMaxHidden: lodCalls.reduce((m, c) => Math.max(m, c.hidden), 0),
     canvas: { w: CANVAS_W, h: CANVAS_H }, detail: og.detail,
     budgetCurve: [[1200,700],[390,700],[1920,1080],[2560,1400],[3840,2160]]
       .map(([w, h]) => ({ w, h, budget: og.budgetFor(w * h) })),

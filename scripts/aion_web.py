@@ -1206,7 +1206,12 @@ class Handler(BaseHTTPRequestHandler):
                 "/icon.svg": "image/svg+xml",
             }[p]
             # SW must be allowed to claim the root scope
-            extra = {"Service-Worker-Allowed": "/"} if p == "/sw.js" else None
+            extra = {"Cache-Control": "no-cache"}
+            # The SW must be allowed to claim the root scope, and must never be
+            # served stale -- a cached service worker cannot be replaced by a
+            # newer one it is itself serving.
+            if p == "/sw.js":
+                extra["Service-Worker-Allowed"] = "/"
             return self._send(200, ctype, open(fp, "rb").read(), headers=extra)
         if p.startswith("/static/"):
             # Content-Type is load-bearing, not cosmetic: a stylesheet served
@@ -1214,8 +1219,13 @@ class Handler(BaseHTTPRequestHandler):
             # script served as one is refused outright when nosniff is on.
             fp = os.path.join(STATIC, os.path.basename(p))
             if os.path.exists(fp):
+                # no-cache means "revalidate", not "do not store": the browser
+                # keeps the bytes but asks first, so an edited stylesheet shows
+                # up on reload instead of whenever the heuristic cache expires.
+                # Cheap here, since the daemon is loopback or LAN.
                 return self._send(200, _ctype(fp), open(fp, "rb").read(),
-                                  {"X-Content-Type-Options": "nosniff"})
+                                  {"X-Content-Type-Options": "nosniff",
+                                   "Cache-Control": "no-cache"})
             return self._send(404, "text/plain", b"no")
         # ---- API: sessions ----
         if p == "/api/sessions":
