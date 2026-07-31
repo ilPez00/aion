@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Copy to config/bridge.json and edit for your setup.",
+    "Each aion instance runs both a server (listens for incoming) and",
+    "connects to outbound peers — symmetric design.",
+    "host should be an overlay address (Tailscale/WireGuard) so the",
+    "same config works from any network.",
+    "",
+    "Set 'enabled': false or omit the file entirely to disable the bridge."
+  ],
+  "enabled": true,
+  "instance_name": "air",
+  "listen_host": "0.0.0.0",
+  "listen_port": 9876,
+  "peers": [
+    {
+      "host": "laptop-b.tail-scale-net.ts.net",
+      "port": 9876
+    }
+  ],
+  "relay_topics": ["task", "stats", "log", "intent"]
+}

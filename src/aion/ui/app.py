@@ -14,6 +14,7 @@ The command palette is optional, searchable, and shows completions.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,13 @@ class AiOSApp(App):
                               SystemHarness, HealthHarness, VaultHarness,
                               MindHarness)):
                 asyncio.create_task(h.start())
+        # Bridge: cross-instance bus relay (config/bridge.json)
+        from ..bridge import start_bridge_from_config
+        self._bridge = None
+        try:
+            self._bridge = await start_bridge_from_config(self.bus)
+        except Exception as exc:
+            logger.debug("[app] bridge init failed: %s", exc)
         self._render_all()
         # first-run: auto-launch the tour (Cycle 8). Persisted flag so it
         # only shows once; clear by deleting the flag file to see it again.
@@ -236,14 +244,16 @@ class AiOSApp(App):
             # `app <name>` overrides the default term harness (btop)
             term_h = None if desired_cmd else self.harnesses.get("term")
             if term_h is None:
+                # Respect user's configured command from settings; fall back to btop
+                cmd = desired_cmd or self.store.state.term_command or "btop"
                 term_h = TermHarness(
-                    HarnessConfig.from_dict({"id": "term", "type": "term",
-                                             "command": desired_cmd or "btop"}),
+                    HarnessConfig.from_dict({"id": "term", "type": "term", "command": cmd}),
                     self.bus, self.store.registry)
-            term_h.ensure_running()
-            self._term_pane = TermPane(term_h, id="termpane")
-            center.mount(self._term_pane)
-            self.observer.attach(term_h.command.split()[0])
+                term_h.ensure_running()
+                self._term_pane = TermPane(term_h, id="termpane")
+                center.mount(self._term_pane)
+                self.observer.attach(term_h.command.split()[0])
+                return
         else:
             # tear down: kill pty, restore empty cell list (rebuilt on next render)
             if self._term_pane is not None:
