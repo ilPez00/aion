@@ -604,6 +604,17 @@ class Store:
             def default_harness() -> str:
                 return getattr(getattr(self, "state", None), "active_harness", "")
 
+            from .swarmbudget import prices_from_harnesses
+
+            # `swarm_budget` in config, currency per DAG. 0 = no ceiling.
+            # Parallelism and VRAM say nothing about money: a swarm can sit
+            # inside both limits and still spend all night, which is exactly
+            # what leaving one running unattended means.
+            try:
+                budget = float(getattr(self, "cfg", {}).get("swarm_budget", 0) or 0)
+            except (TypeError, ValueError):
+                budget = 0.0
+
             self._swarm_runner = SwarmRunner(
                 self.swarm,
                 spawn_remote=self._swarm_spawn_remote,
@@ -613,6 +624,8 @@ class Store:
                     prompt, label=f"swarm/{agent.name}"),
                 harness=default_harness(),
                 harness_vram=vram,
+                budget=budget,
+                prices=prices_from_harnesses(getattr(self, "harnesses", {})),
             )
             # Adopt work that outlived the last process. Here rather than in
             # __init__ because the runner is lazy and this is the first moment

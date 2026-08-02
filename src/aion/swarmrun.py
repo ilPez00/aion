@@ -40,6 +40,9 @@ class Slot:
     name: str = ""
     harness: str = ""
     vram_mb: int = 0
+    # Estimated, not billed — see swarmbudget. Zero for an unpriced harness,
+    # which is most of them.
+    cost: float = 0.0
 
 
 @dataclass
@@ -54,7 +57,8 @@ class Admission:
 def admit(slots: list[Slot], *, running: int = 0,
           max_parallel: int = DEFAULT_MAX_PARALLEL,
           vram_total: int = DEFAULT_VRAM_MB,
-          vram_used: int = 0) -> Admission:
+          vram_used: int = 0,
+          budget: float = 0.0, committed: float = 0.0) -> Admission:
     """Which of these ready agents may start right now. Pure.
 
     Rules, in order:
@@ -69,14 +73,21 @@ def admit(slots: list[Slot], *, running: int = 0,
         budget — is called out by name rather than deferred forever. Silent
         starvation is the worst failure a scheduler has, because the DAG just
         stops and nothing anywhere says why.
+      * Money is the same shape as VRAM: a running total against a ceiling,
+        `budget = 0` meaning no ceiling. It is checked last because it is the
+        only limit that is an ESTIMATE, and a step should be refused for a
+        thing we know before a thing we guessed.
 
     Order is the caller's order, so a tick is reproducible.
     """
+    from .swarmbudget import affordable
+
     out = Admission()
     if max_parallel < 1:
         max_parallel = 1
     free_slots = max_parallel - max(0, running)
     used = max(0, vram_used)
+    spent = max(0.0, committed)
 
     for s in slots:
         need = max(0, int(s.vram_mb or 0))
@@ -97,9 +108,14 @@ def admit(slots: list[Slot], *, running: int = 0,
                 "reason": (f"{used + need}MB would exceed the {vram_total}MB "
                            f"VRAM budget")})
             continue
+        ok, why = affordable(s.cost, spent, budget)
+        if not ok:
+            out.deferred.append({"id": s.id, "name": s.name, "reason": why})
+            continue
         out.admit.append(s.id)
         free_slots -= 1
         used += need
+        spent += s.cost
     return out
 
 
@@ -216,13 +232,21 @@ class SwarmRunner:
     def __init__(self, orchestrator, spawn, *, harness: str = "",
                  max_parallel: int = DEFAULT_MAX_PARALLEL,
                  vram_total: int = DEFAULT_VRAM_MB,
-                 harness_vram=None, spawn_remote=None, poll_remote=None) -> None:
+                 harness_vram=None, spawn_remote=None, poll_remote=None,
+                 budget: float = 0.0, prices=None) -> None:
+        from .swarmbudget import Ledger
+
         self.swarm = orchestrator
         self.spawn = spawn                 # (agent, prompt) -> task_id | None
         self.harness = harness
         self.max_parallel = max_parallel
         self.vram_total = vram_total
         self._harness_vram = harness_vram or (lambda hid: 0)
+        # Money. 0 = no ceiling, exactly like vram_total. The ledger is always
+        # present so `status()` has one shape whether or not a budget is set.
+        self.budget = float(budget or 0.0)
+        self.ledger = Ledger(prices=dict(prices or {}))
+        self._prompts: dict[str, str] = {}   # agent id -> what it was asked
         # Optional, so a swarm works exactly as before with no peers set up.
         #   spawn_remote(instance, agent, prompt) -> task_id | ""
         #   poll_remote(instance, task_id)        -> dict | None
@@ -245,8 +269,14 @@ class SwarmRunner:
             if self.swarm.dep_state(a)[0] != "ready":
                 continue
             hid = getattr(a, "harness", "") or self.harness
+            # The prompt is built here as well as in pump(): admission has to
+            # price the real thing, and the upstream context it carries is
+            # most of its length.
+            prompt = prompt_for(a.goal, self.upstream_of(a))
+            self._prompts[a.id] = prompt
             out.append(Slot(id=a.id, name=a.name, harness=hid,
-                            vram_mb=self._harness_vram(hid)))
+                            vram_mb=self._harness_vram(hid),
+                            cost=self.ledger.estimate(hid, prompt)))
         return out
 
     def _in_flight(self) -> int:
@@ -272,14 +302,21 @@ class SwarmRunner:
 
         plan = admit(self._slots(), running=self._in_flight(),
                      max_parallel=self.max_parallel,
-                     vram_total=self.vram_total, vram_used=self._vram_used())
+                     vram_total=self.vram_total, vram_used=self._vram_used(),
+                     budget=self.budget, committed=self.ledger.committed())
         self.last = plan
         started = []
         for aid in plan.admit:
             agent = self.swarm.agents.get(aid)
             if agent is None:
                 continue
-            prompt = prompt_for(agent.goal, self.upstream_of(agent))
+            prompt = self._prompts.get(aid) or prompt_for(agent.goal,
+                                                          self.upstream_of(agent))
+            # Hold the estimate BEFORE the step starts. Without a hold, every
+            # agent admitted in one tick sees the same "committed so far" and
+            # the budget is blown once per step in a single pump.
+            self.ledger.reserve(aid, getattr(agent, "harness", "") or self.harness,
+                                prompt)
             # WORKING before spawning: a synchronous spawn that completes
             # immediately would otherwise find the agent still IDLE and the
             # completion would be dropped.
@@ -353,6 +390,10 @@ class SwarmRunner:
             return
         agent.output = output or agent.output
         agent.progress = 1.0
+        # The hold becomes the real figure: this is the only moment both
+        # halves of the exchange are known.
+        self.ledger.settle(agent_id, self._prompts.get(agent_id, ""),
+                           agent.output)
         self.swarm.set_status(agent_id, AgentStatus.DONE)
         self._forget(agent_id)
 
@@ -362,6 +403,16 @@ class SwarmRunner:
         if agent is None:
             return
         agent.error = error
+        # A step that RAN and failed still consumed whatever it consumed
+        # before failing, so it settles rather than releasing — otherwise a
+        # DAG that fails repeatedly spends without limit. A step that never
+        # reached a harness owns no task id and sent no tokens, so it does
+        # release: charging for a request that was never made is just wrong.
+        if self.task_of.get(agent_id):
+            self.ledger.settle(agent_id, self._prompts.get(agent_id, ""),
+                               agent.output)
+        else:
+            self.ledger.release(agent_id)
         self.swarm.log(agent_id, f"[run] failed: {error[:120]}")
         self.swarm.set_status(agent_id, AgentStatus.FAILED)
         self._forget(agent_id)
@@ -370,6 +421,9 @@ class SwarmRunner:
         from .swarm import AgentStatus
         if agent_id not in self.swarm.agents:
             return
+        # Released: cancelled work owes nothing, and holding its reservation
+        # would shrink the budget left for the rest of the DAG for no reason.
+        self.ledger.release(agent_id)
         if why:
             self.swarm.log(agent_id, f"[run] {why}")
         self.swarm.set_status(agent_id, AgentStatus.CANCELLED)
@@ -504,6 +558,8 @@ class SwarmRunner:
             "max_parallel": self.max_parallel,
             "vram_used": self._vram_used(),
             "vram_total": self.vram_total,
+            "budget": self.budget,
+            "ledger": self.ledger.as_dict(),
             "deferred": list(self.last.deferred),
             "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,
                                     "misses": w.misses, "state": w.state,
@@ -531,6 +587,18 @@ class SwarmRunner:
         if not idle:
             return ""
         if self.swarm.agents_ready():
+            # Ready is not the same as affordable. A DAG stopped by its budget
+            # looks exactly like a healthy idle one from every other panel,
+            # which is the most expensive kind of silence to debug.
+            #
+            # Read it off the last admission rather than comparing committed
+            # against the budget: when the budget stops the FIRST step nothing
+            # was ever reserved, so committed is zero and that comparison says
+            # everything is fine.
+            if self.budget:
+                held = [d for d in self.last.deferred if "budget" in d["reason"]]
+                if held:
+                    return (f"nothing running — {held[0]['name']}: {held[0]['reason']}")
             return ""                       # a pump would start something
         blocked = self.swarm.blocked_agents()
         if blocked:
