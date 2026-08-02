@@ -598,6 +598,8 @@ class Store:
 
             self._swarm_runner = SwarmRunner(
                 self.swarm,
+                spawn_remote=self._swarm_spawn_remote,
+                poll_remote=self._swarm_poll_remote,
                 spawn=lambda agent, prompt: self._spawn_now(
                     getattr(agent, "harness", "") or default_harness(),
                     prompt, label=f"swarm/{agent.name}"),
@@ -605,6 +607,75 @@ class Store:
                 harness_vram=vram,
             )
         return self._swarm_runner
+
+    def task_state(self, task_id: str) -> dict:
+        """One task's state, for a peer watching work it dispatched here.
+
+        Answers "I do not know that task" explicitly rather than with an empty
+        state: the watcher treats a definite unknown as work that is not coming
+        back, and silence as a network problem. Conflating them would either
+        strand a DAG or cancel live work.
+        """
+        task = self.registry.tasks.get(task_id)
+        if task is None:
+            return {"id": task_id, "error": "no such task"}
+        return {"id": task.id, "state": task.state.value,
+                "progress": round(task.progress, 3),
+                "output": "\n".join(task.log[-20:])}
+
+    def _peer_node(self, instance: str):
+        """Resolve an instance id to a RemoteNode. Discovery only -- an agent
+        names an instance, never a machine, exactly as routing does."""
+        from .fleet import discover_local
+        from .remotes import RemoteNode
+        for peer in discover_local(include_self=True):
+            if peer.id == instance:
+                return RemoteNode(id=peer.id, host=peer.host, port=peer.port)
+        return None
+
+    def _swarm_spawn_remote(self, instance: str, agent, prompt: str):
+        """Ask another instance to run this step. Non-blocking.
+
+        Returns PENDING and answers later through `runner.attach`. These hooks
+        are called from inside the cockpit's event loop, so awaiting a network
+        request here would freeze the UI -- and asyncio.run() from a running
+        loop raises outright, which marked every remote step FAILED before a
+        packet was ever sent.
+        """
+        from .swarmrun import PENDING
+        node = self._peer_node(instance)
+        if node is None:
+            return ""                    # unknown instance: a real failure
+        asyncio.create_task(self._remote_spawn_async(
+            node, instance, agent.id, getattr(agent, "harness", ""), prompt))
+        return PENDING
+
+    async def _remote_spawn_async(self, node, instance, agent_id,
+                                  harness, prompt) -> None:
+        from .remotes import RemoteClient
+        try:
+            out = await RemoteClient(timeout=10.0).run_task(node, prompt, harness)
+        except Exception:  # noqa: BLE001
+            out = None
+        self.swarm_runner.attach(agent_id, instance,
+                                 str((out or {}).get("task_id", "") or ""))
+
+    def _swarm_poll_remote(self, instance: str, task_id: str):
+        """Non-blocking too; the answer arrives via `runner.deliver`."""
+        from .swarmrun import PENDING
+        node = self._peer_node(instance)
+        if node is None:
+            return None                  # unreachable: counts as a miss
+        asyncio.create_task(self._remote_poll_async(node, task_id))
+        return PENDING
+
+    async def _remote_poll_async(self, node, task_id: str) -> None:
+        from .remotes import RemoteClient
+        try:
+            reply = await RemoteClient(timeout=8.0).task_state(node, task_id)
+        except Exception:  # noqa: BLE001
+            reply = None
+        self.swarm_runner.deliver(task_id, reply)
 
     def swarm_command(self, params: dict) -> dict:
         """One entry point for every swarm verb, used by the web HUD.
@@ -624,7 +695,8 @@ class Store:
                 return {"ok": False, "reason": "deps must be a list of names"}
             return self.swarm.add_checked(
                 str(params.get("name", "")), str(params.get("goal", "")),
-                [str(d) for d in deps], harness=str(params.get("harness", "")))
+                [str(d) for d in deps], harness=str(params.get("harness", "")),
+                instance=str(params.get("instance_for", "")))
         if action == "plan":
             # Propose a DAG from a goal. Creating it is a second, explicit
             # step, and running it is a third -- the same fail-closed shape as

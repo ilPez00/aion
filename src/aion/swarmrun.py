@@ -139,6 +139,62 @@ def prompt_for(goal: str, upstream: list[tuple[str, str]],
             f"---\nContext from the steps this depends on:\n\n{joined}")
 
 
+# ── watching work on another machine ─────────────────────────────────────────
+# A local task announces itself on the bus. A remote one does not, so it has to
+# be asked — and asking can fail for reasons that have nothing to do with the
+# work: a laptop sleeps, a tunnel drops, wifi blinks. Treating one silent poll
+# as a failure would cancel real work and unblock downstream agents on nothing.
+MAX_MISSES = 4          # ~4 polls of grace before a peer counts as lost
+
+# Returned by a spawn_remote/poll_remote that went away to do network I/O and
+# will answer later via `attach()` / `deliver()`.
+#
+# The cockpit calls pump() and poll() from inside its own event loop, so those
+# hooks cannot block: awaiting a 10s request there freezes the entire UI, and
+# asyncio.run() from a running loop simply raises -- which is how the first
+# cross-machine run failed, with every remote step marked FAILED before a
+# packet was sent. Tests still hand back a value directly; this sentinel is
+# what lets both work through one code path.
+PENDING = object()
+
+
+@dataclass
+class Watch:
+    """One agent's task running on another instance."""
+    agent_id: str
+    instance: str
+    task_id: str
+    misses: int = 0
+
+
+def read_poll(reply, watch: Watch, max_misses: int = MAX_MISSES) -> tuple[str, str]:
+    """(verdict, detail) from one poll of a remote task. Pure.
+
+    Verdicts: "" (nothing to do), a task state to apply, or "lost".
+
+    `reply` is whatever the peer sent — None when it could not be reached, a
+    dict otherwise. The distinction between "cannot ask" and "asked, and the
+    task is gone" matters: the first is the network, the second is real.
+    """
+    if reply is None:
+        watch.misses += 1
+        if watch.misses >= max_misses:
+            return "lost", (f"{watch.instance} stopped answering after "
+                            f"{watch.misses} attempts")
+        return "", ""
+    if not isinstance(reply, dict):
+        watch.misses += 1
+        return "", ""
+
+    watch.misses = 0
+    state = str(reply.get("state", "")).strip()
+    if reply.get("error") or not state:
+        # The peer answered and does not know this task. It restarted, or the
+        # task was pruned. Either way the work is not coming back.
+        return "lost", f"{watch.instance} has no task {watch.task_id}"
+    return state, str(reply.get("output", "") or "")
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 class SwarmRunner:
     """Drives a SwarmOrchestrator by spawning real tasks.
@@ -153,13 +209,19 @@ class SwarmRunner:
     def __init__(self, orchestrator, spawn, *, harness: str = "",
                  max_parallel: int = DEFAULT_MAX_PARALLEL,
                  vram_total: int = DEFAULT_VRAM_MB,
-                 harness_vram=None) -> None:
+                 harness_vram=None, spawn_remote=None, poll_remote=None) -> None:
         self.swarm = orchestrator
         self.spawn = spawn                 # (agent, prompt) -> task_id | None
         self.harness = harness
         self.max_parallel = max_parallel
         self.vram_total = vram_total
         self._harness_vram = harness_vram or (lambda hid: 0)
+        # Optional, so a swarm works exactly as before with no peers set up.
+        #   spawn_remote(instance, agent, prompt) -> task_id | ""
+        #   poll_remote(instance, task_id)        -> dict | None
+        self.spawn_remote = spawn_remote
+        self.poll_remote = poll_remote
+        self.watches: dict[str, Watch] = {}
         # agent id <-> task id, both ways: one to advance the agent when its
         # task ends, the other to find the task when the agent is cancelled.
         self.task_of: dict[str, str] = {}
@@ -215,8 +277,21 @@ class SwarmRunner:
             # immediately would otherwise find the agent still IDLE and the
             # completion would be dropped.
             self.swarm.set_status(aid, AgentStatus.WORKING)
+            where = getattr(agent, "instance", "") or ""
             try:
-                task_id = self.spawn(agent, prompt)
+                if where and self.spawn_remote is not None:
+                    task_id = self.spawn_remote(where, agent, prompt)
+                    if task_id is PENDING:
+                        # In flight. The agent stays WORKING with no watch
+                        # until attach() lands; poll() skips what it cannot
+                        # see, so the gap is harmless.
+                        started.append(agent.name)
+                        continue
+                elif where:
+                    self.fail(aid, f"no way to reach {where}")
+                    continue
+                else:
+                    task_id = self.spawn(agent, prompt)
             except Exception as e:  # noqa: BLE001
                 self.fail(aid, f"could not start: {type(e).__name__}: {str(e)[:120]}")
                 continue
@@ -225,7 +300,11 @@ class SwarmRunner:
                 continue
             self.task_of[aid] = task_id
             self.agent_of[task_id] = aid
-            self.swarm.log(aid, f"[run] task {task_id}")
+            if where:
+                self.watches[aid] = Watch(aid, where, task_id)
+                self.swarm.log(aid, f"[run] task {task_id} on {where}")
+            else:
+                self.swarm.log(aid, f"[run] task {task_id}")
             started.append(agent.name)
         return {"started": started, "deferred": plan.deferred,
                 "in_flight": self._in_flight()}
@@ -297,6 +376,63 @@ class SwarmRunner:
         task_id = self.task_of.pop(agent_id, None)
         if task_id:
             self.agent_of.pop(task_id, None)
+        self.watches.pop(agent_id, None)
+
+    # -- remote --------------------------------------------------------------
+    def attach(self, agent_id: str, instance: str, task_id: str) -> None:
+        """A remote spawn came back with a task id. Start watching it."""
+        from .swarm import AgentStatus
+        agent = self.swarm.agents.get(agent_id)
+        if agent is None or agent.status is not AgentStatus.WORKING:
+            return                       # cancelled while the request was out
+        if not task_id:
+            self.fail(agent_id, f"{instance} did not accept the task")
+            return
+        self.task_of[agent_id] = task_id
+        self.agent_of[task_id] = agent_id
+        self.watches[agent_id] = Watch(agent_id, instance, task_id)
+        self.swarm.log(agent_id, f"[run] task {task_id} on {instance}")
+
+    def deliver(self, task_id: str, reply) -> None:
+        """An async poll answered. Same handling as a synchronous one."""
+        agent_id = self.agent_of.get(task_id)
+        w = self.watches.get(agent_id) if agent_id else None
+        if w is None:
+            return
+        self._apply_poll(w, reply)
+
+    def _apply_poll(self, watch: Watch, reply) -> bool:
+        verdict, detail = read_poll(reply, watch)
+        if not verdict:
+            return False
+        if verdict == "lost":
+            self.fail(watch.agent_id, detail)
+        elif self.on_task_state(watch.task_id, verdict, output=detail) is None:
+            return False
+        self.pump()
+        return True
+
+    def poll(self) -> dict:
+        """Ask each peer how our work is going. Call it on a timer.
+
+        Remote tasks cannot announce themselves on this process's bus, so this
+        is the only way a cross-machine DAG advances. Latency is the poll
+        interval, which is why it is a separate call rather than something
+        `pump()` does: the caller owns the cadence.
+        """
+        if self.poll_remote is None or not self.watches:
+            return {"polled": 0, "advanced": []}
+        advanced = []
+        for watch in list(self.watches.values()):
+            try:
+                reply = self.poll_remote(watch.instance, watch.task_id)
+            except Exception:  # noqa: BLE001
+                reply = None
+            if reply is PENDING:
+                continue             # deliver() will handle it
+            if self._apply_poll(watch, reply):
+                advanced.append(watch.agent_id)
+        return {"polled": len(self.watches), "advanced": advanced}
 
     # -- introspection -----------------------------------------------------
     def status(self) -> dict:
@@ -310,6 +446,9 @@ class SwarmRunner:
             "vram_used": self._vram_used(),
             "vram_total": self.vram_total,
             "deferred": list(self.last.deferred),
+            "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,
+                                    "misses": w.misses}
+                       for w in self.watches.values()},
             "stalled": stalled,
             "running_tasks": dict(self.task_of),
         }

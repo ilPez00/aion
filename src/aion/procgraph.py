@@ -191,7 +191,13 @@ def read_swarm(root: Path | None = None) -> list[dict]:
     for d in sorted(root.iterdir()):
         for a in _read_json(d / "swarm.json", []) or []:
             if isinstance(a, dict) and "id" in a:
-                out.append({**a, "instance": d.name})
+                # Two different "instance" meanings collide here: the cockpit
+                # whose checkpoint this is, and (since cross-machine steps)
+                # the instance the agent RUNS on. `**a` first would let the
+                # directory name silently overwrite the agent's own, so the
+                # agent's is preserved under its own key.
+                out.append({**a, "instance": d.name,
+                            "runs_on": str(a.get("instance", "") or "")})
     return out
 
 

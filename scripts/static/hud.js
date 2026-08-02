@@ -300,6 +300,9 @@ function renderSwarmActions(box, n) {
     row.append(b);
   }
   box.append(el('h3', { text: 'Swarm agent' }), row);
+  if (n.runsOn) {
+    box.append(el('p', { class: 'muted mono-sm', text: `runs on ${n.runsOn}` }));
+  }
   if ((n.deps || []).length) {
     box.append(el('p', { class: 'muted mono-sm',
                          text: `depends on ${n.deps.join(', ')}` }));
@@ -436,12 +439,17 @@ function swarmAdd() {
   const name = el('input', { type: 'text', placeholder: 'name (deps refer to this)' });
   const goal = el('input', { type: 'text', placeholder: 'goal' });
   const deps = el('input', { type: 'text', placeholder: 'depends on: a, b (optional)' });
+  // A step can run on another machine. Blank means here — the common case, so
+  // it stays a plain optional field rather than a required choice.
+  const where = el('select', {}, [el('option', { value: '', text: 'run here' })].concat(
+    liveInstances().map(i => el('option', { value: i.id, text: `run on ${i.id}` }))));
   const close = () => { box.hidden = true; box.replaceChildren(); };
   const submit = async () => {
     close();
     await swarmAct({
       action: 'add', name: name.value.trim(), goal: goal.value.trim(),
       deps: deps.value.split(',').map(d => d.trim()).filter(Boolean),
+      instance_for: where.value,
     });
   };
   for (const f of [name, goal, deps]) {
@@ -453,7 +461,7 @@ function swarmAdd() {
   box.hidden = false;
   box.replaceChildren(
     el('div', { class: 'route-head', text: 'New swarm agent' }),
-    el('div', { class: 'route-body' }, [name, goal, deps]),
+    el('div', { class: 'route-body' }, [name, goal, deps, where]),
     el('div', { class: 'row' }, [
       el('button', { type: 'button', class: 'primary', text: 'Add',
                      on: { click: submit } }),
@@ -875,7 +883,7 @@ async function loadAgents() {
         detail: `${s.status} · ${s.goal || ''}`.slice(0, 120),
         swarmGoal: s.goal, taskLog: s.logs,
         swarmId: s.id, state: s.status, deps: s.deps || [],
-        instance: s.instance,
+        instance: s.instance, runsOn: s.runs_on || '',
       });
       for (const d of (s.deps || [])) {
         const dep = swarmByName.get(d);

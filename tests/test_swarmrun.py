@@ -329,3 +329,206 @@ def test_status_explains_a_swarm_that_is_not_moving(runner, chain):
     assert st["max_parallel"] >= 1
     assert st["total"] == 3
     assert "running_tasks" in st
+
+
+# ── work on another machine ──────────────────────────────────────────────────
+# A remote task cannot announce itself on this process's bus, so it is polled.
+# Polling can fail for reasons that have nothing to do with the work — a laptop
+# sleeps, a tunnel drops — and confusing the two either strands a DAG or
+# cancels live work.
+
+def watch(**kw):
+    from aion.swarmrun import Watch
+    base = dict(agent_id="a1", instance="pi5", task_id="t1")
+    base.update(kw)
+    return Watch(**base)
+
+
+def test_a_single_unanswered_poll_is_not_a_failure():
+    from aion.swarmrun import read_poll
+    w = watch()
+    assert read_poll(None, w) == ("", "")
+    assert w.misses == 1
+
+
+def test_persistent_silence_eventually_gives_up():
+    from aion.swarmrun import MAX_MISSES, read_poll
+    w = watch()
+    for _ in range(MAX_MISSES - 1):
+        assert read_poll(None, w)[0] == ""
+    verdict, why = read_poll(None, w)
+    assert verdict == "lost" and "stopped answering" in why
+
+
+def test_one_good_answer_forgives_earlier_misses():
+    """A blink of wifi must not accumulate toward a death sentence."""
+    from aion.swarmrun import read_poll
+    w = watch(misses=3)
+    assert read_poll({"state": "running"}, w) == ("running", "")
+    assert w.misses == 0
+
+
+def test_a_peer_that_does_not_know_the_task_is_definite():
+    """It answered. The work is not coming back, and that is different from
+    not being able to ask."""
+    from aion.swarmrun import read_poll
+    verdict, why = read_poll({"error": "no such task"}, watch())
+    assert verdict == "lost" and "no task" in why
+
+
+def test_a_state_and_its_output_come_through():
+    from aion.swarmrun import read_poll
+    assert read_poll({"state": "done", "output": "the result"}, watch()) == (
+        "done", "the result")
+
+
+def test_junk_from_a_peer_counts_as_a_miss_not_a_verdict():
+    from aion.swarmrun import read_poll
+    w = watch()
+    assert read_poll("<html>gateway timeout</html>", w) == ("", "")
+    assert w.misses == 1
+
+
+class FakePeer:
+    """An instance that runs a task and can be made to go quiet."""
+
+    def __init__(self, state="running"):
+        self.state = state
+        self.reachable = True
+        self.spawned = []
+
+    def spawn(self, instance, agent, prompt):
+        self.spawned.append((instance, agent.name, prompt))
+        return f"remote-{len(self.spawned)}"
+
+    def poll(self, instance, task_id):
+        if not self.reachable:
+            return None
+        return {"id": task_id, "state": self.state, "output": "remote output"}
+
+
+def remote_chain():
+    o = SwarmOrchestrator()
+    o.add_checked("heavy", "train the thing", instance="workstation")
+    o.add_checked("report", "write it up", ["heavy"])
+    return o
+
+
+def test_a_step_pinned_to_an_instance_runs_there():
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    assert peer.spawned[0][0] == "workstation"
+    assert r.spawn.calls == [], "a remote step was run locally"
+    assert r.watches
+
+
+def test_a_remote_step_advances_the_dag_when_it_finishes():
+    """The whole point: a DAG spanning machines still walks itself."""
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    peer.state = "done"
+    r.poll()
+    assert o.agent_by_name("heavy").status is AgentStatus.DONE
+    assert o.agent_by_name("report").status is AgentStatus.WORKING
+    assert r.spawn.calls, "the local step never started"
+
+
+def test_the_remote_output_reaches_the_next_step():
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    peer.state = "done"
+    r.poll()
+    assert "remote output" in r.spawn.calls[-1]["prompt"]
+
+
+def test_a_peer_that_disappears_fails_its_agent_eventually():
+    from aion.swarmrun import MAX_MISSES
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    peer.reachable = False
+    for _ in range(MAX_MISSES):
+        r.poll()
+    heavy = o.agent_by_name("heavy")
+    assert heavy.status is AgentStatus.FAILED
+    assert "workstation" in heavy.error
+
+
+def test_a_brief_outage_does_not_fail_the_agent():
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    peer.reachable = False
+    r.poll(); r.poll()
+    peer.reachable = True
+    r.poll()
+    assert o.agent_by_name("heavy").status is AgentStatus.WORKING
+
+
+def test_a_poll_that_raises_is_a_miss_not_a_crash():
+    o = remote_chain()
+
+    def boom(instance, task_id):
+        raise OSError("connection reset")
+    r = SwarmRunner(o, spawn=FakeSpawn(),
+                    spawn_remote=FakePeer().spawn, poll_remote=boom)
+    r.pump()
+    r.poll()
+    assert o.agent_by_name("heavy").status is AgentStatus.WORKING
+
+
+def test_a_pinned_step_with_no_transport_fails_loudly():
+    """Rather than silently running somewhere the user did not ask for."""
+    o = remote_chain()
+    r = SwarmRunner(o, spawn=FakeSpawn())          # no spawn_remote
+    r.pump()
+    heavy = o.agent_by_name("heavy")
+    assert heavy.status is AgentStatus.FAILED
+    assert "workstation" in heavy.error
+
+
+def test_polling_with_nothing_remote_is_free():
+    o = SwarmOrchestrator()
+    o.add_checked("local", "work")
+    r = SwarmRunner(o, spawn=FakeSpawn(), poll_remote=lambda *a: 1 / 0)
+    r.pump()
+    assert r.poll() == {"polled": 0, "advanced": []}
+
+
+def test_status_shows_what_is_running_elsewhere():
+    o = remote_chain()
+    peer = FakePeer()
+    r = SwarmRunner(o, spawn=FakeSpawn(), spawn_remote=peer.spawn,
+                    poll_remote=peer.poll)
+    r.pump()
+    remote = r.status()["remote"]
+    assert list(remote.values())[0]["instance"] == "workstation"
+
+
+def test_the_owning_cockpit_does_not_clobber_where_an_agent_runs(tmp_path):
+    """Two different meanings of "instance" meet in procgraph: the cockpit
+    whose checkpoint this is, and the machine the step runs on. `{**a,
+    "instance": dir}` let the directory name silently win."""
+    import json
+    from aion import procgraph
+    inst = tmp_path / "main"
+    inst.mkdir()
+    (inst / "swarm.json").write_text(json.dumps([
+        {"id": "s1", "name": "heavy", "goal": "x", "status": "idle",
+         "deps": [], "instance": "workstation"}]))
+    row = procgraph.read_swarm(tmp_path)[0]
+    assert row["instance"] == "main"          # whose checkpoint
+    assert row["runs_on"] == "workstation"    # where it runs

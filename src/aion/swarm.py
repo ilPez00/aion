@@ -54,6 +54,9 @@ class SwarmAgent:
     # research step and a code step wanting different harnesses is the normal
     # case, not an exotic one.
     harness: str = ""
+    # Which fleet instance runs this step. Empty means here. A DAG can span
+    # machines: a heavy step on the workstation, the rest wherever you are.
+    instance: str = ""
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -69,6 +72,7 @@ class SwarmAgent:
             "id": self.id, "name": self.name, "goal": self.goal[:80],
             "status": self.status.value, "progress": round(self.progress, 2),
             "deps": self.dependencies, "harness": self.harness,
+            "instance": self.instance,
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -111,6 +115,7 @@ class SwarmAgent:
             goal=str(d.get("goal", "")), status=status,
             dependencies=[str(x) for x in (d.get("deps") or [])],
             harness=str(d.get("harness", "") or ""),
+            instance=str(d.get("instance", "") or ""),
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),
@@ -239,12 +244,14 @@ class SwarmOrchestrator:
     # ---- Agent management ------------------------------------------------
 
     def add_agent(self, name: str, goal: str, deps: list[str] | None = None,
-                  parent: str | None = None, harness: str = "") -> SwarmAgent:
+                  parent: str | None = None, harness: str = "",
+                  instance: str = "") -> SwarmAgent:
         aid = f"swarm_{uuid.uuid4().hex[:8]}"
         a = SwarmAgent(
             id=aid, name=name, goal=goal,
             dependencies=deps or [],
             harness=harness,
+            instance=instance,
             parent_id=parent,
         )
         self.agents[aid] = a
@@ -458,7 +465,8 @@ class SwarmOrchestrator:
         return {"ok": True, "stopped": [a.name for a in stopped]}
 
     def add_checked(self, name: str, goal: str,
-                    deps: list[str] | None = None, harness: str = "") -> dict:
+                    deps: list[str] | None = None, harness: str = "",
+                    instance: str = "") -> dict:
         """add_agent with the validation a public entry point needs.
 
         Names are the dependency key, so a duplicate name does not create a
@@ -487,7 +495,8 @@ class SwarmOrchestrator:
             return self._as_agent(Outcome(False, "add", reason=(
                 f"no agent named {', '.join(missing)} — add dependencies "
                 f"before what depends on them")).as_dict())
-        a = self.add_agent(name, goal, deps=clean, harness=harness)
+        a = self.add_agent(name, goal, deps=clean, harness=harness,
+                           instance=instance)
         out = self._as_agent(Outcome(True, "add", a.id, "", a.status.value).as_dict())
         out["name"] = a.name
         return out

@@ -111,6 +111,16 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Swarm across machines** — a step can name an instance (`instance_for` in
+  the add form) and runs there via the existing token-authenticated transport,
+  while the rest of the DAG runs locally. Remote work cannot announce itself on
+  this process's bus, so it is polled per task (`GET /task?id=`) rather than
+  read from `/status`, whose 20-task cap drops exactly the completions the
+  watcher exists to see. A silent poll is a miss, not a failure — four
+  consecutive misses before a peer counts as lost, so a sleeping laptop does
+  not cancel live work. Spawn and poll are non-blocking (`PENDING` +
+  `attach`/`deliver`): the cockpit calls these from inside its own event loop.
+
 - **Swarm planning** (`swarmplan.py`) — describe a goal, get a reviewed DAG.
   `decompose()` created an empty plan nobody read, so every swarm had to be
   hand-built. A model proposes; almost everything it says is refused: step

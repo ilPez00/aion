@@ -259,6 +259,11 @@ class AiOSApp(App):
         self._remote_server.on_swarm = lambda params: (
             self.store.swarm_command(params)
         )
+        # A peer watching a step it dispatched here needs to ask about that
+        # one task; /status caps its list and would drop it once it finishes.
+        self._remote_server.on_task_query = lambda tid: (
+            self.store.task_state(tid)
+        )
         # Answering an approval gate from the web HUD / another cockpit. The
         # transport is token-authenticated; the published gates.json is only
         # ever display state.
@@ -272,6 +277,10 @@ class AiOSApp(App):
         self.set_interval(beat_s, self._beat)
         self._refresh_local_peers()
         self.set_interval(beat_s, self._refresh_local_peers)
+        # A swarm step running on another instance cannot announce itself on
+        # this process's bus, so it has to be asked. Without this timer a
+        # cross-machine DAG starts its remote step and then waits forever.
+        self.set_interval(beat_s, self._poll_swarm)
         for rn in self.cfg.get("remote_nodes", []):
             self._remote_nodes[rn["id"]] = RemoteNode(
                 id=rn["id"], host=rn["host"], port=rn.get("port", 8765),
@@ -1419,6 +1428,21 @@ class AiOSApp(App):
             )
         except OSError:
             pass    # a missing ~/.aion is not worth killing the cockpit over
+
+    def _poll_swarm(self) -> None:
+        """Ask peers how the swarm steps they are running are going.
+
+        Guarded and lazy: a store with no swarm runner has never dispatched
+        anything remote, and a polling error must not take down the cockpit's
+        heartbeat, which shares this interval.
+        """
+        runner = getattr(self.store, "_swarm_runner", None)
+        if runner is None or not runner.watches:
+            return
+        try:
+            runner.poll()
+        except Exception as e:  # noqa: BLE001
+            self.store.state.logs.append(f"swarm poll: {type(e).__name__}: {str(e)[:100]}")
 
     def _refresh_local_peers(self) -> None:
         """Scan for sibling instances. On a timer — never inside a render."""

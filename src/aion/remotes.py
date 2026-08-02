@@ -95,6 +95,17 @@ class RemoteClient:
         body = json.dumps({"task_id": task_id})
         return await self._request(node, "POST", "/cancel", body)
 
+    async def task_state(self, node: RemoteNode, task_id: str) -> dict | None:
+        """GET /task?id= — one task's state on that instance.
+
+        Deliberately per-task rather than reading /status: that payload caps
+        the task list at 20 and, once a task finishes, it is exactly the one
+        most likely to fall off the end. A watcher built on it would miss the
+        completion it exists to see.
+        """
+        from urllib.parse import quote
+        return await self._request(node, "GET", f"/task?id={quote(task_id)}")
+
     async def control_swarm(self, node: RemoteNode, action: str,
                             agent_id: str = "", name: str = "",
                             goal: str = "", deps: list | None = None,
@@ -195,6 +206,7 @@ class RemoteServer:
         self.on_gate = lambda gid, approved: {"error": "no gate handler"}
         self.on_task = lambda tid, action: {"ok": False, "reason": "no task handler"}
         self.on_swarm = lambda params: {"ok": False, "reason": "no swarm handler"}
+        self.on_task_query = lambda tid: {"error": "no task handler"}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -235,7 +247,13 @@ class RemoteServer:
                 await self._reply(writer, 401, {"error": "unauthorised"})
                 return
 
-            if method == "GET" and path == "/status":
+            if method == "GET" and path.startswith("/task"):
+                from urllib.parse import parse_qs, urlparse, unquote
+                qs = parse_qs(urlparse(path).query)
+                result = self.on_task_query(unquote(qs.get("id", [""])[0])) \
+                    if callable(self.on_task_query) else {"error": "no handler"}
+                await self._reply(writer, 200, result)
+            elif method == "GET" and path == "/status":
                 result = self.on_status() if callable(self.on_status) else {}
                 await self._reply(writer, 200, result)
             elif method == "POST" and path == "/run":
