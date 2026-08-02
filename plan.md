@@ -121,6 +121,25 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   not cancel live work. Spawn and poll are non-blocking (`PENDING` +
   `attach`/`deliver`): the cockpit calls these from inside its own event loop.
 
+- **A budget stops a swarm that is working perfectly** (`swarmbudget.py`) —
+  admission capped parallelism and VRAM, neither of which is money, so a DAG
+  left running unattended could sit inside both limits and spend all night.
+  Reserve-then-reconcile: the prompt is known before a step runs and the output
+  is not, so admission holds an estimate and the real figure replaces it at the
+  end. Without the hold, every step admitted in one tick sees the same
+  "committed so far". Failed-but-ran settles; never-started and cancelled
+  release. It is a governor and not accounting — external CLIs report stdout
+  and an exit code, not tokens, so the figures are characters over four times a
+  configured price and every payload carries `estimated: True`.
+
+- **A restart adopts remote work instead of re-running it** — `restore()` was
+  called nowhere, so the DAG survived on disk and in the web HUD while the
+  cockpit came back believing there was no swarm. And once restored, every
+  WORKING agent was reset to IDLE — right for a local step whose coroutine
+  died, exactly wrong for one pinned to a peer that never noticed we left,
+  where it means a second copy of the same job. The task id an agent owns is
+  now checkpointed, and `rehydrate()` re-attaches the watch.
+
 - **One state machine for agents and tasks** — a swarm agent is not a process;
   it owns a task id, and the task is what a harness can suspend. So `pause` and
   `resume` have no agent-level implementation at all: `agentctl.route` decides
