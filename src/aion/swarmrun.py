@@ -305,13 +305,9 @@ class SwarmRunner:
             if not task_id:
                 self.fail(aid, "harness did not accept the task")
                 continue
-            self.task_of[aid] = task_id
-            self.agent_of[task_id] = aid
-            if where:
-                self.watches[aid] = Watch(aid, where, task_id)
-                self.swarm.log(aid, f"[run] task {task_id} on {where}")
-            else:
-                self.swarm.log(aid, f"[run] task {task_id}")
+            self._own(aid, task_id, where)
+            self.swarm.log(aid, f"[run] task {task_id}"
+                                + (f" on {where}" if where else ""))
             started.append(agent.name)
         return {"started": started, "deferred": plan.deferred,
                 "in_flight": self._in_flight()}
@@ -379,11 +375,55 @@ class SwarmRunner:
         self.swarm.set_status(agent_id, AgentStatus.CANCELLED)
         self._forget(agent_id)
 
+    def _own(self, agent_id: str, task_id: str, instance: str = "") -> None:
+        """Record that this agent's work is this task. One place, because the
+        mapping now lives in three: two dicts and the checkpointed agent."""
+        self.task_of[agent_id] = task_id
+        self.agent_of[task_id] = agent_id
+        agent = self.swarm.agents.get(agent_id)
+        if agent is not None:
+            agent.task_id = task_id
+        if instance:
+            self.watches[agent_id] = Watch(agent_id, instance, task_id)
+
     def _forget(self, agent_id: str) -> None:
         task_id = self.task_of.pop(agent_id, None)
         if task_id:
             self.agent_of.pop(task_id, None)
         self.watches.pop(agent_id, None)
+        agent = self.swarm.agents.get(agent_id)
+        if agent is not None:
+            agent.task_id = ""
+
+    def rehydrate(self) -> dict:
+        """Re-adopt work that outlived the process. Call once after a restore.
+
+        Only remote steps can survive: a local task died with the harness
+        coroutine, and `SwarmAgent.from_record` has already put those back to
+        IDLE. What is left WORKING is running on a peer that never noticed we
+        went away, so the watch is rebuilt and the next `poll()` collects the
+        result exactly as if we had never stopped.
+
+        Without this the DAG restarts a job that is already running -- double
+        spend, and every side effect that step has, twice.
+        """
+        from .swarm import AgentStatus
+
+        adopted = []
+        for agent in self.swarm.agents.values():
+            task_id = getattr(agent, "task_id", "") or ""
+            instance = getattr(agent, "instance", "") or ""
+            if agent.status is not AgentStatus.WORKING or not task_id:
+                continue
+            if not instance:
+                # Belt and braces: a local task cannot have survived, so if one
+                # is somehow still marked WORKING it is stale, not running.
+                self.cancel(agent.id, "the cockpit restarted while it ran")
+                continue
+            self._own(agent.id, task_id, instance)
+            self.swarm.log(agent.id, f"[run] re-attached to {task_id} on {instance}")
+            adopted.append(agent.name)
+        return {"adopted": adopted}
 
     # -- remote --------------------------------------------------------------
     def attach(self, agent_id: str, instance: str, task_id: str) -> None:
@@ -395,9 +435,7 @@ class SwarmRunner:
         if not task_id:
             self.fail(agent_id, f"{instance} did not accept the task")
             return
-        self.task_of[agent_id] = task_id
-        self.agent_of[task_id] = agent_id
-        self.watches[agent_id] = Watch(agent_id, instance, task_id)
+        self._own(agent_id, task_id, instance)
         self.swarm.log(agent_id, f"[run] task {task_id} on {instance}")
 
     def deliver(self, task_id: str, reply) -> None:

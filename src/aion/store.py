@@ -112,6 +112,14 @@ class Store:
         # restore interrupted tasks from a previous crash
         for t in self.store.load():
             self.registry.ingest(t)
+        # ...and the swarm, which was written to disk on every mutation and
+        # read back by nobody. The DAG survived a restart on disk and in the
+        # web HUD (procgraph reads swarm.json directly) while the cockpit that
+        # owns it came back believing there was no swarm at all.
+        try:
+            self.swarm.restore()
+        except Exception as e:  # noqa: BLE001
+            print(f"[swarm] restore failed: {e}")
 
     # ---- helpers --------------------------------------------------------
     def _first_harness(self) -> str:
@@ -606,6 +614,14 @@ class Store:
                 harness=default_harness(),
                 harness_vram=vram,
             )
+            # Adopt work that outlived the last process. Here rather than in
+            # __init__ because the runner is lazy and this is the first moment
+            # one exists; doing it twice is harmless (it is keyed on agent
+            # state, not on a queue) but it only ever happens once.
+            try:
+                self._swarm_runner.rehydrate()
+            except Exception as e:  # noqa: BLE001
+                print(f"[swarm] rehydrate failed: {e}")
         return self._swarm_runner
 
     def task_state(self, task_id: str) -> dict:

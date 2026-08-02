@@ -57,6 +57,11 @@ class SwarmAgent:
     # Which fleet instance runs this step. Empty means here. A DAG can span
     # machines: a heavy step on the workstation, the rest wherever you are.
     instance: str = ""
+    # The task doing this agent's work right now. An agent is not a process --
+    # it owns a task id -- and that id has to survive a checkpoint, or a
+    # restart cannot tell "this step is running on the workstation" from
+    # "this step has not started", and starts it a second time.
+    task_id: str = ""
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -72,7 +77,7 @@ class SwarmAgent:
             "id": self.id, "name": self.name, "goal": self.goal[:80],
             "status": self.status.value, "progress": round(self.progress, 2),
             "deps": self.dependencies, "harness": self.harness,
-            "instance": self.instance,
+            "instance": self.instance, "task_id": self.task_id,
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -105,17 +110,26 @@ class SwarmAgent:
             status = AgentStatus(d.get("status", "idle"))
         except ValueError:
             status = AgentStatus.IDLE
-        # An agent that was mid-flight when the process died cannot be resumed
-        # (the coroutine is gone), so it comes back IDLE and eligible to re-run
-        # rather than lying about still working.
+        instance = str(d.get("instance", "") or "")
+        task_id = str(d.get("task_id", "") or "")
+        # A LOCAL step that was mid-flight cannot be resumed -- the harness
+        # coroutine died with the process -- so it comes back IDLE and
+        # eligible to re-run rather than lying about still working.
+        #
+        # A REMOTE one is the opposite: the peer never noticed we died and is
+        # still working. Resetting it to IDLE is not conservative, it is a
+        # second copy of the same job -- double spend, and whatever side
+        # effects that step has, twice. It stays WORKING and the runner
+        # re-attaches its watch.
         if status in (AgentStatus.WORKING, AgentStatus.PLANNING):
-            status = AgentStatus.IDLE
+            if not (instance and task_id):
+                status = AgentStatus.IDLE
         return cls(
             id=str(d["id"]), name=str(d.get("name", d["id"])),
             goal=str(d.get("goal", "")), status=status,
             dependencies=[str(x) for x in (d.get("deps") or [])],
             harness=str(d.get("harness", "") or ""),
-            instance=str(d.get("instance", "") or ""),
+            instance=instance, task_id=task_id,
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),

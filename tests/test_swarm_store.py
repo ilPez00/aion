@@ -184,3 +184,149 @@ def test_search_finds_a_persisted_swarm_agent(tmp_path, monkeypatch):
     hits = pg.search("cartographer")
     assert hits and hits[0]["type"] == "swarm"
     assert hits[0]["module"] == "agents"
+
+
+# ── work that outlived the process ───────────────────────────────────────────
+# A local task dies with the harness coroutine, so it comes back IDLE. A REMOTE
+# one does not: the peer never noticed we went away and is still working.
+# Resetting that to IDLE is not conservative, it is a second copy of the same
+# job — double spend, and every side effect that step has, twice.
+def _runner(orch):
+    from aion.swarmrun import SwarmRunner
+    return SwarmRunner(orch, spawn=lambda a, p: "t-new", harness="demo")
+
+
+def test_a_remote_step_comes_back_still_working(store):
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("heavy", "grind", instance="workstation")
+    _runner(b)._own(a.id, "t0007", "workstation")
+    b.set_status(a.id, AgentStatus.WORKING)
+
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    got = back.agent_by_name("heavy")
+    assert got.status is AgentStatus.WORKING
+    assert got.task_id == "t0007" and got.instance == "workstation"
+
+
+def test_a_local_step_still_comes_back_idle(store):
+    """The coroutine running it is gone. Claiming otherwise strands the DAG on
+    a task that will never report."""
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("prep", "collect")
+    _runner(b)._own(a.id, "t0001")
+    b.set_status(a.id, AgentStatus.WORKING)
+
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    assert back.agent_by_name("prep").status is AgentStatus.IDLE
+
+
+def test_a_remote_step_with_no_task_id_is_not_trusted(store):
+    """WORKING was set, the spawn request was still in flight when we died.
+    Nothing is running over there to re-attach to."""
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("heavy", "grind", instance="workstation")
+    b.set_status(a.id, AgentStatus.WORKING)
+
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    assert back.agent_by_name("heavy").status is AgentStatus.IDLE
+
+
+def test_rehydrate_re_attaches_the_watch(store):
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("heavy", "grind", instance="workstation")
+    _runner(b)._own(a.id, "t0007", "workstation")
+    b.set_status(a.id, AgentStatus.WORKING)
+
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    runner = _runner(back)
+    assert runner.rehydrate()["adopted"] == ["heavy"]
+    aid = back.agent_by_name("heavy").id
+    assert runner.task_of[aid] == "t0007"
+    assert runner.agent_of["t0007"] == aid
+    assert runner.watches[aid].instance == "workstation"
+
+
+def test_a_rehydrated_step_completes_instead_of_being_re_run(store):
+    """The whole point: the next poll collects the result of the job that was
+    already running, and the DAG moves on."""
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    heavy = b.add_agent("heavy", "grind", instance="workstation")
+    b.add_agent("report", "write up", deps=["heavy"])
+    _runner(b)._own(heavy.id, "t0007", "workstation")
+    b.set_status(heavy.id, AgentStatus.WORKING)
+
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    spawned = []
+    from aion.swarmrun import SwarmRunner
+    runner = SwarmRunner(
+        back, spawn=lambda a, p: (spawned.append(a.name) or f"t{len(spawned)}"),
+        poll_remote=lambda inst, tid: {"state": "done", "output": "ground it"},
+        harness="demo")
+    runner.rehydrate()
+    runner.poll()
+
+    assert spawned == ["report"], "the remote step was re-run instead of adopted"
+    assert back.agent_by_name("heavy").status is AgentStatus.DONE
+    assert back.agent_by_name("heavy").output == "ground it"
+
+
+def test_rehydrate_is_safe_to_call_twice(store):
+    from aion.swarm import AgentStatus, SwarmOrchestrator, SwarmStore
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("heavy", "grind", instance="workstation")
+    _runner(b)._own(a.id, "t0007", "workstation")
+    b.set_status(a.id, AgentStatus.WORKING)
+    back = SwarmOrchestrator(store=SwarmStore(store.path))
+    back.restore()
+    runner = _runner(back)
+    runner.rehydrate()
+    runner.rehydrate()
+    assert len(runner.watches) == 1
+
+
+def test_a_finished_agent_carries_no_task_id(store):
+    """A stale id on a DONE agent would be re-adopted on the next restart and
+    polled forever against a task nobody is running."""
+    from aion.swarm import SwarmOrchestrator
+
+    b = SwarmOrchestrator(store=store)
+    a = b.add_agent("heavy", "grind", instance="workstation")
+    runner = _runner(b)
+    runner._own(a.id, "t0007", "workstation")
+    runner.finish(a.id, "done with it")
+    assert b.agents[a.id].task_id == ""
+
+
+def test_a_cockpit_restart_brings_the_dag_back(tmp_path, monkeypatch):
+    """`restore()` existed and was called nowhere in production. The DAG
+    survived a restart on disk, and in the web HUD (procgraph reads swarm.json
+    directly), while the cockpit that owns it came back believing there was no
+    swarm at all."""
+    monkeypatch.setenv("AION_HOME", str(tmp_path))
+    from aion.core import Bus, TaskRegistry, load_config
+    from aion.store import Store
+
+    cfg = load_config()
+    first = Store(cfg, Bus(), harnesses={})
+    first.swarm.add_checked("scout", "find sources")
+    first.swarm.add_checked("writer", "draft it", ["scout"])
+
+    second = Store(cfg, Bus(), harnesses={})
+    assert sorted(a.name for a in second.swarm.agents.values()) == ["scout", "writer"]
+    assert second.swarm.agent_by_name("writer").dependencies == ["scout"]
