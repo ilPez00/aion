@@ -996,149 +996,27 @@ class AiOSApp(App):
         return "\n".join(lines)
 
     def _desktop_panel(self, theme: dict) -> str:
-        """Clean desktop: status bar + wokspace dock + context widget."""
-        from .gauges import hbar, core_grid
+        """Clean desktop: status bar + workspace dock + context widgets.
+
+        Rendering lives in `desktop_panel.py`. This gathers the app-shaped
+        inputs — the dashboard snapshot, which workspaces are configured, what
+        context we are in, and the live counters the radar animates from.
+        """
         from ..context import ContextRouter
+        from .desktop_panel import render_desktop
+
         items = self.store._current_items()
-        data = items[0].get("data", {}) if items else {}
-        a, ok_, wa, er, di = theme["accent"], theme["ok"], theme["warn"], theme["err"], theme["dim"]
         ctx = ContextRouter().resolve(self.store)
-        domain = ctx.domain.value
-        UL, UR, HL, H, V = "┌", "┐", "┬", "─", "│"
-        sep = f"[{a}]" + "─" * 50 + "[/]"
-        p = []
-
-        ws_icons = {"desktop":"⬡","models":"◈","tasks":"▤","runs":"⟳","agent":"✦",
-                    "vault":"📓","system":"🖥","term":"▣","settings":"⚙","net":"🌐"}
-        ws_ids = [w["id"] for w in self.cfg["workspaces"]]
-
-        cpu = data.get("cpu_pct", 0); ram = data.get("ram_pct", 0)
-        disk = data.get("disk_pct", 0)
-        tr = data.get("tasks_running", 0); td = data.get("tasks_done", 0)
-        cc = er if cpu > 80 else wa if cpu > 50 else ok_
-        rc = er if ram > 80 else wa if ram > 50 else ok_
-        dc = er if disk > 80 else wa if disk > 50 else ok_
-
-        # ┌── STATUS BAR ─────────────────────────────────────────────────┐
-        p.append(f" [{a}]{UL}{H*3} STATUS {H*35}{UR}[/]")
-        p.append(f" [{a}]{V}[/]"
-                 f"[{di}]CPU[/][{cc}] {cpu:2.0f}%[/]"
-                 f"  [{di}]RAM[/][{rc}] {ram:2.0f}%[/]"
-                 f"  [{di}]DSK[/][{dc}] {disk:2.0f}%[/]"
-                 f"  [{di}]TASKS[/] [{ok_}]●{tr}[/] [{ok_}]✓{td}[/]"
-                 f"  [{di}]{ctx.icon} {ctx.label}[/]"
-                 f"  [{a}]{V}[/]")
-
-        # ┌── WORKSPACE DOCK ─────────────────────────────────────────────┐
-        p.append(f" [{a}]{H*50}[/]")
-        row1 = []
-        for w in ws_ids[:4]:
-            ic = ws_icons.get(w, "·")
-            row1.append(f"[{a}]{ic}[/] [{di}]{w[:6]}[/]")
-        p.append(f" [{a}]{V}[/]  {'  '.join(row1)}         [{a}]{V}[/]")
-        row2 = []
-        for w in ws_ids[4:]:
-            ic = ws_icons.get(w, "·")
-            row2.append(f"[{a}]{ic}[/] [{di}]{w[:6]}[/]")
-        p.append(f" [{a}]{V}[/]  {'  '.join(row2)}         [{a}]{V}[/]")
-
-        # ┌── WIDGETS ───────────────────────────────────────────────────┐
-        context_blocks = []
-
-        # Projects (always)
-        proj = data.get("projects", [])
-        if proj:
-            block = [f"[{a}]PROJECTS[/]"]
-            for pr in proj[:3]:
-                name = pr.get("name", pr.get("id", "?"))[:18]
-                dirty = pr.get("dirty", 0)
-                branch = pr.get("branch", "")
-                badges = f"{f' ~{dirty}' if dirty else ''}{f' @{branch}' if branch else ''}"
-                block.append(f" [{ok_}]⬢[/] [{di}]{name}{badges}[/]")
-            context_blocks.append("\n".join(block))
-
-        # Todos (always)
-        todos = data.get("todos", [])
-        if todos:
-            block = [f"[{a}]TODOS[/]"]
-            for t in todos[:3]:
-                ic, cl = ("✓", di) if t["done"] else ("○", wa)
-                block.append(f" [{cl}]{ic}[/] [{di}]{t['text'][:40]}[/]")
-            context_blocks.append("\n".join(block))
-
-        # Active tasks + AI sessions (always)
-        active = [t for t in data.get("active_tasks", [])
-                  if t["state"] in ("running", "pending")]
-        sessions = data.get("recent_sessions", [])
-        interrupted = data.get("interrupted_tasks", [])
-        if active or sessions or interrupted:
-            block = [f"[{a}]SESSIONS[/]"]
-            for t in active[:2]:
-                ic = "⏸" if t.get("paused") else "●"
-                harness = t['harness'][:6]
-                label = t['label'][:18]
-                block.append(f" [{wa}]{ic}[/] [{di}]{harness}[/] {label}"
-                             f" {hbar(t['progress'], 6, wa)}")
-            for s in sessions[:4]:
-                s_ic = {"running": "●", "ended": "✓", "zombie": "⊘"}.get(s["status"], "?")
-                s_cl = {"running": wa, "ended": ok_, "zombie": er}.get(s["status"], di)
-                repo = s.get("repo", "")[:8]
-                model = s["model"][:16]
-                block.append(f" [{s_cl}]{s_ic}[/] [{di}]{repo:8s}[/] {model}"
-                             f"  [{s_cl}]{s['status']}[/]")
-            for t in interrupted[:2]:
-                block.append(f" [{er}]⊘[/] [{di}]{t['harness'][:6]}[/] {t['label'][:18]} [{er}]interrupted[/]")
-            if not active and not sessions and not interrupted:
-                block.append(f" [{di}](idle)[/]")
-            context_blocks.append("\n".join(block))
-
-        if context_blocks:
-            p.append(f" [{a}]{H*50}[/]")
-            for b in context_blocks:
-                for line in b.split("\n"):
-                    p.append(f" [{a}]{V}[/] {line}")
-
-        # ┌── MISSIONS / VIZ ───────────────────────────────────────────────┐
-        wf = self.store.state.workflows
-        wlive = self.store.state.workflows_live
-        if wf and wlive:
-            from ..workflows import desktop_missions
-            ms = desktop_missions(wf, theme, max_rows=3)
-            ms_lines = ms.split("\n")
-            p.append(f" [{a}]{H*3} MISSIONS {H*36}┐[/]")
-            for line in ms_lines:
-                p.append(f" [{a}]{V}[/] {line}")
-        else:
-            from .visualizers import pulse_radar
-            st = self.store.state.stats
-            sys_ = st.get("system") or {}
-            cpu = (sys_.get("cpu") or {}).get("total_pct", 0) / 100.0
-            mem = (sys_.get("mem") or {}).get("pct", 0) / 100.0
-            running_count = sum(1 for t in self.store.registry.tasks.values()
-                                if t.state.value in ("running", "pending"))
-            _rings = [
-                {"label": "CPU", "value": cpu,
-                 "items": ["■"] * int(cpu * 12)},
-                {"label": "RAM", "value": mem,
-                 "items": ["■"] * int(mem * 12)},
-                {"label": "TASKS", "value": min(running_count / 5.0, 1.0),
-                 "items": ["●"] * min(running_count, 12)},
-            ]
-            _viz = pulse_radar(_rings, self._viz_tick, size=10)
-            _viz_lines = _viz.split("\n")
-            p.append(f" [{a}]{H*3} VIZ {H*40}'┐[/]".replace("'┐", "┐"))
-            for line in _viz_lines:
-                p.append(f" [{a}]{V}[/] {line}")
-
-        # ┌── QUICK ──────────────────────────────────────────────────────┐
-        p.append(f" [{a}]{H*3} COMMANDS {H*35}┐[/]")
-        p.append(f" [{a}]{V}[/] [{di}]Ctrl-K: say what you want[/]"
-                 f"  [{a}]{V}[/]")
-        p.append(f" [{a}]{V}[/]"
-                 f" [{di}]'todo <t>' · 'swarm <goal>' · 'compare <q>' · 'agent create <n>'[/]"
-                 f"  [{a}]{V}[/]")
-        p.append(f" [{a}]└" + "─" * 48 + "┘[/]")
-        return "\n".join(p)
+        return render_desktop(
+            items[0].get("data", {}) if items else {}, theme,
+            workspaces=[w["id"] for w in self.cfg["workspaces"]],
+            ctx_icon=ctx.icon, ctx_label=ctx.label,
+            workflows=self.store.state.workflows,
+            workflows_live=self.store.state.workflows_live,
+            stats=self.store.state.stats,
+            running=sum(1 for t in self.store.registry.tasks.values()
+                        if t.state.value in ("running", "pending")),
+            tick=self._viz_tick)
 
     async def _handle_fleet_command(self, text: str) -> str:
         """Handle 'fleet show|set|token' palette commands."""
