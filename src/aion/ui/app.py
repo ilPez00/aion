@@ -1549,13 +1549,10 @@ class AiOSApp(App):
 
     def _start_wizard(self) -> None:
         """Launch the setup wizard with onboarding + install + env config."""
+        from .wizard import parse_env
+
         env_path = Path.home() / ".env"
-        existing = {}
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if "=" in line and not line.strip().startswith("#"):
-                    k, _, v = line.partition("=")
-                    existing[k.strip()] = v.strip()
+        existing = parse_env(env_path.read_text()) if env_path.exists() else {}
         self._wizard_data = {"env": existing}
         self._wizard_install_status = {}
         self._wizard_install_output = ""
@@ -1564,7 +1561,9 @@ class AiOSApp(App):
         self._wizard_render()
 
     def _wizard_render(self) -> None:
-        """Render the current wizard step."""
+        """Render the current wizard step. Decisions live in `wizard.py`."""
+        from .wizard import install_advice, key_preview
+
         a = self.cfg["theme"]["accent"]
         di, ok_, er, wa = (self.cfg["theme"][k] for k in ("dim", "ok", "err", "warn"))
         step = self.WIZARD_STEPS[self._wizard_step]
@@ -1591,11 +1590,7 @@ class AiOSApp(App):
                 footer = f"[{di}]Enter: next · Esc: cancel[/]"
             elif status == "missing":
                 suffix = f"[{wa}]○ {step['label']} not detected[/]"
-                if "install_cmd" in step:
-                    cmd = "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
-                else:
-                    cmd = f"npm install -g {step['pkg']}"
-                suffix += f"\n[{di}]Install: {cmd}[/]"
+                suffix += f"\n[{di}]Install: {install_advice(step)}[/]"
                 footer = f"[{di}]Enter: install · Esc: skip[/]"
             elif status == "installing":
                 suffix = f"[{wa}]⟳ Installing {step['label']}...[/]"
@@ -1618,8 +1613,8 @@ class AiOSApp(App):
             var_name = step["env_var"]
             current = self._wizard_data.get("env", {}).get(var_name)
             if current:
-                preview = current[:8] + "..." + current[-4:]
-                body = step["body"] + f"\n\n[{di}]Current value: {preview}[/]"
+                body = (step["body"] +
+                        f"\n\n[{di}]Current value: {key_preview(current)}[/]")
             else:
                 body = step["body"]
             footer = f"[{di}]Type value and press Enter · Esc: cancel[/]"
@@ -1643,31 +1638,30 @@ class AiOSApp(App):
 
     def _wizard_next(self, raw: str) -> None:
         """Advance or trigger install for the current step."""
+        from .wizard import INSTALLING, next_action
+
         if not self._wizard_active:
             return
         step = self.WIZARD_STEPS[self._wizard_step]
+        idx = self._wizard_step
 
         if step["type"] == "install":
-            idx = self._wizard_step
-            status = self._wizard_install_status.get(idx, "")
-            found = shutil.which(step["binary"]) is not None
-
-            if found or status in ("found", "skipped", "failed"):
-                self._wizard_step += 1
-                if self._wizard_step >= len(self.WIZARD_STEPS):
-                    self._wizard_finish()
-                else:
-                    self._wizard_render()
+            action = next_action(
+                "install", self._wizard_install_status.get(idx, ""),
+                shutil.which(step["binary"]) is not None)
+            if action == "wait":            # mid-install: Enter does nothing
                 return
-
-            if status == "missing":
-                self._wizard_install_status[idx] = "installing"
+            if action == "install":
+                self._wizard_install_status[idx] = INSTALLING
                 self._wizard_install_output = ""
                 self._wizard_render()
                 asyncio.create_task(self._wizard_run_install(step, idx))
                 return
-
-            # installing: ignore Enter
+            self._wizard_step += 1
+            if self._wizard_step >= len(self.WIZARD_STEPS):
+                self._wizard_finish()
+            else:
+                self._wizard_render()
             return
 
         if step["type"] == "env" and raw:
@@ -1681,7 +1675,8 @@ class AiOSApp(App):
 
     async def _wizard_run_install(self, step: dict, idx: int) -> None:
         """Install a dependency asynchronously."""
-        import subprocess
+        from .wizard import FAILED, install_result
+
         cmd = step.get("install_cmd", ["npm", "install", "-g", step["pkg"]])
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1692,39 +1687,30 @@ class AiOSApp(App):
             out, _ = await proc.communicate()
             output = out.decode("utf-8", errors="replace") if out else ""
             self._wizard_install_output = output
-            if proc.returncode == 0 and shutil.which(step["binary"]):
-                self._wizard_install_status[idx] = "found"
-            else:
-                self._wizard_install_status[idx] = "failed"
+            self._wizard_install_status[idx] = install_result(
+                proc.returncode, shutil.which(step["binary"]) is not None)
         except FileNotFoundError:
             self._wizard_install_output = f"'{cmd[0]}' not found — is npm/node installed?"
-            self._wizard_install_status[idx] = "failed"
-        except Exception as e:
+            self._wizard_install_status[idx] = FAILED
+        except Exception as e:  # noqa: BLE001
             self._wizard_install_output = str(e)
-            self._wizard_install_status[idx] = "failed"
+            self._wizard_install_status[idx] = FAILED
         self._wizard_render()
 
     def _wizard_finish(self) -> None:
-        """Write collected env vars to ~/.env and close."""
+        """Write collected env vars to ~/.env and close.
+
+        Through `merge_env`/`write_env`: this replaces the file holding every
+        API key the user owns, and it used to do so with `write_text`, which
+        truncates before it writes.
+        """
+        from .wizard import merge_env, write_env
+
         collected = {k: v for k, v in self._wizard_data.get("env", {}).items() if v}
         if collected:
             env_path = Path.home() / ".env"
-            lines = []
-            seen = set()
-            if env_path.exists():
-                for line in env_path.read_text().splitlines():
-                    stripped = line.strip()
-                    if "=" in stripped and not stripped.startswith("#"):
-                        key = stripped.split("=", 1)[0].strip()
-                        if key in collected:
-                            lines.append(f"{key}={collected[key]}")
-                            seen.add(key)
-                            continue
-                    lines.append(line)
-            for key, val in collected.items():
-                if key not in seen:
-                    lines.append(f"{key}={val}")
-            env_path.write_text("\n".join(lines) + "\n")
+            existing = env_path.read_text() if env_path.exists() else ""
+            write_env(env_path, merge_env(existing, collected))
         self._wizard_close()
 
     def _wizard_close(self) -> None:
