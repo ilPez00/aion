@@ -97,10 +97,14 @@ class RemoteClient:
 
     async def control_swarm(self, node: RemoteNode, action: str,
                             agent_id: str = "", name: str = "",
-                            goal: str = "", deps: list | None = None) -> dict | None:
+                            goal: str = "", deps: list | None = None,
+                            harness: str = "", apply: bool = False,
+                            steps: list | None = None) -> dict | None:
         """POST /swarm — steer the dependency DAG on that instance."""
         body = json.dumps({"action": action, "agent_id": agent_id,
-                           "name": name, "goal": goal, "deps": deps or []})
+                           "name": name, "goal": goal, "deps": deps or [],
+                           "harness": harness, "apply": bool(apply),
+                           "steps": steps or []})
         return await self._request(node, "POST", "/swarm", body)
 
     async def control_task(self, node: RemoteNode, task_id: str,
@@ -277,6 +281,9 @@ class RemoteServer:
                     params = {}
                 if not isinstance(params, dict):
                     params = {}
+                # `apply` is a literal-true check, like `confirm` on /run:
+                # a plan creates work, so a truthy string must not release it.
+                params["apply"] = params.get("apply") is True
                 result = self.on_swarm(params) if callable(self.on_swarm) \
                     else {"error": "no handler"}
                 await self._reply(writer, 200, result)

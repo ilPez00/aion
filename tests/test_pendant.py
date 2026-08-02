@@ -67,8 +67,27 @@ def test_public_hosts_refused(host):
     assert not is_lan_host(host)
 
 
-def test_unresolvable_host_refused():
+def test_unresolvable_host_refused(monkeypatch):
+    """Forced, not left to DNS. This used `.invalid`, which RFC 2606 reserves
+    as never-resolvable — but a hijacking resolver answers it anyway, and
+    Tailscale's MagicDNS returns 127.0.0.1, so the host resolved, looked
+    loopback, and the test failed on a laptop that was simply on a VPN.
+    The refusal path is the thing under test, so make it happen."""
+    import socket as _socket
+    from aion.deck import pendant as _pendant
+
+    def nxdomain(*_a, **_kw):
+        raise _socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr(_pendant.socket, "getaddrinfo", nxdomain)
     assert not is_lan_host("no-such-host.invalid")
+
+
+def test_a_host_with_no_addresses_is_refused(monkeypatch):
+    """getaddrinfo can return an empty list rather than raising."""
+    from aion.deck import pendant as _pendant
+    monkeypatch.setattr(_pendant.socket, "getaddrinfo", lambda *a, **k: [])
+    assert not is_lan_host("empty.example")
 
 
 def test_connect_refuses_non_lan_host():

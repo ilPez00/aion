@@ -745,7 +745,8 @@ def agent_control(instance: str, task_id: str, action: str) -> dict:
     return _ask_instance(instance, lambda c, n: c.control_task(n, task_id, action))
 
 
-SWARM_ACTIONS = ("start", "cancel", "retry", "remove", "add", "run_ready", "stop_all")
+SWARM_ACTIONS = ("start", "cancel", "retry", "remove", "add",
+                 "run_ready", "stop_all", "status", "plan")
 
 
 def swarm_command(instance: str, params: dict) -> dict:
@@ -767,7 +768,10 @@ def swarm_command(instance: str, params: dict) -> dict:
         agent_id=str((params or {}).get("agent_id", "")),
         name=str((params or {}).get("name", "")),
         goal=str((params or {}).get("goal", "")),
-        deps=[str(d) for d in deps]))
+        deps=[str(d) for d in deps],
+        harness=str((params or {}).get("harness", "")),
+        apply=(params or {}).get("apply") is True,
+        steps=(params or {}).get("steps") or []))
 
 
 def agent_spawn(instance: str, harness: str, prompt: str,

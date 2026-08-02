@@ -625,6 +625,33 @@ class Store:
             return self.swarm.add_checked(
                 str(params.get("name", "")), str(params.get("goal", "")),
                 [str(d) for d in deps], harness=str(params.get("harness", "")))
+        if action == "plan":
+            # Propose a DAG from a goal. Creating it is a second, explicit
+            # step, and running it is a third -- the same fail-closed shape as
+            # routing, because every step becomes a prompt a harness executes.
+            from . import swarmplan
+            known = list(self.harnesses) if hasattr(self, "harnesses") else ()
+            existing = [a.name for a in self.swarm.agents.values()]
+            steps = params.get("steps")
+            if isinstance(steps, list) and steps:
+                # Apply EXACTLY what was reviewed. Re-running the planner here
+                # would create a different DAG from the one somebody just read
+                # and approved -- the model is not deterministic, and "review
+                # then commit" means nothing if the commit re-rolls the dice.
+                # Same validation either way: these arrive from a browser.
+                plan = swarmplan.validate(str(params.get("goal", "")), steps,
+                                          known_harnesses=known,
+                                          existing_names=existing)
+            else:
+                plan = swarmplan.propose(
+                    str(params.get("goal", "")),
+                    harnesses=known, existing_names=existing)
+            out = plan.as_dict()
+            if params.get("apply") is True and plan.ok:
+                out["applied"] = swarmplan.apply(self.swarm, plan)
+            elif plan.ok:
+                out["hint"] = "resend with apply to create these agents"
+            return out
         if action == "run_ready":
             # Was: flip every ready agent to WORKING and hope. Now it spawns
             # real tasks, respects the parallel and VRAM budgets, and reports

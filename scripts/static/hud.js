@@ -345,6 +345,88 @@ function swarmInstance() {
   return withSwarm ? withSwarm.instance : (liveInstances()[0] || {}).id || '';
 }
 
+/* Describe a goal, get a DAG. Two steps on purpose: the plan is shown before
+ * anything is created, and creating is still separate from running. Every step
+ * in an accepted plan becomes a prompt a harness executes, so this is the same
+ * fail-closed shape as routing — propose, review, then commit. */
+async function swarmPlan() {
+  const box = $('route-confirm');
+  const goal = el('input', { type: 'text', style: 'min-width:min(420px,80vw)',
+                             placeholder: 'goal — e.g. "research and draft a report on X"' });
+  const close = () => { box.hidden = true; box.replaceChildren(); };
+
+  const propose = async () => {
+    const text = goal.value.trim();
+    if (!text) { close(); return; }
+    close();
+    setStatus('planning…');
+    let plan;
+    try {
+      plan = await api('/api/swarm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instance: swarmInstance(), action: 'plan', goal: text }),
+      });
+    } catch (e) { setStatus(e.message, true); return; }
+    if (!plan.ok) {
+      setStatus((plan.problems || ['planning failed']).join(' · '), true);
+      return;
+    }
+    review(text, plan);
+  };
+
+  // Show the whole DAG before it exists. A plan you cannot read before
+  // accepting is just an instruction to trust the model.
+  const review = (text, plan) => {
+    box.hidden = false;
+    box.replaceChildren(
+      el('div', { class: 'route-head',
+                  text: `${plan.steps.length} steps for "${text.slice(0, 60)}"` }),
+      el('div', { class: 'route-body' }, plan.steps.map(s =>
+        el('div', { class: 'mono-sm', text:
+          `${s.name}${s.deps.length ? ` ← ${s.deps.join(', ')}` : ''}: ${s.goal}` }))),
+      // Problems can be non-fatal (an unknown harness falls back), so they are
+      // shown alongside an accepted plan rather than instead of it.
+      ...(plan.problems || []).map(p => el('p', { class: 'muted mono-sm', text: p })),
+      el('div', { class: 'row' }, [
+        el('button', { type: 'button', class: 'primary', text: 'Create agents',
+                       on: { click: () => { close(); create(text, plan.steps); } } }),
+        el('button', { type: 'button', text: 'Discard', on: { click: close } }),
+      ]));
+  };
+
+  // Sends back the exact steps that were reviewed. Asking the server to plan
+  // again would create a different DAG from the one just approved.
+  const create = async (text, steps) => {
+    try {
+      const out = await api('/api/swarm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instance: swarmInstance(), action: 'plan',
+                               goal: text, steps, apply: true }),
+      });
+      const applied = out.applied || {};
+      setStatus(applied.ok
+        ? `created ${(applied.created || []).length} agents — 'run ready' to start`
+        : (applied.reason || 'nothing created'), !applied.ok);
+      go('agents', { push: false });
+    } catch (e) { setStatus(e.message, true); }
+  };
+
+  goal.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); propose(); }
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  box.hidden = false;
+  box.replaceChildren(
+    el('div', { class: 'route-head', text: 'Plan a swarm' }),
+    el('div', { class: 'route-body' }, [goal]),
+    el('div', { class: 'row' }, [
+      el('button', { type: 'button', class: 'primary', text: 'Propose',
+                     on: { click: propose } }),
+      el('button', { type: 'button', text: 'Cancel', on: { click: close } }),
+    ]));
+  goal.focus();
+}
+
 /* Adding an agent is the one swarm verb with no node to select first, so it
  * opens a form rather than living in the inspector. An inline panel, not
  * window.prompt(): three chained modals to enter one agent is miserable, and a
@@ -2122,6 +2204,7 @@ function boot() {
   graph.setDetail(savedDetail);
   $('detail').addEventListener('change', e => setDetail(e.target.value));
 
+  $('swarm-plan').addEventListener('click', swarmPlan);
   $('swarm-add').addEventListener('click', swarmAdd);
   $('swarm-run').addEventListener('click', () => swarmAct({ action: 'run_ready' }));
   $('swarm-stop').addEventListener('click', () => swarmAct({ action: 'stop_all' }));

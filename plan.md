@@ -111,6 +111,15 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   tunnels reaped. Peers appear in the Agents graph and as routing targets;
   dispatch is still fail-closed. See `docs/ssh-peers.md`.
 
+- **Swarm planning** (`swarmplan.py`) — describe a goal, get a reviewed DAG.
+  `decompose()` created an empty plan nobody read, so every swarm had to be
+  hand-built. A model proposes; almost everything it says is refused: step
+  count capped, cycles rejected at creation (not discovered later by
+  `stalled()`), invented dependencies refused, hallucinated harnesses dropped
+  to the default, names charset-checked. Propose → review the whole DAG →
+  create → run are four separate decisions, and the reviewed steps are what
+  get applied — re-planning on commit would create a DAG nobody read.
+
 - **Swarm executor** (`swarmrun.py`) — the DAG now RUNS. Nothing previously set
   a swarm agent to DONE, so `run_ready()` moved layer one to WORKING and layer
   two waited forever (`run_all()` existed only in a docstring). An agent's goal
