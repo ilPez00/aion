@@ -28,13 +28,16 @@ def main() -> int:
     if not paths:
         return 0
     diff = git("diff", "--cached", "--unified=0", "--diff-filter=ACMR")
+    new_paths = [p for p in
+                 git("diff", "--cached", "--name-only", "--diff-filter=A").splitlines()
+                 if p.strip()]
     sizes = {}
     for p in paths:
         f = ROOT / p
         if f.is_file():
             sizes[p] = f.stat().st_size
 
-    problems = report(paths, diff, sizes)
+    problems = report(paths, diff, sizes, new_paths)
     if not problems:
         return 0
     print("\ncommit refused — staged content did not pass the guard:\n",

@@ -109,8 +109,27 @@ def size_problem(path: str, size: int, limit: int = MAX_BLOB_BYTES) -> str:
     return ""
 
 
+# A logical cycle adds a handful of files. A sweep adds whatever the working
+# tree happened to hold — and in this repo the tree holds another agent's
+# untracked WIP, which is how an SSH-harvesting LAN daemon reached origin once
+# already. The allowlist cannot catch that one: it lived under `src/`. Bulk is
+# the only shape left that distinguishes the two.
+MAX_NEW_FILES = 12
+
+
+def bulk_problem(new_paths: list[str], limit: int = MAX_NEW_FILES) -> str:
+    """Refuse a commit that adds more new files than anyone reviewed. Pure."""
+    if len(new_paths) <= limit:
+        return ""
+    shown = ", ".join(sorted(new_paths)[:4])
+    return (f"{len(new_paths)} new files in one commit ({shown}, …) — that is "
+            f"the shape of a sweep, not a cycle; commit them in pieces you "
+            f"have read")
+
+
 def report(paths: list[str], diff: str,
-           sizes: dict[str, int] | None = None) -> list[str]:
+           sizes: dict[str, int] | None = None,
+           new_paths: list[str] | None = None) -> list[str]:
     """Every reason this commit should be refused. Empty means allow. Pure."""
     problems = []
     for p in paths:
@@ -121,6 +140,9 @@ def report(paths: list[str], diff: str,
         why = size_problem(path, size)
         if why:
             problems.append(why)
+    why = bulk_problem(new_paths or [])
+    if why:
+        problems.append(why)
     for rule, text in content_problems(diff):
         problems.append(f"looks like a {rule} ({text}) is being added")
     return problems

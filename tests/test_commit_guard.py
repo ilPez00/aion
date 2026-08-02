@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from commit_guard import (  # noqa: E402
+    bulk_problem,
     content_problems, path_problem, report, size_problem,
 )
 
@@ -126,3 +127,28 @@ def test_every_problem_is_reported_not_just_the_first():
                       "+token = 'ghp_" + "c" * 36 + "'\n",
                       {"junk.bin": 9_000_000})
     assert len(problems) == 4
+
+
+# ── bulk ─────────────────────────────────────────────────────────────────────
+# The allowlist cannot catch the incident this repo actually had: another
+# agent's untracked WIP lives under `src/`, so a sweep of it passes every path
+# rule. Bulk is the shape that distinguishes a sweep from a cycle.
+def test_a_handful_of_new_files_is_a_normal_cycle():
+    assert bulk_problem([f"src/aion/mod{i}.py" for i in range(8)]) == ""
+
+
+def test_a_sweep_of_new_files_is_refused():
+    why = bulk_problem([f"src/aion/agents/f{i}.py" for i in range(30)])
+    assert "30 new files" in why and "sweep" in why
+
+
+def test_the_refusal_names_files_so_you_can_see_what_it_caught():
+    why = bulk_problem(["src/aion/agents/node.py"] +
+                       [f"src/x{i}.py" for i in range(20)])
+    assert "src/aion/agents/node.py" in why
+
+
+def test_modifying_many_files_is_not_a_sweep():
+    """A rename or a refactor touches plenty of files. Only ADDITIONS carry
+    the risk of sweeping in something nobody has read."""
+    assert report([f"src/aion/mod{i}.py" for i in range(40)], "", None, []) == []
