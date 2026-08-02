@@ -83,6 +83,48 @@ def legal(action: str, state: str, paused: bool = False) -> tuple[bool, str]:
     return False, f"cannot re-run a {state} task"
 
 
+# ── swarm agents ─────────────────────────────────────────────────────────────
+# A swarm agent is not a process. What it owns is a task id, and the task is
+# what a harness actually pauses, resumes or kills. So the two vocabularies
+# have to meet somewhere, and this is that place: `AgentStatus` values written
+# in the task states `legal()` already reasons about.
+#
+# The alternative — `swarm.can` growing its own copy of the terminal-state and
+# pause rules — is what the codebase already had, and the two copies had
+# already started to disagree.
+AGENT_AS_TASK = {
+    "idle": "pending", "planning": "pending",
+    "waiting": "pending", "blocked": "pending",
+    "working": "running",
+    "done": "done", "failed": "failed", "cancelled": "cancelled",
+}
+
+# Actions with no meaning at the agent layer. An agent cannot be suspended;
+# only the work it is currently doing can be, so these route to its task.
+DELEGATED = ("pause", "resume")
+
+
+def route(action: str, agent_status: str, task_state: str = "",
+          paused: bool = False) -> tuple[str, str]:
+    """Where a swarm action lands: "agent", "task", or "" (refused). Pure.
+
+    `task_state` empty means the agent owns no task yet — a remote spawn still
+    in flight, or a status set by hand. That is a refusal rather than a crash,
+    and it says which of the two it is, because "nothing happened" on a pause
+    button is indistinguishable from a bug.
+    """
+    if action not in DELEGATED:
+        return "agent", ""
+    if agent_status != "working":
+        return "", (f"only a working agent can be {describe(action)} "
+                    f"(this is {agent_status})")
+    if not task_state:
+        return "", ("this agent is not attached to a task yet — it is still "
+                    "starting")
+    ok, why = legal(action, task_state, paused)
+    return ("task", "") if ok else ("", why)
+
+
 def next_state(action: str) -> str | None:
     """The state an accepted action moves the task to, if it is immediate.
 

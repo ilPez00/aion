@@ -612,3 +612,23 @@ def test_aion_home_env_is_honoured(tmp_path, monkeypatch):
     add ...` was silently editing the real config."""
     monkeypatch.setenv("AION_HOME", str(tmp_path / "elsewhere"))
     assert sshlink.peers_path() == tmp_path / "elsewhere" / "peers.json"
+
+
+def test_free_local_port_skips_one_in_time_wait():
+    """The probe used SO_REUSEADDR, which accepts a port in TIME_WAIT — and
+    ssh, binding without it, is then refused. "Free" has to mean free for the
+    process that will actually bind."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    client = socket.socket()
+    client.connect(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    # Closing the SERVER side first is what puts the listening port itself into
+    # TIME_WAIT — closing the client side would only strand an ephemeral one.
+    conn.close()
+    srv.close()
+    client.close()
+    with pytest.raises(OSError):
+        free_local_port(start=port, span=1)

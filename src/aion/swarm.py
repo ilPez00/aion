@@ -362,9 +362,15 @@ class SwarmOrchestrator:
     # shape as agentctl: legality is a pure question with a REASON attached,
     # and a refusal always says which dependency or which state is in the way.
 
+    # pause/resume are absent on purpose: an agent has no execution of its own
+    # to suspend, only the task it owns, and this class does not know about
+    # tasks. `agentctl.DELEGATED` names them and `agentctl.route` decides them
+    # against the real task state; the store does the delegating.
     ACTIONS = ("start", "cancel", "retry", "remove")
 
     def can(self, agent_id: str, action: str) -> tuple[bool, str]:
+        from . import agentctl
+
         a = self.agents.get(agent_id)
         if a is None:
             return False, "no such agent"
@@ -379,12 +385,16 @@ class SwarmOrchestrator:
             return (True, "") if kind == "ready" else (False, why)
 
         if action == "cancel":
-            if state in (AgentStatus.DONE, AgentStatus.FAILED, AgentStatus.CANCELLED):
-                return False, f"already {state.value}"
-            return True, ""
+            # Which states are over is a task question, answered once in
+            # agentctl. A second list here is a second thing to forget to
+            # update when a state is added.
+            return agentctl.legal("cancel", agentctl.AGENT_AS_TASK.get(
+                state.value, state.value))
 
         if action == "retry":
-            if state not in (AgentStatus.FAILED, AgentStatus.CANCELLED):
+            # Same set as a task rerun, minus "interrupted", which no agent
+            # ever reaches — so the shared constant is the honest source.
+            if state.value not in agentctl.RERUNNABLE:
                 return False, f"only a failed or cancelled agent can be retried "\
                               f"(this is {state.value})"
             return True, ""

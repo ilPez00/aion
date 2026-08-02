@@ -281,8 +281,14 @@ function renderAgentActions(n) {
  * agent broke" but "this agent cannot start because something upstream did".
  * The buttons are the easy half; naming the blocking dependency is the half
  * that saves you reading a graph. */
+/* pause/resume are only enabled while the agent is working, because that is
+ * the only time it owns a task -- and the task is the thing that pauses. The
+ * cockpit decides for real (it can see the task state and we cannot); this
+ * only avoids offering a button that is certain to be refused. */
 const SWARM_CAN = {
   start: s => s === 'idle',
+  pause: s => s === 'working',
+  resume: s => s === 'working',
   cancel: s => !['done', 'failed', 'cancelled'].includes(s),
   retry: s => ['failed', 'cancelled'].includes(s),
   remove: () => true,
@@ -291,7 +297,7 @@ const SWARM_CAN = {
 function renderSwarmActions(box, n) {
   box.hidden = false;
   const row = el('div', { class: 'row', style: 'flex-wrap:wrap' });
-  for (const action of ['start', 'cancel', 'retry', 'remove']) {
+  for (const action of ['start', 'pause', 'resume', 'cancel', 'retry', 'remove']) {
     const b = el('button', {
       type: 'button', text: action,
       on: { click: () => swarmAct({ action, agent_id: n.swarmId }, n.instance) },

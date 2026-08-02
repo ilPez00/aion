@@ -7,6 +7,7 @@ most of what is tested here is that a refusal names the dependency.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -296,3 +297,260 @@ def test_remove_refusal_lists_several_dependents(swarm):
     swarm.add_checked("archivist", "file it", ["scout"])
     out = swarm.control(by_name(swarm, "scout").id, "remove")
     assert "archivist, writer depend on it" in out["reason"]
+
+
+# ── pause/resume: delegated to the task the agent owns ───────────────────────
+# An agent has no execution of its own. These verbs exist at the task layer
+# already, so the swarm does not reimplement them -- it finds the task and
+# applies exactly the rules `control_task` enforces for anyone else.
+@pytest.fixture()
+def live(swarm, tmp_path, monkeypatch):
+    """A Store with a real registry, one fake harness, and the swarm above."""
+    from aion.core import Bus, TaskRegistry, TaskState
+    from aion.store import Store
+    from aion.swarmrun import SwarmRunner
+
+    monkeypatch.setenv("AION_HOME", str(tmp_path))
+    bus = Bus()
+    registry = TaskRegistry(bus)
+
+    class FakeHarness:
+        id = name = "demo"
+        vram_mb = 0
+        def __init__(self):
+            self.calls = []
+        def pause(self, task):
+            self.calls.append(("pause", task.id)); task.paused = True
+        def resume(self, task):
+            self.calls.append(("resume", task.id)); task.paused = False
+        def cancel(self, task):
+            self.calls.append(("cancel", task.id))
+            registry.set_state(task, TaskState.CANCELLED)
+
+    s = Store.__new__(Store)
+    s.bus, s.registry, s.swarm = bus, registry, swarm
+    s.harnesses = {"demo": FakeHarness()}
+    s._task_prompts = {}
+    class _State:
+        def __init__(self):
+            self.active_harness = "demo"
+            self.history = []
+            self.swarm_dashboard = ""
+    s.state = _State()
+
+    def spawn(agent, prompt):
+        task = registry.create(agent.name, "demo")
+        registry.set_state(task, TaskState.RUNNING)
+        return task.id
+
+    s._swarm_runner = SwarmRunner(swarm, spawn=spawn, harness="demo")
+    return s
+
+
+@pytest.mark.asyncio
+async def test_pausing_an_agent_pauses_its_real_task(live, swarm):
+    live.swarm_command({"action": "run_ready"})
+    aid = by_name(swarm, "scout").id
+    out = live.swarm_command({"action": "pause", "agent_id": aid})
+    assert out["ok"] is True and out["agent_id"] == aid
+    assert live.harnesses["demo"].calls[-1][0] == "pause"
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_the_task_rules_not_a_second_copy(live, swarm):
+    live.swarm_command({"action": "run_ready"})
+    aid = by_name(swarm, "scout").id
+    assert live.swarm_command({"action": "resume", "agent_id": aid})["reason"] == (
+        "not paused")
+    live.swarm_command({"action": "pause", "agent_id": aid})
+    assert live.swarm_command({"action": "resume", "agent_id": aid})["ok"] is True
+    assert live.harnesses["demo"].calls[-1][0] == "resume"
+
+
+@pytest.mark.asyncio
+async def test_an_idle_agent_cannot_be_paused(live, swarm):
+    out = live.swarm_command({"action": "pause",
+                              "agent_id": by_name(swarm, "scout").id})
+    assert out["ok"] is False and "idle" in out["reason"]
+    assert live.harnesses["demo"].calls == []
+
+
+@pytest.mark.asyncio
+async def test_pause_says_so_when_the_agent_owns_no_task_yet(live, swarm):
+    """WORKING with nothing attached is the remote-spawn-in-flight window.
+    Refusing with a reason beats a button that appears to do nothing."""
+    from aion.swarm import AgentStatus
+    aid = by_name(swarm, "scout").id
+    swarm.set_status(aid, AgentStatus.WORKING)
+    out = live.swarm_command({"action": "pause", "agent_id": aid})
+    assert out["ok"] is False and "not attached to a task" in out["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pause_records_itself_in_the_agent_log(live, swarm):
+    live.swarm_command({"action": "run_ready"})
+    aid = by_name(swarm, "scout").id
+    live.swarm_command({"action": "pause", "agent_id": aid})
+    assert any("paused" in line for line in swarm.agents[aid].logs)
+
+
+@pytest.mark.asyncio
+async def test_pause_of_an_unknown_agent_is_refused_not_crashed(live):
+    assert live.swarm_command({"action": "pause", "agent_id": "ghost"})["ok"] is False
+
+
+# ── the same verb, one machine away ──────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_pausing_a_remote_step_travels_to_the_peer(live, swarm, monkeypatch):
+    """The task lives on the other instance, so the local registry is the wrong
+    place to look and the wrong place to act."""
+    from aion.swarmrun import Watch
+    import aion.remotes as remotes
+
+    aid = by_name(swarm, "scout").id
+    from aion.swarm import AgentStatus
+    swarm.set_status(aid, AgentStatus.WORKING)
+    live._swarm_runner.task_of[aid] = "t-remote"
+    live._swarm_runner.agent_of["t-remote"] = aid
+    live._swarm_runner.watches[aid] = Watch(aid, "workstation", "t-remote",
+                                            state="running")
+    monkeypatch.setattr(live, "_peer_node", lambda inst: object(), raising=False)
+    sent = []
+
+    async def fake_control(self, node, task_id, action):
+        sent.append((task_id, action))
+        return {"ok": True}
+
+    monkeypatch.setattr(remotes.RemoteClient, "control_task", fake_control)
+    out = live.swarm_command({"action": "pause", "agent_id": aid})
+    assert out["ok"] is True and out["pending"] is True
+    await asyncio.sleep(0)          # let the dispatched request run
+    assert sent == [("t-remote", "pause")]
+    assert live.harnesses["demo"].calls == []
+    assert any("workstation" in line for line in swarm.agents[aid].logs)
+
+
+@pytest.mark.asyncio
+async def test_a_peer_that_left_the_fleet_refuses_rather_than_pretending(live, swarm):
+    from aion.swarmrun import Watch
+    from aion.swarm import AgentStatus
+
+    aid = by_name(swarm, "scout").id
+    swarm.set_status(aid, AgentStatus.WORKING)
+    live._swarm_runner.task_of[aid] = "t-remote"
+    live._swarm_runner.watches[aid] = Watch(aid, "gone-box", "t-remote",
+                                            state="running")
+    live._peer_node = lambda inst: None
+    out = live.swarm_command({"action": "pause", "agent_id": aid})
+    assert out["ok"] is False and "gone-box" in out["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_from_the_peer_reaches_the_agent_log(live, swarm, monkeypatch):
+    import aion.remotes as remotes
+    from aion.swarmrun import Watch
+    from aion.swarm import AgentStatus
+
+    aid = by_name(swarm, "scout").id
+    swarm.set_status(aid, AgentStatus.WORKING)
+    live._swarm_runner.task_of[aid] = "t-remote"
+    live._swarm_runner.watches[aid] = Watch(aid, "workstation", "t-remote",
+                                            state="running")
+    monkeypatch.setattr(live, "_peer_node", lambda inst: object(), raising=False)
+
+    async def refuse(self, node, task_id, action):
+        return {"ok": False, "reason": "already paused"}
+
+    monkeypatch.setattr(remotes.RemoteClient, "control_task", refuse)
+    live.swarm_command({"action": "pause", "agent_id": aid})
+    await asyncio.sleep(0)
+    assert any("refused pause" in line for line in swarm.agents[aid].logs)
+
+
+def test_a_remote_poll_records_the_state_it_saw(swarm):
+    """Pausing a remote step is judged against the last poll, so the poll has
+    to keep it. Before, only the miss counter survived."""
+    from aion.swarmrun import Watch, read_poll
+    w = Watch("a1", "workstation", "t1")
+    read_poll({"state": "running", "paused": True}, w)
+    assert (w.state, w.paused) == ("running", True)
+
+
+# ── one set of rules, not two ────────────────────────────────────────────────
+def test_agent_cancel_uses_the_task_terminal_states(swarm):
+    from aion import agentctl
+    for state in (AgentStatus.DONE, AgentStatus.FAILED, AgentStatus.CANCELLED):
+        aid = swarm.add_agent(f"x{state.value}", "g").id
+        swarm.set_status(aid, state)
+        assert swarm.can(aid, "cancel") == agentctl.legal(
+            "cancel", agentctl.AGENT_AS_TASK[state.value])
+
+
+def test_agent_retry_matches_the_task_rerun_set(swarm):
+    from aion import agentctl
+    for state in AgentStatus:
+        aid = swarm.add_agent(f"r{state.value}", "g").id
+        swarm.set_status(aid, state)
+        assert swarm.can(aid, "retry")[0] is (state.value in agentctl.RERUNNABLE)
+
+
+def test_delegated_verbs_answer_a_missing_agent_like_the_others(live):
+    assert live.swarm_command({"action": "pause"})["reason"] == "no agent"
+
+
+# ── the typed command and the HUD button are the same verb ───────────────────
+# `swarm run` in the cockpit used to set every ready agent to WORKING and spawn
+# nothing, so a DAG typed here sat at layer one forever while the identical DAG
+# driven from the HUD ran. Both now land in `swarm_command`.
+@pytest.mark.asyncio
+async def test_typed_swarm_run_spawns_real_tasks(live, swarm):
+    await live._swarm_command("swarm run")
+    aid = by_name(swarm, "scout").id
+    assert live._swarm_runner.task_of.get(aid), "run started no task"
+    assert any("scout" in line for line in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_run_says_why_nothing_started(live, swarm):
+    swarm.set_status(by_name(swarm, "scout").id, AgentStatus.FAILED)
+    await live._swarm_command("swarm run")
+    assert any("scout" in line for line in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_add_refuses_a_duplicate_name(live, swarm):
+    """Skipping add_checked here let two agents share a name, which makes every
+    dependency on that name a coin flip."""
+    await live._swarm_command("swarm add scout something else")
+    assert len([a for a in swarm.agents.values() if a.name == "scout"]) == 1
+    assert any("already exists" in line for line in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_add_still_parses_dependencies(live, swarm):
+    await live._swarm_command("swarm add publisher ship it << editor")
+    assert by_name(swarm, "publisher").dependencies == ["editor"]
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_create_twice_does_not_collide(live, swarm):
+    await live._swarm_command("swarm create research a thing")
+    await live._swarm_command("swarm create research another thing")
+    names = sorted(a.name for a in swarm.agents.values() if a.name.startswith("Agent"))
+    assert names == ["Agent", "Agent-2"]
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_create_leaves_the_agent_idle(live, swarm):
+    """It used to be set WORKING with no task behind it — a lie the dashboard
+    then displayed as a running agent."""
+    await live._swarm_command("swarm create research a thing")
+    assert by_name(swarm, "Agent").status is AgentStatus.IDLE
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_stop_takes_the_tasks_with_it(live, swarm):
+    await live._swarm_command("swarm run")
+    await live._swarm_command("swarm stop")
+    assert live.harnesses["demo"].calls[-1][0] == "cancel"
+    assert live._swarm_runner.task_of == {}

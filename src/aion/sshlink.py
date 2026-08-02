@@ -294,7 +294,10 @@ def free_local_port(start: int = TUNNEL_PORT_BASE, span: int = 200) -> int:
     """
     for port in range(start, start + span):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Deliberately NOT SO_REUSEADDR: that option makes the probe accept
+            # a port still in TIME_WAIT, which ssh — binding without it — then
+            # refuses. "Free" has to mean free for the process that will
+            # actually bind it, not for the one asking.
             try:
                 sock.bind(("127.0.0.1", port))
             except OSError:

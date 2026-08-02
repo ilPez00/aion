@@ -208,3 +208,49 @@ async def test_spawn_task_refuses_an_empty_prompt(store):
 async def test_spawn_task_refuses_an_unknown_harness(store):
     out = store.spawn_task("nope", "do a thing")
     assert out["ok"] is False and "nope" in out["reason"]
+
+
+# ── routing a swarm action ───────────────────────────────────────────────────
+# A swarm agent is not a process: it owns a task id, and the task is what a
+# harness can suspend. `route` is the pure half of that — no store, no peer.
+def test_agent_only_actions_stay_at_the_agent():
+    for action in ("start", "cancel", "retry", "remove"):
+        assert agentctl.route(action, "idle") == ("agent", "")
+
+
+def test_pause_needs_a_working_agent():
+    where, why = agentctl.route("pause", "idle", "running")
+    assert where == "" and "idle" in why
+
+
+def test_pause_refuses_an_agent_with_no_task_yet():
+    """A remote spawn still in flight: WORKING, but nothing to pause. Saying
+    so beats a button that silently does nothing."""
+    where, why = agentctl.route("pause", "working", "")
+    assert where == "" and "not attached to a task" in why
+
+
+def test_pause_delegates_to_a_running_task():
+    assert agentctl.route("pause", "working", "running") == ("task", "")
+
+
+def test_delegation_inherits_the_task_rules_exactly():
+    """No second state machine: an already-paused task refuses in the same
+    words whether it was reached through an agent or directly."""
+    assert agentctl.route("pause", "working", "running", paused=True) == (
+        "", legal("pause", "running", paused=True)[1])
+    assert agentctl.route("resume", "working", "running", paused=False) == (
+        "", legal("resume", "running", paused=False)[1])
+
+
+def test_resume_delegates_when_the_task_is_paused():
+    assert agentctl.route("resume", "working", "running", paused=True) == ("task", "")
+
+
+def test_every_agent_status_has_a_task_meaning():
+    """The two vocabularies meet in AGENT_AS_TASK. A status added to the swarm
+    without a mapping here would fall through as an unknown task state and be
+    judged by rules that never saw it."""
+    from aion.swarm import AgentStatus
+    missing = [s.value for s in AgentStatus if s.value not in agentctl.AGENT_AS_TASK]
+    assert missing == []

@@ -121,6 +121,19 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   not cancel live work. Spawn and poll are non-blocking (`PENDING` +
   `attach`/`deliver`): the cockpit calls these from inside its own event loop.
 
+- **One state machine for agents and tasks** — a swarm agent is not a process;
+  it owns a task id, and the task is what a harness can suspend. So `pause` and
+  `resume` have no agent-level implementation at all: `agentctl.route` decides
+  them against the real task state and the store applies them through
+  `control_task`, the same call a keypress in the cockpit makes. `swarm.can`
+  stopped carrying its own copy of the terminal-state and rerun rules, the two
+  vocabularies meet in `AGENT_AS_TASK` (a status added without a task meaning
+  fails the suite), and a step pinned to another instance is paused over the
+  same authenticated transport that polls it. The typed `swarm run` / `add` /
+  `stop` now go through `swarm_command` too — `run` used to flip statuses to
+  WORKING and spawn nothing, so a DAG typed into the cockpit sat at layer one
+  forever while the identical DAG driven from the HUD ran.
+
 - **Swarm planning** (`swarmplan.py`) — describe a goal, get a reviewed DAG.
   `decompose()` created an empty plan nobody read, so every swarm had to be
   hand-built. A model proposes; almost everything it says is refused: step

@@ -165,6 +165,11 @@ class Watch:
     instance: str
     task_id: str
     misses: int = 0
+    # Last thing the peer said about the task. A local task can be asked about
+    # directly; a remote one cannot, so pausing one has to be judged against
+    # the most recent answer rather than against nothing.
+    state: str = ""
+    paused: bool = False
 
 
 def read_poll(reply, watch: Watch, max_misses: int = MAX_MISSES) -> tuple[str, str]:
@@ -188,6 +193,8 @@ def read_poll(reply, watch: Watch, max_misses: int = MAX_MISSES) -> tuple[str, s
 
     watch.misses = 0
     state = str(reply.get("state", "")).strip()
+    watch.state = state
+    watch.paused = bool(reply.get("paused"))
     if reply.get("error") or not state:
         # The peer answered and does not know this task. It restarted, or the
         # task was pruned. Either way the work is not coming back.
@@ -435,6 +442,20 @@ class SwarmRunner:
         return {"polled": len(self.watches), "advanced": advanced}
 
     # -- introspection -----------------------------------------------------
+    def task_ref(self, agent_id: str) -> dict:
+        """Where one agent's work is: task id, instance, last known state.
+
+        The store needs all four to decide a pause: a local task it can look up
+        in the registry, a remote one it can only know as of the last poll. An
+        empty `task_id` means the agent owns no task — either it has not
+        started, or a remote spawn is still in flight.
+        """
+        w = self.watches.get(agent_id)
+        return {"task_id": self.task_of.get(agent_id, ""),
+                "instance": w.instance if w else "",
+                "state": w.state if w else "",
+                "paused": bool(w.paused) if w else False}
+
     def status(self) -> dict:
         """What the HUD needs to explain a swarm that is not moving."""
         summary = self.swarm.status_summary()
@@ -447,7 +468,8 @@ class SwarmRunner:
             "vram_total": self.vram_total,
             "deferred": list(self.last.deferred),
             "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,
-                                    "misses": w.misses}
+                                    "misses": w.misses, "state": w.state,
+                                    "paused": w.paused}
                        for w in self.watches.values()},
             "stalled": stalled,
             "running_tasks": dict(self.task_of),

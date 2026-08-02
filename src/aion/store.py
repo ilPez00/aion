@@ -27,7 +27,7 @@ from .gbrain import BrainStore
 from .credentials import CredentialStore, PROVIDER_PRESETS
 from .voice.persona import Persona
 from .llm import ChatSession, format_conversation, chat_send
-from .swarm import SwarmOrchestrator, AgentStatus as SwarmAgentStatus
+from .swarm import SwarmOrchestrator
 from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
 from .dashboard import collect_dashboard
 from .physis import get_client as _get_physis  # coherence brain (soft-fails if down)
@@ -620,6 +620,10 @@ class Store:
         if task is None:
             return {"id": task_id, "error": "no such task"}
         return {"id": task.id, "state": task.state.value,
+                # A paused task is still "running": the flag is the only way a
+                # watcher can tell, and without it a peer cannot decide whether
+                # pause or resume is the legal next move over there.
+                "paused": bool(getattr(task, "paused", False)),
                 "progress": round(task.progress, 3),
                 "output": "\n".join(task.log[-20:])}
 
@@ -685,6 +689,8 @@ class Store:
         orchestrator answers whether an action is legal and why not; this only
         decides which question to ask it.
         """
+        from . import agentctl
+
         params = params if isinstance(params, dict) else {}
         action = str(params.get("action", "")).strip()
         agent_id = str(params.get("agent_id", "")).strip()
@@ -744,6 +750,8 @@ class Store:
             return out
         if action == "status":
             return self.swarm_runner.status()
+        if action in agentctl.DELEGATED:
+            return self._swarm_delegate(agent_id, action)
         if action in self.swarm.ACTIONS:
             if not agent_id:
                 return {"ok": False, "action": action, "reason": "no agent"}
@@ -779,6 +787,85 @@ class Store:
             return result
         return {"ok": False, "action": action,
                 "reason": f"unknown swarm action {action!r}"}
+
+    def _swarm_delegate(self, agent_id: str, action: str) -> dict:
+        """pause/resume a swarm agent by acting on the task it owns.
+
+        The whole point of the runner is that an agent's work IS a task, so
+        these do not get an agent-level implementation — there is nothing at
+        that level to suspend. They find the task and apply exactly the rules
+        `control_task` already enforces, which is why a paused swarm step and a
+        paused task typed into the cockpit behave identically.
+
+        A step pinned to another instance is the interesting case: its task
+        lives over there, so the request travels the same authenticated path
+        the poll does, and the peer decides legality against the state it
+        actually has. We answer from the last poll, which can be a few seconds
+        stale — hence "asked", not "done".
+        """
+        from . import agentctl
+
+        agent = self.swarm.agents.get(agent_id)
+        if agent is None:
+            return {"ok": False, "action": action, "agent_id": agent_id,
+                    "reason": "no agent" if not agent_id else "no such agent"}
+
+        ref = self.swarm_runner.task_ref(agent_id)
+        task_id, instance = ref["task_id"], ref["instance"]
+        if instance:
+            state, paused = ref["state"], ref["paused"]
+        else:
+            task = self.registry.tasks.get(task_id) if task_id else None
+            state = task.state.value if task is not None else ""
+            paused = bool(getattr(task, "paused", False))
+
+        def answer(ok: bool, reason: str = "", **extra) -> dict:
+            out = agentctl.Outcome(ok, action, task_id, reason, state).as_dict()
+            out["agent_id"] = agent_id       # the caller asked about an agent
+            out.update(extra)
+            return out
+
+        where, why = agentctl.route(action, agent.status.value, state, paused)
+        if where != "task":
+            return answer(False, why)
+
+        if not instance:
+            out = self.control_task(task_id, action)
+            out["agent_id"] = agent_id
+            if out.get("ok"):
+                self.swarm.log(agent_id, f"[control] {agentctl.describe(action)}")
+            return out
+
+        node = self._peer_node(instance)
+        if node is None:
+            return answer(False, f"{instance} is not in the fleet right now")
+        try:
+            asyncio.create_task(self._remote_control_async(
+                node, instance, agent_id, task_id, action))
+        except RuntimeError:
+            # No loop: nothing can be sent, and claiming otherwise would leave
+            # the caller believing a running task had been paused.
+            return answer(False, f"cannot reach {instance} from here")
+        return answer(True, f"asked {instance} to {action} it", pending=True)
+
+    async def _remote_control_async(self, node, instance: str, agent_id: str,
+                                    task_id: str, action: str) -> None:
+        """Carry a pause/resume to the instance running the task."""
+        from . import agentctl
+        from .remotes import RemoteClient
+
+        try:
+            reply = await RemoteClient(timeout=8.0).control_task(
+                node, task_id, action)
+        except Exception as e:  # noqa: BLE001
+            reply = {"reason": f"{type(e).__name__}: {str(e)[:80]}"}
+        if isinstance(reply, dict) and reply.get("ok"):
+            self.swarm.log(agent_id,
+                           f"[control] {agentctl.describe(action)} on {instance}")
+            return
+        why = (reply or {}).get("reason", "") if isinstance(reply, dict) else ""
+        self.swarm.log(agent_id, f"[control] {instance} refused {action}"
+                                 f"{': ' + why[:80] if why else ''}")
 
     def spawn_task(self, harness_id: str, prompt: str) -> dict:
         """Start a task from outside the TUI's own input path.
@@ -1257,8 +1344,30 @@ class Store:
                    "err": "#5a3a3a", "dim": "#2a2a2a"}
             self.cfg["theme"].update(dim)
 
+    def _free_agent_name(self, stem: str = "Agent") -> str:
+        """`stem`, `stem-2`, … — the first one not already taken.
+
+        Names are the dependency key, so `add_checked` refuses a duplicate.
+        Typing `swarm create` twice is a normal thing to do and must not be
+        the thing that hits that wall.
+        """
+        n, name = 1, stem
+        while self.swarm.agent_by_name(name) is not None:
+            n += 1
+            name = f"{stem}-{n}"
+        return name
+
     async def _swarm_command(self, text: str) -> None:
-        """Handle 'swarm create|add|run|status|stop' commands."""
+        """'swarm create|add|run|status|stop' — the same verbs the HUD sends.
+
+        Everything here goes through `swarm_command`, because this path used to
+        carry its own copy of each verb and the copies were wrong: `run` set
+        every ready agent to WORKING and spawned nothing, so a DAG typed into
+        the cockpit sat at layer one forever while the identical DAG driven
+        from the HUD ran; `add` skipped the duplicate-name check that makes a
+        dependency resolvable at all; `stop` cancelled the agents and left
+        their tasks running.
+        """
         parts = text.split()
         if len(parts) < 2:
             self.state.history.append("usage: swarm create <goal> | add <name> <goal> [deps] | run | status | stop")
@@ -1266,11 +1375,13 @@ class Store:
         sub = parts[1]
         rest = " ".join(parts[2:]) if len(parts) > 2 else ""
         if sub == "create" and rest:
-            plan = self.swarm.decompose(rest)
-            # Create initial agents from the plan
-            a1 = self.swarm.add_agent("Agent-1", rest)
-            self.swarm.set_status(a1.id, SwarmAgentStatus.WORKING)
-            self.state.history.append(f"swarm created: {rest[:40]}")
+            self.swarm.decompose(rest)
+            out = self.swarm_command({"action": "add",
+                                      "name": self._free_agent_name(),
+                                      "goal": rest})
+            self.state.history.append(
+                f"swarm created: {rest[:40]} — 'swarm run' to start it"
+                if out.get("ok") else f"swarm: {out.get('reason', 'refused')}")
         elif sub == "add" and len(parts) >= 4:
             name = parts[2]
             goal = " ".join(parts[3:])
@@ -1279,23 +1390,27 @@ class Store:
                 parts2 = goal.split(" << ", 1)
                 goal = parts2[0]
                 deps = [d.strip() for d in parts2[1].split(",")]
-            a = self.swarm.add_agent(name, goal, deps=deps)
-            self.state.history.append(f"swarm agent added: {name}")
+            out = self.swarm_command({"action": "add", "name": name,
+                                      "goal": goal, "deps": deps})
+            self.state.history.append(
+                f"swarm agent added: {name}" if out.get("ok")
+                else f"swarm: {out.get('reason', 'refused')}")
         elif sub == "run":
-            ready = self.swarm.agents_ready()
-            if ready:
-                for a in ready:
-                    self.swarm.set_status(a.id, SwarmAgentStatus.WORKING)
-                self.state.history.append(f"swarm: {len(ready)} agent(s) started")
-            else:
-                self.state.history.append("swarm: no agents ready (check deps)")
+            out = self.swarm_command({"action": "run_ready"})
+            started = out.get("started") or []
+            self.state.history.append(
+                f"swarm: started {', '.join(started)}" if started
+                else f"swarm: {out.get('reason') or 'no agents ready (check deps)'}")
+            for d in (out.get("deferred") or [])[:3]:
+                self.state.history.append(f"  held back: {d['name']} — {d['reason']}")
         elif sub == "status":
             self.state.swarm_dashboard = self.swarm.dashboard()
         elif sub == "stop":
-            for a in self.swarm.agents.values():
-                if a.status == SwarmAgentStatus.WORKING:
-                    self.swarm.set_status(a.id, SwarmAgentStatus.CANCELLED)
-            self.state.history.append("swarm: all agents stopped")
+            out = self.swarm_command({"action": "stop_all"})
+            stopped = out.get("stopped") or []
+            self.state.history.append(
+                f"swarm: stopped {', '.join(stopped)}" if stopped
+                else "swarm: nothing was running")
         else:
             self.state.history.append(f"unknown swarm subcommand: {sub}")
 
