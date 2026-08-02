@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Refuse a commit that was staged carelessly. Rules live in scripts/commit_guard.py.
+
+Enable once per clone:  git config core.hooksPath .githooks
+
+Bypass, when you genuinely mean it:  git commit --no-verify
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from commit_guard import report  # noqa: E402
+
+
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], capture_output=True, text=True,
+                          check=False).stdout
+
+
+def main() -> int:
+    names = git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    paths = [p for p in names.splitlines() if p.strip()]
+    if not paths:
+        return 0
+    diff = git("diff", "--cached", "--unified=0", "--diff-filter=ACMR")
+    sizes = {}
+    for p in paths:
+        f = ROOT / p
+        if f.is_file():
+            sizes[p] = f.stat().st_size
+
+    problems = report(paths, diff, sizes)
+    if not problems:
+        return 0
+    print("\ncommit refused — staged content did not pass the guard:\n",
+          file=sys.stderr)
+    for why in problems:
+        print(f"  · {why}", file=sys.stderr)
+    print("\nStage explicit paths (AGENTS.md), or --no-verify if this is "
+          "deliberate.\n", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

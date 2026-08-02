@@ -45,6 +45,20 @@ TERM=xterm-256color timeout 6 .venv/bin/python -m aion.ui.app   # boot smoke
 
 Never `git add -A`. Stage explicit paths. One logical cycle per commit.
 
+Enforced, not just written down — enable the hook once per clone:
+
+```bash
+git config core.hooksPath .githooks   # refuses stray paths, credential
+                                      # filenames, blobs and real-looking keys
+```
+
+Rules live in `scripts/commit_guard.py` (pure, tested in
+`tests/test_commit_guard.py`) and run again in CI, because a hook can be
+skipped with `--no-verify` or simply never enabled in a fresh clone.
+
+Work on `main`. The `freerouting-omniroute` and `slice/*` branches are
+historical; everything is merged.
+
 ## Skills to load
 
 - **`aion-factory-loop`** — cycle SOP for this product

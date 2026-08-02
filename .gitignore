@@ -9,7 +9,4 @@ notes/
 /static/
 uv.lock
 server.py
-tests/test_env.py
-tests/test_opencode.py
-src/aion/hermes/env.py
 .pytest_cache/

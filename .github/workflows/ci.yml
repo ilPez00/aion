@@ -1,0 +1,59 @@
+name: ci
+
+# The suite and the secret scan were both things somebody had to remember to
+# run. On a solo repo that means they run right up until the week they matter.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # `web` is included because the HUD transport tests import it. The
+          # hardware extras (deck, ring, voice) are deliberately absent: every
+          # one of them is meant to soft-fail when its dependency is missing,
+          # and CI is the only place that is checked for free.
+          pip install -e ".[dev,web]"
+
+      - name: Tests
+        # test_term.py drives a real pty and is excluded everywhere, including
+        # in AGENTS.md's factory gates. Excluding it here keeps CI and the
+        # local gate the same command.
+        run: python -m pytest tests/ --ignore=tests/test_term.py -q
+
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan a push range rather than a snapshot.
+          fetch-depth: 0
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Staged-content rules
+        # The same rules the pre-commit hook applies, run against the pushed
+        # commits. A hook can be skipped with --no-verify or simply not
+        # enabled in a fresh clone; this cannot.
+        run: python -m pytest tests/test_commit_guard.py -q
