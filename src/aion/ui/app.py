@@ -799,169 +799,21 @@ class AiOSApp(App):
                 f"  [{theme['accent']}]⛓ {degree} links[/]{tag_txt}{head_txt}{prev_txt}")
 
     def _sys_panel(self, theme: dict) -> str:
-        """Iron Man HUD: computer + real-life stats, rendered as gauges."""
-        from .gauges import (hbar, core_grid, sparkline, metric, gauge_panel,
-                             mem_readable, bytes_per_sec, cyclops_panel)
-        from .visualizers import holo_gauge, spectrum_eq
-        st = self.store.state.stats
-        blocks: list[str] = []
+        """Iron Man HUD: computer + real-life stats, rendered as gauges.
 
-        # ── Holo Gauges ───────────────────────────────────────────────────
-        sys_ = st.get("system")
-        if sys_ and sys_.get("ok"):
-            cpu_pct = sys_["cpu"]["total_pct"] / 100.0
-            mem_pct = sys_["mem"]["pct"] / 100.0
-            disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0
-            gauges = [
-                holo_gauge(cpu_pct, self._viz_tick, width=14, label="CPU", color=theme["warn"]),
-                holo_gauge(mem_pct, self._viz_tick, width=14, label="RAM", color=theme["accent"]),
-                holo_gauge(disk_pct, self._viz_tick, width=14, label="DSK", color=theme["warn"]),
-            ]
-            gauge_lines = [g.split("\n") for g in gauges]
-            # merge side by side: row by row
-            merged = []
-            for row_i in range(3):  # 3 lines per gauge
-                parts = []
-                for g in gauge_lines:
-                    if row_i < len(g):
-                        parts.append(g[row_i])
-                merged.append("  ".join(parts))
-            blocks.append("\n".join(merged))
+        The rendering lives in `sys_panel.py`. Only the four things it needs
+        from a live app are gathered here: the stats snapshot, the animation
+        tick, whether the deck is plugged in, and how much work is running.
+        """
+        from .sys_panel import render_sys
 
-        # ---- COMPUTER (system) ----
-        sys_ = st.get("system")
-        if sys_ and sys_.get("ok"):
-            cpu = sys_["cpu"]
-            cpu_line = (metric("CPU", f"{cpu['total_pct']}", "%", theme["warn"]) +
-                        f"  [{theme['dim']}]{cpu['cores']}c load {cpu['load1']}[/]")
-            grid = core_grid(cpu["per_core_pct"])
-            ram_line = (metric("RAM", f"{sys_['mem']['pct']}", "%", theme["accent"]) +
-                        f"  [{theme['dim']}]{mem_readable(sys_['mem']['used'])}/"
-                        f"{mem_readable(sys_['mem']['total'])}[/]")
-            ram_bar = hbar(sys_["mem"]["pct"] / 100.0, width=20, color=theme["accent"])
-            blocks.append(gauge_panel("COMPUTER",
-                         "\n  ".join([cpu_line, grid, ram_line, ram_bar]),
-                         theme["accent"]))
-            disk_lines = []
-            for d in sys_["disks"]:
-                dl = (metric(d["mount"], f"{d['pct']}", "%", theme["warn"]) +
-                      f"  [{theme['dim']}]{mem_readable(d['free'])} free[/]")
-                disk_lines.append(dl)
-                disk_lines.append("  " + hbar(d["pct"] / 100.0, width=16, color=theme["warn"]))
-            if disk_lines:
-                blocks.append(gauge_panel("STORAGE", "\n  ".join(disk_lines), theme["warn"]))
-            net = sys_["net"]
-            net_line = (metric("up", bytes_per_sec(net["up_bps"]), "", theme["ok"]) + "\n  " +
-                        metric("dn", bytes_per_sec(net["down_bps"]), "", theme["ok"]) + "\n  " +
-                        f"[{theme['dim']}]{net['conns']} active conns[/]")
-            blocks.append(gauge_panel("NETWORK", net_line, theme["ok"]))
-            gpu = sys_.get("gpu") or {}
-            if gpu:
-                if "gpu_util_pct" in gpu:
-                    g = (metric("util", f"{gpu['gpu_util_pct']}", "%", theme["accent"]) + "\n  " +
-                         hbar(gpu["gpu_util_pct"] / 100.0, width=16, color=theme["accent"]) +
-                         "\n  " +
-                         f"[{theme['dim']}]{gpu.get('gpu_mem_mb',0)}/"
-                         f"{gpu.get('gpu_mem_total_mb',0)} MB[/]")
-                    blocks.append(gauge_panel("GPU", g, theme["accent"]))
-                elif "gpu_models" in gpu:
-                    blocks.append(gauge_panel(
-                        "GPU",
-                        f"[{theme['ok']}]{gpu['gpu_models']} model(s) loaded · "
-                        f"{gpu.get('gpu_vram_mb',0)}MB[/]", theme["accent"]))
-        else:
-            blocks.append(gauge_panel("COMPUTER", "[#9aabbb](stats unavailable)[/]", theme["accent"]))
-
-        # ---- THERMAL (CPU/thermal sensors) ----
-        th = sys_.get("thermal") if sys_ and sys_.get("ok") else None
-        if th:
-            cpu = th.get("cpu") or []
-            other = th.get("other") or []
-            lines = []
-            if cpu:
-                max_c = th.get("max_cpu_c", max((t["current"] for t in cpu), default=0))
-                lines.append(metric("max", f"{max_c:.1f}", "°C", theme["err"] if max_c > 85 else theme["warn"] if max_c > 70 else theme["ok"]))
-                for t in cpu[:4]:  # top 4 cpu sensors
-                    label = t["label"]
-                    c = t["current"]
-                    col = theme["err"] if c > 85 else theme["warn"] if c > 70 else theme["ok"]
-                    lines.append(f"  {metric(label, f'{c:.1f}', '°C', col)}")
-            if other:
-                for t in other[:4]:  # top 4 other sensors
-                    label = t["label"]
-                    c = t["current"]
-                    lines.append(f"  {metric(label, f'{c:.1f}', '°C', theme['dim'])}")
-            if lines:
-                blocks.append(gauge_panel("THERMAL", "\n  ".join(lines), theme["err"]))
-
-        # ---- REAL LIFE (health) ----
-        hl = st.get("health")
-        if hl and hl.get("ok"):
-            av = hl.get("avg_7d", {})
-            latest = hl.get("latest") or {}
-            lines = [
-                metric("steps", str(latest.get("steps", 0)), "", theme["ok"]),
-                metric("bpm", str(latest.get("heart_rate", 0)), "", theme["err"]),
-                metric("sleep", f"{latest.get('sleep_hours',0)}", "h", theme["accent"]),
-                metric("active", f"{latest.get('active_calories',0)}", "kcal", theme["warn"]),
-                f"[{theme['dim']}](7d avg steps {av.get('steps',0)} · "
-                f"sleep {av.get('sleep_hours',0)}h)[/]",
-            ]
-            series = hl.get("series", {})
-            if series.get("steps"):
-                lines.append("  " + sparkline(series["steps"], width=20))
-            blocks.append(gauge_panel("REAL LIFE", "\n  ".join(lines), theme["ok"]))
-        else:
-            blocks.append(gauge_panel("REAL LIFE",
-                         "[#9aabbb](no health data — source: google/apple/json)[/]",
-                         theme["ok"]))
-
-        # ---- PHYSIS (coherence brain) ----
-        ph = st.get("physis")
-        if ph:
-            a, di, ok, warn = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
-            degraded = ph.get("degraded", False)
-            kind = ph.get("kind", "?")
-            semantic = ph.get("semantic", False)
-            status = f"[{warn}]DEGRADED[/]" if degraded else f"[{ok}]LIVE[/]"
-            ph_lines = [
-                f"  engine: {status}  embedder: [{a}]{kind}[/]  "
-                f"semantic: {'yes' if semantic else 'no'}",
-            ]
-            g = ph.get("graph", {}) or {}
-            nodes = g.get("nodes", []) if isinstance(g, dict) else []
-            edges = g.get("edges", []) if isinstance(g, dict) else []
-            if nodes:
-                ph_lines.append(f"[{di}]holarchy: {len(nodes)} nodes · {len(edges)} edges[/]")
-                for n in nodes[:5]:
-                    label = n.get("label", n.get("id", "?")) if isinstance(n, dict) else str(n)
-                    ph_lines.append(f"  [{a}]•[/] {label[:40]}")
-            blocks.append(gauge_panel("PHYSIS", "\n  ".join(ph_lines), theme["accent"]))
-
-        # ---- CYCLOPS (wearable + deck link + brain, one glance) ----
-        deck_status = {"available": getattr(getattr(self, "deck", None),
-                                            "link", None) is not None
-                       and self.deck.link.available,
-                       "baud": 115200}
-        blocks.append(cyclops_panel(ring=st.get("ring"), deck=deck_status,
-                                    physis=st.get("physis")))
-
-        # ── Spectrum Analyzer ─────────────────────────────────────────────
-        sys_ = st.get("system")
-        cpu_pct = (sys_["cpu"]["total_pct"] / 100.0) if sys_ and sys_.get("ok") else 0
-        mem_pct = (sys_["mem"]["pct"] / 100.0) if sys_ and sys_.get("ok") else 0
-        disk_pct = max((d["pct"] for d in sys_.get("disks", [])), default=0) / 100.0 if sys_ and sys_.get("ok") else 0
-        running_count = sum(1 for t in self.store.registry.tasks.values()
-                            if t.state.value in ("running", "pending"))
-        spec = spectrum_eq(
-            [cpu_pct, mem_pct, disk_pct, min(running_count / 3.0, 1.0)],
-            self._viz_tick,
-            height=4,
-            labels=["CPU", "RAM", "DSK", "TASK"],
-        )
-        blocks.append(gauge_panel("SPECTRUM", spec, theme["accent"]))
-
-        return "\n\n".join(blocks)
+        deck = getattr(self, "deck", None)
+        link = getattr(deck, "link", None)
+        return render_sys(
+            self.store.state.stats, theme, tick=self._viz_tick,
+            deck_available=bool(link is not None and link.available),
+            running=sum(1 for t in self.store.registry.tasks.values()
+                        if t.state.value in ("running", "pending")))
 
     def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
         """Render the multi-agent swarm dashboard."""
