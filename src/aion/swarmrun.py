@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .swarmpolicy import backoff, classify, should_retry
+
 # A swarm with no limit will start every ready agent at once. On one GPU that
 # is slower than running them in sequence, and on an API-backed harness it is
 # a burst of concurrent spend. Both defaults are deliberately timid.
@@ -233,8 +235,12 @@ class SwarmRunner:
                  max_parallel: int = DEFAULT_MAX_PARALLEL,
                  vram_total: int = DEFAULT_VRAM_MB,
                  harness_vram=None, spawn_remote=None, poll_remote=None,
-                 budget: float = 0.0, prices=None) -> None:
+                 budget: float = 0.0, prices=None, retry=None,
+                 clock=None) -> None:
+        import time
+
         from .swarmbudget import Ledger
+        from .swarmpolicy import RetryPolicy
 
         self.swarm = orchestrator
         self.spawn = spawn                 # (agent, prompt) -> task_id | None
@@ -247,6 +253,15 @@ class SwarmRunner:
         self.budget = float(budget or 0.0)
         self.ledger = Ledger(prices=dict(prices or {}))
         self._prompts: dict[str, str] = {}   # agent id -> what it was asked
+        # What happens when a step fails. The default retries nothing, so a
+        # swarm behaves exactly as it did before anyone configures one.
+        self.retry = retry or RetryPolicy()
+        # Injected so a backoff can be tested without sleeping through it.
+        self._now = clock or time.time
+        # Steps holding a slot open until their backoff expires. Rebuilt every
+        # tick and folded into the admission report, because a step that is
+        # merely WAITING must not look like a step nobody considered.
+        self._backing_off: list[dict] = []
         # Optional, so a swarm works exactly as before with no peers set up.
         #   spawn_remote(instance, agent, prompt) -> task_id | ""
         #   poll_remote(instance, task_id)        -> dict | None
@@ -263,10 +278,22 @@ class SwarmRunner:
     def _slots(self) -> list[Slot]:
         from .swarm import AgentStatus
         out = []
+        self._backing_off = []
+        now = self._now()
         for a in self.swarm.agents.values():
             if a.status is not AgentStatus.IDLE:
                 continue
             if self.swarm.dep_state(a)[0] != "ready":
+                continue
+            due = float(getattr(a, "retry_at", 0.0) or 0.0)
+            if due > now:
+                # Ready, affordable, and deliberately not started yet. Reported
+                # rather than skipped: from outside, a step held back by a
+                # backoff is indistinguishable from one the scheduler forgot.
+                self._backing_off.append({
+                    "id": a.id, "name": a.name,
+                    "reason": (f"retrying in {due - now:.0f}s "
+                               f"(attempt {a.attempts + 1})")})
                 continue
             hid = getattr(a, "harness", "") or self.harness
             # The prompt is built here as well as in pump(): admission has to
@@ -304,6 +331,7 @@ class SwarmRunner:
                      max_parallel=self.max_parallel,
                      vram_total=self.vram_total, vram_used=self._vram_used(),
                      budget=self.budget, committed=self.ledger.committed())
+        plan.deferred.extend(self._backing_off)
         self.last = plan
         started = []
         for aid in plan.admit:
@@ -317,6 +345,11 @@ class SwarmRunner:
             # the budget is blown once per step in a single pump.
             self.ledger.reserve(aid, getattr(agent, "harness", "") or self.harness,
                                 prompt)
+            # Counted here rather than on a successful spawn: a spawn that
+            # throws is still an attempt, and a step whose attempts never
+            # increment is a step that retries forever.
+            agent.attempts = int(getattr(agent, "attempts", 0) or 0) + 1
+            agent.retry_at = 0.0
             # WORKING before spawning: a synchronous spawn that completes
             # immediately would otherwise find the agent still IDLE and the
             # completion would be dropped.
@@ -414,8 +447,26 @@ class SwarmRunner:
         else:
             self.ledger.release(agent_id)
         self.swarm.log(agent_id, f"[run] failed: {error[:120]}")
-        self.swarm.set_status(agent_id, AgentStatus.FAILED)
         self._forget(agent_id)
+
+        again, why = should_retry(error, int(getattr(agent, "attempts", 0) or 0),
+                                  self.retry)
+        if again:
+            # Back to IDLE, not FAILED: FAILED blocks every dependent through
+            # `dep_state`, and a step we intend to run again in thirty seconds
+            # has not blocked anything yet. The backoff is what stops the next
+            # pump from picking it straight back up.
+            agent.retry_at = self._now() + backoff(agent.attempts, self.retry)
+            agent.progress = 0.0
+            self.swarm.log(agent_id, f"[run] {why}")
+            self.swarm.set_status(agent_id, AgentStatus.IDLE)
+            return
+        if self.retry.enabled:
+            # The reason retrying STOPPED is the interesting half. Without it a
+            # dead-lettered step and a step that never had a policy look
+            # identical in the log.
+            self.swarm.log(agent_id, f"[run] giving up: {why}")
+        self.swarm.set_status(agent_id, AgentStatus.FAILED)
 
     def cancel(self, agent_id: str, why: str = "") -> None:
         from .swarm import AgentStatus
@@ -548,6 +599,48 @@ class SwarmRunner:
                 "state": w.state if w else "",
                 "paused": bool(w.paused) if w else False}
 
+    def due_for_retry(self) -> bool:
+        """Is a step's backoff up? True means somebody should call `pump()`.
+
+        A retry is the one thing that becomes startable with NO event to
+        announce it: a task state change drives every other advance, and a step
+        waiting on the clock produces none. Without a caller asking this on a
+        timer, a backed-off DAG sits IDLE forever — which is a worse failure
+        than the one retrying was meant to fix, because at least FAILED says so.
+        """
+        from .swarm import AgentStatus
+
+        now = self._now()
+        for a in self.swarm.agents.values():
+            if a.status is not AgentStatus.IDLE:
+                continue
+            if not float(getattr(a, "retry_at", 0.0) or 0.0):
+                continue
+            if a.retry_at <= now and self.swarm.dep_state(a)[0] == "ready":
+                return True
+        return False
+
+    def dead_letters(self) -> list[dict]:
+        """Steps that ran out of attempts and now need a person.
+
+        Derived from the agents rather than kept in a list of its own, so it
+        survives a restart for free — the alternative is a second source of
+        truth that a checkpoint quietly drops.
+        """
+        from .swarm import AgentStatus
+
+        out = []
+        for a in self.swarm.agents.values():
+            if a.status is not AgentStatus.FAILED:
+                continue
+            out.append({"id": a.id, "name": a.name,
+                        "attempts": int(getattr(a, "attempts", 0) or 0),
+                        "error": (a.error or "")[:200],
+                        "kind": classify(a.error or ""),
+                        "blocks": sorted(o.name for o in self.swarm.agents.values()
+                                         if a.name in o.dependencies)})
+        return out
+
     def status(self) -> dict:
         """What the HUD needs to explain a swarm that is not moving."""
         summary = self.swarm.status_summary()
@@ -560,6 +653,8 @@ class SwarmRunner:
             "vram_total": self.vram_total,
             "budget": self.budget,
             "ledger": self.ledger.as_dict(),
+            "max_attempts": self.retry.max_attempts,
+            "dead_letters": self.dead_letters(),
             "deferred": list(self.last.deferred),
             "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,
                                     "misses": w.misses, "state": w.state,
@@ -587,6 +682,20 @@ class SwarmRunner:
         if not idle:
             return ""
         if self.swarm.agents_ready():
+            # Ready is not the same as due. A step inside its backoff is idle
+            # on purpose, and saying so is the difference between "wait 30
+            # seconds" and "something is broken".
+            #
+            # Read off the agents rather than off `last.deferred`: the plan was
+            # built BEFORE the failure that started the backoff, so the tick
+            # that most needs this answer is the one tick that would not have it.
+            now = self._now()
+            waiting = sorted((a.retry_at, a.name) for a in idle
+                             if float(getattr(a, "retry_at", 0.0) or 0.0) > now)
+            if waiting:
+                due, name = waiting[0]
+                return (f"nothing running — {name}: retrying in "
+                        f"{due - now:.0f}s")
             # Ready is not the same as affordable. A DAG stopped by its budget
             # looks exactly like a healthy idle one from every other panel,
             # which is the most expensive kind of silence to debug.

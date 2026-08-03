@@ -605,6 +605,7 @@ class Store:
                 return getattr(getattr(self, "state", None), "active_harness", "")
 
             from .swarmbudget import prices_from_harnesses
+            from .swarmpolicy import policy_from_config
 
             # `swarm_budget` in config, currency per DAG. 0 = no ceiling.
             # Parallelism and VRAM say nothing about money: a swarm can sit
@@ -626,6 +627,11 @@ class Store:
                 harness_vram=vram,
                 budget=budget,
                 prices=prices_from_harnesses(getattr(self, "harnesses", {})),
+                # `swarm_retry` in config: 3, or {"max_attempts": 3, ...}.
+                # Absent means no automatic retry, so an upgrade never starts
+                # re-running work — and spending on it — that nobody asked to
+                # be re-run.
+                retry=policy_from_config(getattr(self, "cfg", {})),
             )
             # Adopt work that outlived the last process. Here rather than in
             # __init__ because the runner is lazy and this is the first moment

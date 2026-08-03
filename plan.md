@@ -132,6 +132,25 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   and an exit code, not tokens, so the figures are characters over four times a
   configured price and every payload carries `estimated: True`.
 
+- **A failed step is no longer the end of the DAG** (`swarmpolicy.py`) — one
+  answer to a failure, and it was "stop": the agent went FAILED, `dep_state`
+  blocked every dependent, and an unattended swarm sat dead until morning,
+  including when the cause was a tunnel that dropped for four seconds. Now the
+  failure is classified (transient / permanent / unknown, off the message,
+  because CLIs report an exit code and not a taxonomy), retried with
+  exponential backoff up to `max_attempts`, and dead-lettered with the reason
+  retrying stopped and the list of steps stuck behind it. A retrying step goes
+  back to IDLE rather than FAILED — FAILED blocks dependents, and a step we
+  intend to run again in ten seconds has blocked nothing yet. Three details
+  that would each have made it a liability: `attempts` is checkpointed (a
+  restart that reset it turns a bounded policy into an unbounded one), the
+  ledger banks the previous attempt so retries are charged rather than free,
+  and the cockpit heartbeat calls `due_for_retry()` — a backoff is the one
+  thing that becomes startable with no event to announce it. Default is
+  `max_attempts=1`, i.e. exactly the old behaviour: an upgrade must not start
+  re-running, and re-paying for, work nobody asked to be re-run. Configure with
+  `"swarm_retry": 3` or the full dict.
+
 - **A restart adopts remote work instead of re-running it** — `restore()` was
   called nowhere, so the DAG survived on disk and in the web HUD while the
   cockpit came back believing there was no swarm. And once restored, every

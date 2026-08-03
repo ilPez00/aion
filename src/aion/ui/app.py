@@ -1160,17 +1160,25 @@ class AiOSApp(App):
             pass    # a missing ~/.aion is not worth killing the cockpit over
 
     def _poll_swarm(self) -> None:
-        """Ask peers how the swarm steps they are running are going.
+        """Advance anything in the swarm that no event will announce.
 
-        Guarded and lazy: a store with no swarm runner has never dispatched
-        anything remote, and a polling error must not take down the cockpit's
-        heartbeat, which shares this interval.
+        Two of those. Remote steps, which cannot reach this process's bus and
+        so must be asked; and steps waiting out a retry backoff, which become
+        startable purely because time passed. Everything else moves on a task
+        state change and needs no timer.
+
+        Guarded and lazy: a store with no swarm runner has never run a swarm,
+        and an error here must not take down the cockpit's heartbeat, which
+        shares this interval.
         """
         runner = getattr(self.store, "_swarm_runner", None)
-        if runner is None or not runner.watches:
+        if runner is None:
             return
         try:
-            runner.poll()
+            if runner.watches:
+                runner.poll()
+            if runner.due_for_retry():
+                runner.pump()
         except Exception as e:  # noqa: BLE001
             self.store.state.logs.append(f"swarm poll: {type(e).__name__}: {str(e)[:100]}")
 

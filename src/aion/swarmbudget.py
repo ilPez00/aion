@@ -119,6 +119,12 @@ class Ledger:
     prices: dict[str, Price] = field(default_factory=dict)
     entries: dict[str, Entry] = field(default_factory=dict)
     output_tokens: int = DEFAULT_OUTPUT_TOKENS
+    # What earlier attempts by the same agent already came to. Entries are
+    # keyed by agent id and a retry reserves against that same id, so without
+    # this the second attempt overwrites the first and every retry is free —
+    # which is precisely backwards, since retries are the one thing a budget
+    # exists to bound.
+    sunk: dict[str, float] = field(default_factory=dict)
 
     def price_for(self, harness: str) -> Price:
         return self.prices.get(harness or "", Price())
@@ -127,7 +133,15 @@ class Ledger:
         return estimate_cost(prompt, self.price_for(harness), self.output_tokens)
 
     def reserve(self, agent_id: str, harness: str, prompt: str) -> float:
-        """Hold an estimate against the budget. Returns what was held."""
+        """Hold an estimate against the budget. Returns what was held.
+
+        A second reservation for the same agent is a RETRY, so whatever the
+        previous attempt settled at is banked first. It is spent either way,
+        and the budget must go on seeing it.
+        """
+        previous = self.entries.get(agent_id)
+        if previous is not None and previous.actual is not None:
+            self.sunk[agent_id] = self.sunk.get(agent_id, 0.0) + previous.actual
         cost = self.estimate(harness, prompt)
         self.entries[agent_id] = Entry(agent_id, harness or "", reserved=cost)
         return cost
@@ -155,15 +169,21 @@ class Ledger:
         Distinct from settling at zero: a cancelled step produced nothing AND
         owes nothing, and leaving a hold behind would shrink the budget
         available to the rest of the DAG for no reason.
+
+        Earlier ATTEMPTS by the same agent are not dropped. Cancelling a step
+        on its third try does not refund the two runs that already happened.
         """
         self.entries.pop(agent_id, None)
 
     def committed(self) -> float:
         """Everything held or spent, estimated. What `affordable` compares to."""
-        return sum(e.committed for e in self.entries.values())
+        return (sum(e.committed for e in self.entries.values())
+                + sum(self.sunk.values()))
 
     def settled(self) -> float:
-        return sum(e.actual for e in self.entries.values() if e.actual is not None)
+        return (sum(e.actual for e in self.entries.values()
+                    if e.actual is not None)
+                + sum(self.sunk.values()))
 
     def outstanding(self) -> float:
         return sum(e.reserved for e in self.entries.values() if e.actual is None)
@@ -177,6 +197,7 @@ class Ledger:
             "committed": round(self.committed(), 4),
             "settled": round(self.settled(), 4),
             "outstanding": round(self.outstanding(), 4),
+            "retried": round(sum(self.sunk.values()), 4),
             "steps": len(self.entries),
             "estimated": True,        # never let a caller mistake this for a bill
         }

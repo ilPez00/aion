@@ -62,6 +62,12 @@ class SwarmAgent:
     # restart cannot tell "this step is running on the workstation" from
     # "this step has not started", and starts it a second time.
     task_id: str = ""
+    # How many times this step has been RUN, and the earliest moment it may be
+    # run again. Both are checkpointed: a restart that reset the count would
+    # turn a bounded retry policy into an unbounded one, which is the exact
+    # failure the bound exists to prevent.
+    attempts: int = 0
+    retry_at: float = 0.0            # epoch seconds; 0 = now
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -78,6 +84,7 @@ class SwarmAgent:
             "status": self.status.value, "progress": round(self.progress, 2),
             "deps": self.dependencies, "harness": self.harness,
             "instance": self.instance, "task_id": self.task_id,
+            "attempts": self.attempts, "retry_at": self.retry_at,
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -130,6 +137,8 @@ class SwarmAgent:
             dependencies=[str(x) for x in (d.get("deps") or [])],
             harness=str(d.get("harness", "") or ""),
             instance=instance, task_id=task_id,
+            attempts=int(d.get("attempts", 0) or 0),
+            retry_at=float(d.get("retry_at", 0) or 0.0),
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),
@@ -457,6 +466,13 @@ class SwarmOrchestrator:
             a.progress = 0.0
             a.completed = None
             a.started = None
+            # A human retry is a fresh decision, so the automatic policy's
+            # attempt count starts over and the backoff is waived. Anything
+            # else would have someone press retry and watch nothing happen for
+            # four minutes, or press it on a step that has no attempts left
+            # and watch it fail again immediately.
+            a.attempts = 0
+            a.retry_at = 0.0
             self.set_status(agent_id, AgentStatus.IDLE)
         elif action == "remove":
             self.agents.pop(agent_id, None)
