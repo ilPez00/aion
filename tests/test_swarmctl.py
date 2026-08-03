@@ -554,3 +554,22 @@ async def test_typed_swarm_stop_takes_the_tasks_with_it(live, swarm):
     await live._swarm_command("swarm stop")
     assert live.harnesses["demo"].calls[-1][0] == "cancel"
     assert live._swarm_runner.task_of == {}
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_status_stores_the_shape_every_view_reads(live, swarm):
+    """`swarm status` used to store the legacy TEXT dashboard while the bus
+    stored a dict. Every consumer — panel, HUD, jarvis — reads the dict, so
+    the command whose entire job is "show me the swarm" made the view worse
+    than not running it, and the panel raised AttributeError on `.get`."""
+    await live._swarm_command("swarm status")
+    d = live.state.swarm_dashboard
+    assert isinstance(d, dict)
+    assert d["total"] == len(swarm.agents)
+    assert {a["name"] for a in d["agents"]} == {a.name for a in swarm.agents.values()}
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_status_also_says_it_in_words(live):
+    await live._swarm_command("swarm status")
+    assert any("swarm:" in h for h in live.state.history)

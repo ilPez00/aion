@@ -886,9 +886,9 @@ async function loadAgents() {
       nodes.push({
         id: `s${s.id}`, label: s.name || s.id, kind: 'config',
         group: STATE_GROUP[s.status] ?? 0, weight: 0.3 + 0.7 * (s.progress || 0),
-        detail: `${s.status} · ${s.goal || ''}`.slice(0, 120),
+        detail: `${s.wave ? `wave ${s.wave} · ` : ''}${s.status} · ${s.goal || ''}`.slice(0, 120),
         swarmGoal: s.goal, taskLog: s.logs,
-        swarmId: s.id, state: s.status, deps: s.deps || [],
+        swarmId: s.id, state: s.status, deps: s.deps || [], wave: s.wave || 0,
         instance: s.instance, runsOn: s.runs_on || '',
       });
       for (const d of (s.deps || [])) {
@@ -907,20 +907,38 @@ async function loadAgents() {
       ['failed', 5], ['done', 6], ['harness', 1],
     ].map(([label, c]) => ({ label, color: swatch(c) })));
 
+    // The table twin. Swarm steps belong in it as much as tasks do: the canvas
+    // is opaque to a screen reader, and a DAG read as a list is only useful if
+    // the list carries the ORDER (`wave`) the canvas conveys by position.
+    // Swarm rows come first and sorted by wave, so reading top to bottom is
+    // reading execution order.
+    const swarmRows = [...a.swarm]
+      .sort((x, y) => (x.wave || 99) - (y.wave || 99))
+      .map(s => ({
+        state: s.status, label: `${s.name || s.id}${(s.deps || []).length ? ` ← ${s.deps.join(', ')}` : ''}`,
+        harness: s.harness || '—', instance: s.runs_on || s.instance,
+        wave: s.wave ? `wave ${s.wave}` : '—',
+        pct: `${Math.round((s.progress || 0) * 100)}%`,
+        _id: `s${s.id}`, _title: s.goal || '',
+      }));
     renderList(
       [{ key: 'state', label: 'state' }, { key: 'label', label: 'task' },
        { key: 'harness', label: 'harness' }, { key: 'instance', label: 'instance' },
-       { key: 'pct', label: 'progress' }],
-      a.tasks.map(t => ({
+       { key: 'wave', label: 'order' }, { key: 'pct', label: 'progress' }],
+      swarmRows.concat(a.tasks.map(t => ({
         state: t.state, label: t.label || t.id, harness: t.harness,
-        instance: t.instance, pct: `${Math.round((t.progress || 0) * 100)}%`,
+        instance: t.instance, wave: '—',
+        pct: `${Math.round((t.progress || 0) * 100)}%`,
         _id: `t${t.instance}:${t.id}`, _title: (t.log || []).slice(-1)[0] || '',
-      })),
+      }))),
       r => { graph.reveal(r._id); });
 
     const s = a.summary;
     setStatus(`${s.live_instances}/${s.instances} live · ${s.tasks} tasks · ` +
-      `${s.active} active${s.by_state.interrupted ? ` · ${s.by_state.interrupted} interrupted` : ''}`);
+      `${s.active} active${s.by_state.interrupted ? ` · ${s.by_state.interrupted} interrupted` : ''}` +
+      // The server already decided what the DAG's condition is; repeating that
+      // decision here in JS is how two views of one swarm start disagreeing.
+      `${s.swarm_why ? ` · swarm: ${s.swarm_why}` : ''}`);
     $('graph-desc').textContent = graph.describe();
   } catch (e) { setStatus(e.message, true); }
 }
@@ -2173,7 +2191,10 @@ function applyAgentEvent(d) {
   const s = d.summary;
   if (s) {
     setStatus(`${s.live_instances}/${s.instances} live · ${s.tasks} tasks · ` +
-      `${s.active} active${s.by_state.interrupted ? ` · ${s.by_state.interrupted} interrupted` : ''}`);
+      `${s.active} active${s.by_state.interrupted ? ` · ${s.by_state.interrupted} interrupted` : ''}` +
+      // The server already decided what the DAG's condition is; repeating that
+      // decision here in JS is how two views of one swarm start disagreeing.
+      `${s.swarm_why ? ` · swarm: ${s.swarm_why}` : ''}`);
   }
   if (S.selected && S.selected.taskLog) showSelection(graph.nodeById(S.selected.id));
 }

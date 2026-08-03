@@ -1439,7 +1439,16 @@ class Store:
             for d in (out.get("deferred") or [])[:3]:
                 self.state.history.append(f"  held back: {d['name']} — {d['reason']}")
         elif sub == "status":
-            self.state.swarm_dashboard = self.swarm.dashboard()
+            # The dict shape, same as the bus publishes. `dashboard()` returns
+            # the legacy box-drawing TEXT, and every consumer downstream —
+            # panel, HUD, jarvis, dashboard — reads the dict. Typing `swarm
+            # status` therefore used to produce a WORSE view than doing
+            # nothing, which is the opposite of what the command is for.
+            summary = self.swarm.status_summary()
+            summary["agents"] = [a.as_dict() for a in self.swarm.agents.values()]
+            self.state.swarm_dashboard = summary
+            from .swarmview import explain
+            self.state.history.append(f"swarm: {explain(summary['agents'])}")
         elif sub == "stop":
             out = self.swarm_command({"action": "stop_all"})
             stopped = out.get("stopped") or []

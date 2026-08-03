@@ -166,6 +166,45 @@ def test_swarm_is_picked_up_when_present(fleet, config):
     assert next(a for a in sw if a["name"] == "writer")["deps"] == ["a1"]
 
 
+def test_each_swarm_step_carries_its_execution_order(fleet, config):
+    # A force graph has no reading order of its own, so the layer is computed
+    # here and shipped with the node — otherwise the HUD would have to
+    # re-derive it in JS and could disagree with the TUI about what runs next.
+    (fleet / "alpha" / "swarm.json").write_text(json.dumps([
+        {"id": "a2", "name": "writer", "goal": "draft", "status": "idle",
+         "deps": ["scout"]},
+        {"id": "a1", "name": "scout", "goal": "find docs", "status": "done",
+         "deps": []}]))
+    sw = {a["name"]: a for a in snap(fleet, config)["swarm"]}
+    assert sw["scout"]["wave"] == 1
+    assert sw["writer"]["wave"] == 2
+
+
+def test_two_cockpits_are_two_dags_not_one(fleet, config):
+    # Same step name on both instances. Layering them together would invent a
+    # dependency across machines that nobody declared.
+    for inst in ("alpha", "beta"):
+        (fleet / inst / "swarm.json").write_text(json.dumps([
+            {"id": f"{inst}1", "name": "scout", "goal": "g", "status": "idle",
+             "deps": []}]))
+    sw = snap(fleet, config)["swarm"]
+    assert [a["wave"] for a in sw] == [1, 1]
+
+
+def test_the_summary_says_why_the_swarm_is_not_moving(fleet, config):
+    (fleet / "alpha" / "swarm.json").write_text(json.dumps([
+        {"id": "a1", "name": "scout", "goal": "g", "status": "failed", "deps": []},
+        {"id": "a2", "name": "writer", "goal": "g", "status": "idle",
+         "deps": ["scout"]}]))
+    why = snap(fleet, config)["summary"]["swarm_why"]
+    assert "writer needs scout" in why
+
+
+def test_no_swarm_no_sentence(fleet, config):
+    s = snap(fleet, config)["summary"]
+    assert s["swarm"] == 0 and s["swarm_why"] == ""
+
+
 # ── live watch: fingerprint ──────────────────────────────────────────────
 def test_fingerprint_is_stable_when_nothing_moves(fleet):
     assert pg.fingerprint(fleet) == pg.fingerprint(fleet)

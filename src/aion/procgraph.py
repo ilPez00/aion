@@ -198,7 +198,31 @@ def read_swarm(root: Path | None = None) -> list[dict]:
                 # agent's is preserved under its own key.
                 out.append({**a, "instance": d.name,
                             "runs_on": str(a.get("instance", "") or "")})
+    _tag_waves(out)
     return out
+
+
+def _tag_waves(agents: list[dict]) -> None:
+    """Stamp each swarm agent with its execution layer, per cockpit.
+
+    A force-directed graph has no inherent reading order, so a DAG drawn in it
+    is a blob that happens to be connected. `wave` gives the HUD something to
+    order or anchor by, and it is computed here rather than in JavaScript so
+    the TUI panel and the HUD cannot disagree about which step runs next.
+
+    Layering is per instance directory: two cockpits each running their own
+    swarm are two DAGs, and merging them by name would invent dependencies
+    that do not exist.
+    """
+    from .swarmview import waves
+
+    by_instance: dict[str, list[dict]] = {}
+    for a in agents:
+        by_instance.setdefault(str(a.get("instance", "")), []).append(a)
+    for group in by_instance.values():
+        for depth, layer in enumerate(waves(group)):
+            for a in layer:
+                a["wave"] = depth + 1
 
 
 def snapshot(*, root: Path | None = None, config_path: Path | None = None,
@@ -232,11 +256,29 @@ def snapshot(*, root: Path | None = None, config_path: Path | None = None,
     for t in tasks:
         by_state[t.state] = by_state.get(t.state, 0) + 1
 
+    swarm = read_swarm(root)
+    # The one line a viewer actually needs about a DAG. Derived server-side so
+    # the HUD and the TUI say the same words about the same state — two
+    # renderers each phrasing "nothing is running" their own way is how a
+    # cockpit starts contradicting itself.
+    # Per cockpit, for the same reason `_tag_waves` layers per cockpit: two
+    # instances with a step called "research" are two separate DAGs, and one
+    # merged sentence would report dependencies nobody declared.
+    swarm_why = ""
+    if swarm:
+        from .swarmview import explain
+        groups: dict[str, list[dict]] = {}
+        for a in swarm:
+            groups.setdefault(str(a.get("instance", "")), []).append(a)
+        parts = [explain(g) if len(groups) == 1 else f"{inst}: {explain(g)}"
+                 for inst, g in list(groups.items())[:2]]
+        swarm_why = " · ".join(parts)
+
     return {
         "instances": [vars(i) | {"age_s": round(i.age_s, 1)} for i in instances],
         "harnesses": harnesses,
         "tasks": [vars(t) for t in tasks],
-        "swarm": read_swarm(root),
+        "swarm": swarm,
         "summary": {
             "instances": len(instances),
             "live_instances": sum(1 for i in instances if i.alive),
@@ -244,6 +286,8 @@ def snapshot(*, root: Path | None = None, config_path: Path | None = None,
             "tasks": len(tasks),
             "active": sum(1 for t in tasks if t.state in ACTIVE_STATES),
             "by_state": by_state,
+            "swarm": len(swarm),
+            "swarm_why": swarm_why,
         },
     }
 

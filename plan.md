@@ -132,6 +132,24 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   and an exit code, not tokens, so the figures are characters over four times a
   configured price and every payload carries `estimated: True`.
 
+- **The DAG is drawn in running order, and says why it stopped**
+  (`swarmview.py`) — the old view was a flat list with `← deps` glued on the
+  end, which answers "what steps exist" (a question nobody asks) and cannot
+  answer either question a running DAG actually gets asked: what runs next, and
+  who is holding up whom. `waves()` layers the steps topologically, so reading
+  order IS running order; a cycle is drawn as its own labelled wave rather than
+  silently dropped, and a dependency naming no step is called out on the row
+  instead of looking like patience. `explain()` turns the state into the one
+  sentence the operator needs — "2 ready — `swarm run` to start", "blocked: b
+  needs a, which failed", "a retries in 30s (attempt 2)" — because "nothing is
+  running" has six causes and six different next moves. The same sentence is
+  computed server-side for the web HUD, so the two views cannot phrase the same
+  swarm differently, and each HUD node carries its `wave` so a force graph has
+  a reading order at all. Also fixed here: `swarm status` stored the legacy
+  TEXT dashboard while every consumer read the dict the bus publishes, so the
+  one command whose whole job is "show me the swarm" left the panel raising
+  `AttributeError` on `.get`.
+
 - **A failed step is no longer the end of the DAG** (`swarmpolicy.py`) — one
   answer to a failure, and it was "stop": the agent went FAILED, `dep_state`
   blocked every dependent, and an unattended swarm sat dead until morning,

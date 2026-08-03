@@ -823,16 +823,36 @@ class AiOSApp(App):
                     f"  [{theme['accent']}]swarm create <goal>[/] to start.\n"
                     f"  [{theme['dim']}]e.g. swarm create research and prototype a dashboard[/]")
         data = item.get("data", {})
+        # `swarm status` used to store the legacy text dashboard here while the
+        # bus stored the dict, so the same panel worked one way in and crashed
+        # the other. The source is fixed; this stays as the seatbelt, because a
+        # checkpoint written by an older build still holds the text form.
+        if isinstance(data, str):
+            return data or f"[{theme['dim']}]No active swarm.[/]"
         lines = []
         lines.append(f"[{theme['accent']}]SWARM[/]")
         s = data
         counts = f"🧠 {s.get('working',0)}W · {s.get('waiting',0)}⏳ · {s.get('done',0)}✓ · {s.get('failed',0)}✗ · {s.get('blocked',0)}⊘"
         lines.append(f"  {counts}")
-        lines.append(f"[{theme['dim']}]─ Agents ──────────────────────────────────────[/]")
+        # The counts say WHAT the states are; this says what to do about them.
+        # Six zeroes and a stopped DAG have half a dozen different causes and
+        # the operator should not have to derive which one from a tally.
+        from ..swarmview import explain
+        why = explain(s.get("agents", []))
+        if why:
+            lines.append(f"  [{theme['warn']}]▸[/] {why}")
         agents = s.get("agents", [])
+        # One block, not two. When the steps depend on each other the wave view
+        # below carries the same names, bars and goals PLUS the order, so
+        # printing the flat list first only spent the panel's scarcest resource
+        # — vertical space — on saying everything twice.
+        has_dag = any(a.get("deps") or a.get("dependencies") for a in agents)
         if not agents:
+            lines.append(f"[{theme['dim']}]─ Agents ──────────────────────────────────────[/]")
             lines.append(f"  [{theme['dim']}](no agents yet)[/]")
-        for a in agents[:10]:
+        elif not has_dag:
+            lines.append(f"[{theme['dim']}]─ Agents ──────────────────────────────────────[/]")
+        for a in ([] if has_dag else agents[:10]):
             icon = {"idle": "○", "working": "●", "waiting": "⌛", "done": "✓",
                     "failed": "✗", "blocked": "⊘"}.get(a.get("status","idle"), "?")
             col = theme["ok"] if a.get("status") == "done" else \
@@ -845,16 +865,14 @@ class AiOSApp(App):
             lines.append(f"[{theme['dim']}]─ Plan ────────────────────────────────────────[/]")
             lines.append(f"  [{theme['accent']}]goal:[/] {plan.get('goal','')[:50]}")
             lines.append(f"  [{theme['dim']}]steps: {plan.get('steps',0)} · done: {plan.get('done',0)}[/]")
-        # DAG: show agent dependency graph when >1 agent with deps
-        dag_agents = [a for a in agents if a.get("deps") or a.get("dependencies")]
-        if dag_agents:
-            from ..workflows import swarm_dag
-            dag = swarm_dag(agents, theme)
+        # DAG: draw the execution ORDER, not the agent list. Reading order is
+        # running order — wave 1 can start now, wave 2 starts when wave 1 ends.
+        if has_dag:
+            from ..swarmview import render as render_dag
+            dag = render_dag(agents, theme)
             if dag:
-                lines.append(f"[{theme['dim']}]─ DAG ─────────────────────────────────────────[/]")
-                for dag_line in dag.split("\n"):
-                    stripped = dag_line.replace("DAG ", "")
-                    lines.append(f"  {stripped}")
+                lines.append(f"[{theme['dim']}]─ Order ───────────────────────────────────────[/]")
+                lines.append(dag)
         lines.append(f"[{theme['dim']}]swarm create|add|run|status|stop[/]")
         return "\n".join(lines)
 
