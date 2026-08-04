@@ -851,10 +851,24 @@ class AiOSApp(App):
         # The counts say WHAT the states are; this says what to do about them.
         # Six zeroes and a stopped DAG have half a dozen different causes and
         # the operator should not have to derive which one from a tally.
-        from ..swarmview import explain
+        from ..swarmview import capacity, explain, render_dead_letters, spend
         why = explain(s.get("agents", []))
         if why:
             lines.append(f"  [{theme['warn']}]▸[/] {why}")
+        # The governor's numbers. They lived only in the runner, so the first
+        # time an operator met the budget was as a refusal, and "ready but not
+        # started" looked like a bug rather than a slot limit. Lazy: a store
+        # that never ran a swarm has no runner and this costs nothing.
+        run_st = {}
+        runner = getattr(self.store, "_swarm_runner", None)
+        if runner is not None:
+            try:
+                run_st = runner.status()
+            except Exception:  # noqa: BLE001
+                run_st = {}     # a panel must render even when the runner cannot
+        money, slots = spend(run_st), capacity(run_st)
+        if money or slots:
+            lines.append(f"  [{theme['dim']}]{' · '.join(x for x in (slots, money) if x)}[/]")
         agents = s.get("agents", [])
         # One block, not two. When the steps depend on each other the wave view
         # below carries the same names, bars and goals PLUS the order, so
@@ -887,6 +901,9 @@ class AiOSApp(App):
             if dag:
                 lines.append(f"[{theme['dim']}]─ Order ───────────────────────────────────────[/]")
                 lines.append(dag)
+        # Last, because it is the block you act on after reading the rest: a
+        # step that has spent its attempts is a decision waiting on a person.
+        lines.extend(render_dead_letters(run_st, theme))
         lines.append(f"[{theme['dim']}]swarm plan|apply|add|run|status|stop[/]")
         return "\n".join(lines)
 

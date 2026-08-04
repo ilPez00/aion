@@ -132,6 +132,18 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   and an exit code, not tokens, so the figures are characters over four times a
   configured price and every payload carries `estimated: True`.
 
+- **The governor's numbers are on screen, not only in its refusals** — the
+  budget could stop a swarm and the slot/VRAM limits could hold ready steps
+  back, and neither showed a figure anywhere, so the first time an operator
+  met either was as a refusal. The panel now carries `N/M slots · vram x/yG`
+  and `~$0.12 of $1.00 (12%) est`, with retry spend broken out because retries
+  are exactly what a budget exists to bound. Sub-cent resolution below ten
+  cents: two decimals read "$0.00" for the whole early life of a swarm, and a
+  cost display that says zero while spending gets believed. Dead letters get
+  their own block, leading with what each failure is holding up — "what
+  failed" is already on the row above; "what is stuck behind it" is what
+  decides fix-now from fix-Monday.
+
 - **`swarm plan <goal>` builds the DAG for you, in the terminal** — the
   planner (`swarmplan.py`) validated a model-proposed DAG, capped its steps,
   refused cycles and unresolvable dependencies… and only the browser could

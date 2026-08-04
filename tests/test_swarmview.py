@@ -8,7 +8,8 @@ structure that carries it.
 
 import pytest
 
-from aion.swarmview import explain, frontier, render, unresolved_deps, waves
+from aion.swarmview import (capacity, explain, frontier, render,
+                            render_dead_letters, spend, unresolved_deps, waves)
 
 
 def step(name, status="idle", deps=None, progress=0.0, **kw):
@@ -269,3 +270,79 @@ def test_a_plan_preview_drops_the_empty_progress_bars():
     # occupying the width the goal needs.
     out = render([step("a", goal="do the thing")], bars=False)
     assert "░" not in out and "do the thing" in out
+
+
+# ---- the governor's numbers ---------------------------------------------
+
+def test_an_unmetered_swarm_shows_no_money_line():
+    # Most harnesses have no price configured. A "$0.00" that means "unknown"
+    # is worse than silence.
+    assert spend({"ledger": {"committed": 0.0}, "budget": 0.0}) == ""
+
+
+def test_spend_reads_as_an_estimate_every_time():
+    out = spend({"ledger": {"committed": 0.12}, "budget": 1.0})
+    assert out.startswith("~$0.12 of $1.00")
+    assert out.endswith("est")
+
+
+def test_spend_shows_the_share_of_the_budget_used():
+    assert "(25%)" in spend({"ledger": {"committed": 0.25}, "budget": 1.0})
+
+
+def test_money_spent_on_retries_is_called_out():
+    # Retries are exactly what a budget exists to bound, so they are not
+    # allowed to hide inside the total.
+    out = spend({"ledger": {"committed": 0.30, "retried": 0.10}, "budget": 1.0})
+    assert "~$0.10 on retries" in out
+
+
+def test_spend_without_a_budget_still_reports_what_was_spent():
+    assert spend({"ledger": {"committed": 0.4}, "budget": 0}) == "~$0.40 est"
+
+
+def test_capacity_explains_ready_but_not_started():
+    assert capacity({"in_flight": 2, "max_parallel": 3}) == "2/3 slots"
+
+
+def test_capacity_includes_vram_when_it_is_the_limit():
+    out = capacity({"in_flight": 1, "max_parallel": 4,
+                    "vram_used": 4096, "vram_total": 8192})
+    assert out == "1/4 slots · vram 4.0/8.0G"
+
+
+def test_capacity_is_silent_when_nothing_bounds_it():
+    assert capacity({}) == ""
+
+
+def test_dead_letters_lead_with_what_is_stuck_behind_them():
+    # "What failed" is already on the row above. The remediation question is
+    # what it is holding up.
+    out = "\n".join(render_dead_letters({"dead_letters": [
+        {"name": "scan", "kind": "permanent", "attempts": 3,
+         "error": "401 unauthorized", "blocks": ["publish", "index"]}]}))
+    assert "blocks publish, index" in out
+    assert "401 unauthorized" in out
+
+
+def test_a_dead_letter_blocking_nothing_says_so():
+    out = "\n".join(render_dead_letters({"dead_letters": [
+        {"name": "scan", "kind": "transient", "blocks": []}]}))
+    assert "blocks nothing else" in out
+
+
+def test_dead_letters_are_capped_with_a_count():
+    out = "\n".join(render_dead_letters({"dead_letters": [
+        {"name": f"s{i}", "kind": "unknown", "blocks": []} for i in range(6)]}))
+    assert "… 3 more" in out
+
+
+def test_no_dead_letters_no_block():
+    assert render_dead_letters({"dead_letters": []}) == []
+    assert render_dead_letters({}) == []
+
+
+def test_a_cheap_swarm_is_not_rounded_down_to_zero():
+    # One prompt costs fractions of a cent. Two decimals read "$0.00" for the
+    # whole early life of a swarm, which is a cost display that lies.
+    assert "~$0.003" in spend({"ledger": {"committed": 0.0032}, "budget": 1.0})

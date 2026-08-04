@@ -32,7 +32,8 @@ from typing import Any
 
 from .workflows import _swarm_stage, _theme, stage_glyph, stage_theme_key
 
-__all__ = ["waves", "frontier", "explain", "render", "unresolved_deps"]
+__all__ = ["waves", "frontier", "explain", "render", "unresolved_deps",
+           "spend", "capacity", "render_dead_letters"]
 
 # A dependency names an agent by NAME (see the comment on
 # SwarmAgent.dependencies). A dep that matches no agent is not an error the
@@ -208,6 +209,86 @@ def explain(agents: Sequence[dict], now: float | None = None) -> str:
     if len(f["done"]) == f["total"]:
         return f"all {f['total']} steps done"
     return "idle"
+
+
+def spend(status: dict) -> str:
+    """What this DAG has cost so far, against what it is allowed to cost.
+
+    The budget governor could already stop a swarm, and nothing showed the
+    number it was stopping on — so the first time an operator met it was as a
+    refusal. Estimates are marked as estimates every time they are printed:
+    the figures are characters over four times a configured price, not a bill,
+    and a number that looks authoritative gets believed.
+    """
+    ledger = (status or {}).get("ledger") or {}
+    committed = float(ledger.get("committed") or 0.0)
+    budget = float((status or {}).get("budget") or 0.0)
+    if not committed and not budget:
+        return ""
+    out = f"~{_money(committed)}"
+    if budget:
+        pct = int(round(100 * committed / budget)) if budget else 0
+        out += f" of {_money(budget)} ({pct}%)"
+    retried = float(ledger.get("retried") or 0.0)
+    if retried:
+        out += f" · ~{_money(retried)} on retries"
+    return out + " est"
+
+
+def _money(x: float) -> str:
+    """Cents are the wrong resolution for a single step.
+
+    One prompt costs fractions of a cent, so a two-decimal figure reads "$0.00"
+    for the entire early life of a swarm — a cost display that says zero while
+    spending is worse than none, because it gets believed.
+    """
+    return f"${x:.2f}" if x >= 0.1 else f"${x:.3f}"
+
+
+def capacity(status: dict) -> str:
+    """Why fewer steps are running than are ready.
+
+    `deferred` already carried this per step; this is the standing headline, so
+    "ready but not started" stops looking like a bug the moment it is seen.
+    """
+    st = status or {}
+    in_flight = int(st.get("in_flight") or 0)
+    max_par = int(st.get("max_parallel") or 0)
+    if not max_par:
+        return ""
+    out = f"{in_flight}/{max_par} slots"
+    total = float(st.get("vram_total") or 0.0)
+    if total:
+        used = float(st.get("vram_used") or 0.0)
+        out += f" · vram {used / 1024:.1f}/{total / 1024:.1f}G"
+    return out
+
+
+def render_dead_letters(status: dict, theme: dict | None = None,
+                        limit: int = 3) -> list[str]:
+    """Steps that ran out of attempts, and what each is holding up.
+
+    The remediation question is never "what failed" — the ✗ already said that.
+    It is "what is stuck behind it", which decides whether this is a fix-now or
+    a fix-Monday. So `blocks` leads and the error text follows.
+    """
+    th = _theme(theme)
+    letters = (status or {}).get("dead_letters") or []
+    if not letters:
+        return []
+    out = [f"[{th['err']}]─ Needs you ──────────────────────────────────[/]"]
+    for d in letters[:limit]:
+        blocks = d.get("blocks") or []
+        tail = (f"blocks {', '.join(blocks[:2])}" if blocks
+                else "blocks nothing else")
+        out.append(f"  [{th['err']}]✗ {str(d.get('name', '?'))[:16]}[/] "
+                   f"[{th['dim']}]{d.get('kind', 'unknown')} · {tail}[/]")
+        err = str(d.get("error") or "").strip().replace("\n", " ")
+        if err:
+            out.append(f"    [{th['dim']}]{err[:44]}[/]")
+    if len(letters) > limit:
+        out.append(f"  [{th['dim']}]… {len(letters) - limit} more[/]")
+    return out
 
 
 def _bar(progress: float, width: int, colour: str, dim: str,
