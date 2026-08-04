@@ -31,6 +31,12 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
 - **Factory stall detection** — bails a spinning Ralph loop (`STOP_STALLED`), pure/local.
 - **physis_pro brain wired into both loops** — per-iteration coherence (opt-in),
   outcome recorded (+1 flow / −1 block), research runs ingested into the holarchy.
+  Coherence is now a **control input**, not only a HUD number: `coherence_window`
+  ends a run that has drifted (`STOP_INCOHERENT`) — the failure novelty cannot
+  see, because fresh output about the wrong thing looks maximally novel right up
+  to the budget. Opt-in, off by default, cannot fire when the brain is
+  unreachable (0.0 means "no reading", not "bad"), loses ties to the local stall
+  signal, and can only end a run — never fail one, never start one.
   See `docs/physis-integration.md`.
 - **Colmi R02 ring** — telemetry + `TapDetector` "button" + `CYCLOPS` HUD panel.
   Verify offsets against hardware: `python scripts/verify_ring_accel.py`.

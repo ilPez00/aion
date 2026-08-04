@@ -437,15 +437,28 @@ class FactoryHarness(Harness):
             # near-identical rounds. 0 in config == off; default the harness on.
             stall_window=int(extra.get("stall_window", 3)),
             stall_novelty=float(extra.get("stall_novelty", 0.1)),
+            # Off unless asked for, and only meaningful with `coherence` on —
+            # see below, where a window without a scorer is refused rather
+            # than left to look armed.
+            coherence_window=int(extra.get("coherence_window", 0)),
+            coherence_floor=float(extra.get("coherence_floor", -0.2)),
         )
         timeout = float(extra.get("per_iter_timeout", 120))
-        # physis coherence per round is opt-in (a classify call per iteration):
-        # it feeds the HUD/brain but never gates the loop. Runs in the worker
-        # thread with run_factory — blocking urllib, no registry access. OK.
+        # physis coherence per round is opt-in (a classify call per iteration).
+        # It feeds the HUD, and with `coherence_window` set it also ends a run
+        # that has drifted. Runs in the worker thread with run_factory —
+        # blocking urllib, no registry access. OK.
         coherence_fn = None
         if extra.get("coherence"):
             from .physis import score_text
             coherence_fn = score_text
+        elif fcfg.coherence_window:
+            # A window with nothing scoring is a guard that will never fire and
+            # a config that reads as if it will. Say so once, here, rather than
+            # let someone conclude the brain approved of a run it never saw.
+            fcfg.coherence_window = 0
+            self.registry.log(task, "[factory] coherence_window ignored: "
+                                    "set \"coherence\": true to score rounds")
 
         def run_cmd(cmd: str) -> tuple[int, str]:
             import subprocess
@@ -505,12 +518,18 @@ class FactoryHarness(Harness):
             self.registry.log(task, "[factory] output stopped changing — bailed "
                                     "out of a spinning loop instead of burning "
                                     "the budget")
+        if result.stopped == factory.STOP_INCOHERENT:
+            recent = [round(it.coherence, 2) for it in result.iterations[-3:]]
+            self.registry.log(task, "[factory] the brain stopped recognising this "
+                                    f"work (last scores {recent}) — stopped before "
+                                    "the budget went on drift")
         await self._stat(iterations=result.count, stopped=result.stopped)
         # feed the outcome back to physis: this task-domain flowed (+1) or got
         # blocked (-1). Soft-fails if physis is down; off the loop thread.
         outcome = (1.0 if result.stopped == factory.STOP_DONE
                    else -1.0 if result.stopped in (factory.STOP_ERROR,
-                                                   factory.STOP_STALLED)
+                                                   factory.STOP_STALLED,
+                                                   factory.STOP_INCOHERENT)
                    else 0.0)
         from .physis import record_outcome
         await asyncio.to_thread(record_outcome, f"task:{task.id}", outcome,

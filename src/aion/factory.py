@@ -42,6 +42,7 @@ STOP_BUDGET = "budget"      # ran out of iterations
 STOP_ERROR = "error"        # the agent command failed hard
 STOP_ABORTED = "aborted"    # killed / paused-then-killed
 STOP_STALLED = "stalled"    # output stopped changing — the loop is spinning
+STOP_INCOHERENT = "incoherent"  # the brain stopped recognising the work
 
 
 class StepReporter(Protocol):
@@ -60,6 +61,15 @@ class FactoryConfig:
     stall_window: int = 0            # consecutive low-novelty iters == stalled
                                      # (0 disables the check — engine default)
     stall_novelty: float = 0.1       # <= this fraction "new" counts as a repeat
+    # Coherence as a CONTROL input rather than a HUD number. Novelty catches a
+    # loop repeating itself; it cannot catch one that keeps producing fresh
+    # output about the wrong thing — a drifting agent looks maximally novel
+    # right up to the budget. The brain already scores every round for the
+    # display, so the signal was there and only the wiring was missing.
+    coherence_window: int = 0        # consecutive incoherent readings == drift
+                                     # (0 disables — an upgrade must not start
+                                     # killing runs that used to finish)
+    coherence_floor: float = -0.2    # <= this score counts as incoherent
 
 
 @dataclass
@@ -148,8 +158,36 @@ def detect_stall(novelties: list[float], window: int, threshold: float) -> bool:
     return all(n <= threshold for n in novelties[-window:])
 
 
+def detect_incoherence(scores: list[float], window: int, floor: float) -> bool:
+    """True once the last `window` READINGS were all at or below the floor.
+
+    Three deliberate choices, each one a way this could have become a loop
+    that kills healthy work:
+
+    * `window <= 0` disables it, and that is the engine default. A control
+      input that arrives switched on turns every existing caller's budget into
+      a new failure mode overnight.
+    * **A score of exactly 0.0 is "no reading", not "bad".** `physis.score_text`
+      returns 0.0 when the brain is DOWN, when classify comes back degraded and
+      when the output is empty. Counting those would mean an unreachable brain
+      stops every loop — the precise inversion of the fail-soft the client was
+      written for.
+    * The most recent iteration must carry a reading. Deciding on stale
+      readings, however many, is deciding about a round nobody scored.
+    """
+    if window <= 0 or not scores:
+        return False
+    if scores[-1] == 0.0:
+        return False
+    readings = [s for s in scores if s != 0.0]
+    if len(readings) < window:
+        return False
+    return all(s <= floor for s in readings[-window:])
+
+
 def stop_reason(cfg: FactoryConfig, iteration: int, done: bool,
-                exit_code: int, stalled: bool = False) -> str | None:
+                exit_code: int, stalled: bool = False,
+                incoherent: bool = False) -> str | None:
     """Why the loop should end after this iteration, or None to continue."""
     if done:
         return STOP_DONE
@@ -157,6 +195,11 @@ def stop_reason(cfg: FactoryConfig, iteration: int, done: bool,
         return STOP_ERROR
     if stalled:
         return STOP_STALLED
+    # After `stalled` on purpose: novelty is measured on the text in hand and
+    # is certain, coherence is a remote model's opinion. When both fire, the
+    # certain one is the better thing to have written in the log.
+    if incoherent:
+        return STOP_INCOHERENT
     if iteration >= cfg.max_iters:
         return STOP_BUDGET
     return None
@@ -172,14 +215,18 @@ def run_factory(prompt: str, cfg: FactoryConfig, run_cmd: RunCmd,
     max_iters is the hard cap (safe-run guard, lesson #4): even with a broken
     completion check the loop cannot run forever. `stall_window` adds a second
     guard — a loop whose output stops changing is spinning, and burning the
-    whole budget on a stuck agent is waste — while `coherence_fn` (optional,
-    physis-backed) scores each round for the HUD/brain without gating the loop.
+    whole budget on a stuck agent is waste. `coherence_fn` (optional,
+    physis-backed) scores each round; with `coherence_window` set those scores
+    are a third guard, for the failure novelty cannot see — an agent producing
+    fresh output about the wrong thing looks maximally novel right up to the
+    budget. Unset, the scores stay exactly what they were: telemetry.
     """
     result = FactoryResult(prompt=prompt)
     step = report_step or (lambda *a, **k: True)
     max_iters = max(1, cfg.max_iters)
     last_output = ""
     novelties: list[float] = []
+    coherences: list[float] = []
 
     for n in range(1, max_iters + 1):
         command = render_command(cfg.command, n, prompt, last_output,
@@ -203,8 +250,9 @@ def run_factory(prompt: str, cfg: FactoryConfig, run_cmd: RunCmd,
         if coherence_fn is not None:
             try:
                 it.coherence = float(coherence_fn(output))
-            except Exception:  # noqa: BLE001  (brain is telemetry, never fatal)
+            except Exception:  # noqa: BLE001  (a dead brain never fails a run)
                 it.coherence = 0.0
+        coherences.append(it.coherence)
         result.iterations.append(it)
         result.count = n
         last_output = output
@@ -214,7 +262,9 @@ def run_factory(prompt: str, cfg: FactoryConfig, run_cmd: RunCmd,
             return result
 
         stalled = detect_stall(novelties, cfg.stall_window, cfg.stall_novelty)
-        reason = stop_reason(cfg, n, done, exit_code, stalled)
+        incoherent = detect_incoherence(coherences, cfg.coherence_window,
+                                        cfg.coherence_floor)
+        reason = stop_reason(cfg, n, done, exit_code, stalled, incoherent)
         if reason:
             result.stopped = reason
             return result

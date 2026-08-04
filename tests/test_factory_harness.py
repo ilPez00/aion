@@ -102,3 +102,49 @@ async def test_kill_before_run_cancels(monkeypatch):
     h.cancel(task)
     await h.run(task, "p")
     assert task.state == TaskState.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_coherence_window_without_a_scorer_is_refused_out_loud(monkeypatch):
+    """A window with nothing scoring rounds is a guard that can never fire and
+    a config that reads as though it will. Silently keeping it would let
+    someone conclude the brain approved of a run it never saw."""
+    _fake_subprocess(monkeypatch, [(0, "still going")])
+    h, reg = _harness({"command": "c", "coherence_window": 3}, max_steps=2)
+    task = reg.create("factory", "factory")
+
+    await h.run(task, "p")
+
+    assert any("coherence_window ignored" in line for line in task.log)
+    assert task.state == TaskState.INTERRUPTED   # ran the budget, was not killed
+
+
+@pytest.mark.asyncio
+async def test_sustained_drift_ends_the_run_and_says_why(monkeypatch):
+    _fake_subprocess(monkeypatch, [(0, f"fresh nonsense {i}") for i in range(9)])
+    monkeypatch.setattr("aion.physis.score_text", lambda text: -0.9)
+    h, reg = _harness({"command": "c", "coherence": True,
+                       "coherence_window": 2}, max_steps=9)
+    task = reg.create("factory", "factory")
+
+    await h.run(task, "p")
+
+    assert any("stopped: incoherent" in line for line in task.log)
+    assert any("brain stopped recognising" in line for line in task.log)
+    assert task.state == TaskState.INTERRUPTED
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_brain_lets_the_run_finish(monkeypatch):
+    """score_text answers 0.0 for a dead brain. A guard that reads that as
+    "bad" turns physis being down into every loop being killed."""
+    _fake_subprocess(monkeypatch, [(0, f"fresh {i}") for i in range(4)])
+    monkeypatch.setattr("aion.physis.score_text", lambda text: 0.0)
+    h, reg = _harness({"command": "c", "coherence": True,
+                       "coherence_window": 2, "coherence_floor": 0.0},
+                      max_steps=4)
+    task = reg.create("factory", "factory")
+
+    await h.run(task, "p")
+
+    assert not any("incoherent" in line for line in task.log)

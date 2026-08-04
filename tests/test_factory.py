@@ -222,3 +222,99 @@ def test_coherence_fn_failure_is_swallowed():
     cfg = FactoryConfig(command="c", max_iters=1, done_marker="DONE")
     result = run_factory("p", cfg, run, coherence_fn=boom)
     assert result.iterations[0].coherence == 0.0   # neutral, loop unaffected
+
+
+# ── coherence as a control input ────────────────────────────────────────────
+# Novelty catches a loop repeating itself. It cannot catch one that keeps
+# producing fresh output about the wrong thing — drift looks maximally novel
+# right up to the budget. The brain already scored every round for the HUD;
+# these tests are about the wiring that lets those scores end a run.
+
+def test_detect_incoherence_is_off_when_the_window_is_zero():
+    assert factory.detect_incoherence([-1.0, -1.0, -1.0], window=0, floor=-0.2) is False
+
+
+def test_detect_incoherence_needs_a_full_window():
+    assert factory.detect_incoherence([-0.9, -0.9], window=3, floor=-0.2) is False
+
+
+def test_detect_incoherence_fires_on_sustained_drift():
+    assert factory.detect_incoherence([0.8, -0.4, -0.5, -0.9],
+                                      window=3, floor=-0.2) is True
+
+
+def test_one_good_round_inside_the_window_keeps_the_loop_alive():
+    assert factory.detect_incoherence([-0.9, 0.5, -0.9], window=3, floor=-0.2) is False
+
+
+def test_a_dead_brain_never_stops_a_loop():
+    """`physis.score_text` returns 0.0 when the brain is down, when classify
+    comes back degraded and when the output is empty. Treating that as "bad"
+    would mean an unreachable brain kills every run — the exact inversion of
+    the fail-soft the client was written for."""
+    assert factory.detect_incoherence([0.0, 0.0, 0.0, 0.0],
+                                      window=3, floor=0.0) is False
+
+
+def test_a_decision_is_never_made_on_a_round_nobody_scored():
+    # Three bad readings, then a round with no reading at all. The bad news is
+    # stale; wait for a score rather than act on the last one that existed.
+    assert factory.detect_incoherence([-0.9, -0.9, -0.9, 0.0],
+                                      window=3, floor=-0.2) is False
+
+
+def test_readings_are_counted_even_when_some_rounds_were_not_scored():
+    # A brain that answers intermittently still has an opinion, and it is the
+    # same opinion three times.
+    assert factory.detect_incoherence([-0.9, 0.0, -0.9, 0.0, -0.9],
+                                      window=3, floor=-0.2) is True
+
+
+def test_a_score_exactly_at_the_floor_counts_as_incoherent():
+    assert factory.detect_incoherence([-0.2, -0.2, -0.2], window=3, floor=-0.2) is True
+
+
+def test_the_loop_stops_when_the_brain_stops_recognising_the_work():
+    run = make_runner([f"fresh nonsense {i}" for i in range(20)])
+    cfg = FactoryConfig(command="c", max_iters=20, coherence_window=3)
+    result = run_factory("p", cfg, run, coherence_fn=lambda out: -0.8)
+    assert result.stopped == factory.STOP_INCOHERENT
+    assert result.count == 3, "stopped as soon as the window was full"
+
+
+def test_coherence_control_is_off_by_default():
+    """An upgrade must not start ending runs that used to finish."""
+    run = make_runner([f"fresh nonsense {i}" for i in range(5)])
+    cfg = FactoryConfig(command="c", max_iters=5)
+    result = run_factory("p", cfg, run, coherence_fn=lambda out: -1.0)
+    assert result.stopped == STOP_BUDGET
+
+
+def test_a_scorer_that_raises_does_not_end_the_run():
+    def boom(_out):
+        raise RuntimeError("physis down")
+    run = make_runner(["out"] * 4)
+    cfg = FactoryConfig(command="c", max_iters=4, coherence_window=2,
+                        coherence_floor=0.0)
+    assert run_factory("p", cfg, run, coherence_fn=boom).stopped == STOP_BUDGET
+
+
+def test_finishing_the_work_beats_a_bad_score():
+    run = make_runner(["ALL DONE"])
+    cfg = FactoryConfig(command="c", max_iters=5, done_marker="ALL DONE",
+                        coherence_window=1)
+    result = run_factory("p", cfg, run, coherence_fn=lambda out: -1.0)
+    assert result.stopped == STOP_DONE
+
+
+def test_a_spinning_loop_is_reported_as_stalled_not_incoherent():
+    """Both guards fire on the same round: novelty is measured on the text in
+    hand, coherence is a remote model's opinion. The certain one is the better
+    thing to have in the log."""
+    run = make_runner(["same"] * 10)
+    # Both windows are full on iteration 3: novelty is [1.0, 0.0, 0.0] (the
+    # first round is novel by definition) and every round scored -0.9.
+    cfg = FactoryConfig(command="c", max_iters=10, stall_window=2,
+                        coherence_window=3)
+    result = run_factory("p", cfg, run, coherence_fn=lambda out: -0.9)
+    assert result.stopped == STOP_STALLED
