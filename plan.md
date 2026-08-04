@@ -163,6 +163,23 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **A DAG can grow from its own results** (`swarmreplan.py`) — the shape used to
+  be decided once, before any of it ran, so every step's goal had to be written
+  by someone who did not yet know what step one would find. A research step that
+  discovers three subsystems worth auditing had no way to say so. Now a finished
+  step's output can propose follow-up work, and the bounds are the feature: off
+  unless configured (`swarm_replan`); a width cap per step AND a ceiling on the
+  whole DAG, so ten steps each allowed three cannot cooperate past it; a
+  checkpointed `generation` that bounds the RECURSION, which is what actually
+  runs up a bill overnight; every new step forced to depend on the parent whose
+  output proposed it, so nothing is schedulable before its own justification;
+  and every refusal logged on that parent, because a swarm that silently
+  declines to grow looks exactly like one whose planner said nothing. The
+  proposal is a model call, so the runner only QUEUES it — the cockpit drains
+  the queue, asks off-thread, and hands the answer to `apply_expansion`. The
+  queue is deliberately not checkpointed: a restart comes back with the DAG a
+  human approved, rather than resuming the growth of one nobody is watching.
+
 - **`swarm plan <goal>` builds the DAG for you, in the terminal** — the
   planner (`swarmplan.py`) validated a model-proposed DAG, capped its steps,
   refused cycles and unresolvable dependencies… and only the browser could

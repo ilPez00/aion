@@ -372,6 +372,12 @@ def render(agents: Sequence[dict], theme: dict | None = None,
                 note = f"[{di}]@{str(ag['instance'])[:12]}[/]"
             elif ag.get("harness"):
                 note = f"[{di}]{str(ag['harness'])[:10]}[/]"
+            elif int(ag.get("generation") or 0) > 0:
+                # A step nobody typed. Saying so on the row is the difference
+                # between "I do not remember adding that" and "the swarm added
+                # that, and here is how deep the chain goes".
+                note = (f"[{th['warn']}]+g{ag['generation']}[/] "
+                        f"[{di}]{str(ag.get('goal') or '')[:goal_width - 4]}[/]")
             elif ag.get("goal"):
                 # Nothing to warn about, so the row spends its width saying
                 # what the step is FOR. This is what lets one block replace

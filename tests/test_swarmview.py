@@ -346,3 +346,14 @@ def test_a_cheap_swarm_is_not_rounded_down_to_zero():
     # One prompt costs fractions of a cent. Two decimals read "$0.00" for the
     # whole early life of a swarm, which is a cost display that lies.
     assert "~$0.003" in spend({"ledger": {"committed": 0.0032}, "budget": 1.0})
+
+
+def test_a_step_the_swarm_added_itself_says_so_on_its_row():
+    # "I do not remember adding that" versus "the swarm added it, and here is
+    # how deep the chain goes" — the row is where that question gets answered.
+    out = render([step("audit", goal="audit the auth service", generation=1)])
+    assert "+g1" in out and "audit the auth" in out
+
+
+def test_a_step_a_human_wrote_carries_no_marker():
+    assert "+g" not in render([step("scout", goal="find the docs")])

@@ -185,6 +185,7 @@ class AiOSApp(App):
         # per-node running-task history, feeds the Fleet sparklines
         self._fleet_history: dict[str, list[float]] = {}
         self._local_peers: list = []    # refreshed on a timer, not per render
+        self._replanning = False        # one planner round-trip at a time
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
         self._wizard_active = False
@@ -1228,6 +1229,22 @@ class AiOSApp(App):
                 runner.poll()
             if runner.due_for_retry():
                 runner.pump()
+            # A finished step may be owed a proposal. The call is a model
+            # round-trip, so it goes on the loop as its own task rather than
+            # inside this tick — a heartbeat that waits on a planner is a
+            # cockpit that stops beating. One at a time: `_replanning` is the
+            # guard, or a slow planner would be re-entered every beat.
+            if (runner.replan.enabled and runner._replan_queue
+                    and not self._replanning):
+                self._replanning = True
+
+                async def _replan() -> None:
+                    try:
+                        await self.store.swarm_replan_tick()
+                    finally:
+                        self._replanning = False
+
+                asyncio.create_task(_replan())
         except Exception as e:  # noqa: BLE001
             self.store.state.logs.append(f"swarm poll: {type(e).__name__}: {str(e)[:100]}")
 

@@ -68,6 +68,11 @@ class SwarmAgent:
     # failure the bound exists to prevent.
     attempts: int = 0
     retry_at: float = 0.0            # epoch seconds; 0 = now
+    # How many rounds of replanning stand between this step and the plan a
+    # human approved. 0 = a human wrote it. Checkpointed, because it is the
+    # bound on recursive self-expansion: a restart that reset it would let a
+    # swarm that had reached its depth limit start growing again.
+    generation: int = 0
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -85,6 +90,7 @@ class SwarmAgent:
             "deps": self.dependencies, "harness": self.harness,
             "instance": self.instance, "task_id": self.task_id,
             "attempts": self.attempts, "retry_at": self.retry_at,
+            "generation": self.generation,
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -139,6 +145,7 @@ class SwarmAgent:
             instance=instance, task_id=task_id,
             attempts=int(d.get("attempts", 0) or 0),
             retry_at=float(d.get("retry_at", 0) or 0.0),
+            generation=int(d.get("generation", 0) or 0),
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),

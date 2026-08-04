@@ -236,11 +236,12 @@ class SwarmRunner:
                  vram_total: int = DEFAULT_VRAM_MB,
                  harness_vram=None, spawn_remote=None, poll_remote=None,
                  budget: float = 0.0, prices=None, retry=None,
-                 clock=None) -> None:
+                 replan=None, clock=None) -> None:
         import time
 
         from .swarmbudget import Ledger
         from .swarmpolicy import RetryPolicy
+        from .swarmreplan import ReplanPolicy
 
         self.swarm = orchestrator
         self.spawn = spawn                 # (agent, prompt) -> task_id | None
@@ -256,6 +257,14 @@ class SwarmRunner:
         # What happens when a step fails. The default retries nothing, so a
         # swarm behaves exactly as it did before anyone configures one.
         self.retry = retry or RetryPolicy()
+        # Whether a finished step may propose more work. Default is off, so a
+        # DAG stays exactly as static as the one a person wrote.
+        self.replan = replan or ReplanPolicy()
+        # Steps that finished and are owed a proposal. The runner does not ask
+        # the model itself: that is a blocking call, and this class is driven
+        # from the event loop. The cockpit drains this, asks off-thread, and
+        # hands the answer back to `apply_expansion`.
+        self._replan_queue: list[str] = []
         # Injected so a backoff can be tested without sleeping through it.
         self._now = clock or time.time
         # Steps holding a slot open until their backoff expires. Rebuilt every
@@ -429,6 +438,12 @@ class SwarmRunner:
                            agent.output)
         self.swarm.set_status(agent_id, AgentStatus.DONE)
         self._forget(agent_id)
+        # A result is the only moment there is anything new to plan WITH, so
+        # this is where a DAG stops being a fixed shape. Queued, not asked:
+        # the proposal is a model call and this runs on the event loop.
+        if (self.replan.enabled and agent.output
+                and agent.generation < self.replan.max_generations):
+            self._replan_queue.append(agent_id)
 
     def fail(self, agent_id: str, error: str) -> None:
         from .swarm import AgentStatus
@@ -619,6 +634,69 @@ class SwarmRunner:
             if a.retry_at <= now and self.swarm.dep_state(a)[0] == "ready":
                 return True
         return False
+
+    # -- replanning --------------------------------------------------------
+    def take_replans(self) -> list[dict]:
+        """Finished steps owed a proposal. Drains: each is offered once.
+
+        Deliberately NOT checkpointed. A cockpit that dies between a step
+        finishing and its proposal arriving comes back with the DAG the human
+        approved, which is the right side to fail on — the alternative is a
+        restart that resumes growing a swarm nobody is watching.
+        """
+        out = []
+        for aid in self._replan_queue:
+            a = self.swarm.agents.get(aid)
+            if a is None:
+                continue
+            out.append({"id": a.id, "name": a.name, "goal": a.goal,
+                        "output": a.output, "generation": a.generation})
+        self._replan_queue = []
+        return out
+
+    def apply_expansion(self, agent_id: str, raw_steps) -> dict:
+        """Validate a proposal against the live swarm and create what survives.
+
+        Everything refused is logged on the parent, not swallowed: a swarm that
+        silently declines to grow looks identical to one whose planner said
+        nothing, and those want very different responses from a human.
+        """
+        from .swarmreplan import validate
+
+        agent = self.swarm.agents.get(agent_id)
+        if agent is None:
+            return {"ok": False, "created": [], "reason": "no such agent"}
+        existing = {a.name: a.status.value for a in self.swarm.agents.values()}
+        exp = validate(raw_steps, parent=agent.name,
+                       parent_generation=int(getattr(agent, "generation", 0) or 0),
+                       existing=existing, policy=self.replan)
+        for why in exp.dropped:
+            self.swarm.log(agent_id, f"[replan] dropped {why}")
+        if exp.problems:
+            self.swarm.log(agent_id, f"[replan] refused: {'; '.join(exp.problems)}")
+            return {"ok": False, "created": [], "reason": "; ".join(exp.problems),
+                    "dropped": exp.dropped}
+        created = []
+        for step in exp.steps:
+            out = self.swarm.add_checked(step.name, step.goal, step.deps,
+                                         harness=step.harness)
+            if not out.get("ok"):
+                self.swarm.log(agent_id,
+                               f"[replan] dropped {step.name}: {out.get('reason', '')}")
+                continue
+            new = self.swarm.agent_by_name(step.name)
+            if new is not None:
+                # Provenance is the whole defence against a DAG nobody
+                # recognises: generation bounds the recursion, parent_id says
+                # which result asked for this.
+                new.generation = int(getattr(agent, "generation", 0) or 0) + 1
+                new.parent_id = agent.id
+                created.append(step.name)
+        if created:
+            self.swarm.log(agent_id, f"[replan] added {', '.join(created)}")
+            self.swarm.checkpoint()
+        return {"ok": bool(created), "created": created,
+                "dropped": exp.dropped, "reason": ""}
 
     def dead_letters(self) -> list[dict]:
         """Steps that ran out of attempts and now need a person.

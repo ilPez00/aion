@@ -687,3 +687,53 @@ async def test_an_unmetered_swarm_ships_an_empty_spend_line(live):
     """No prices configured means no figure — not a "$0.00" that reads as
     "nothing spent" when it means "nothing known"."""
     assert live.swarm_command({"action": "status"})["spend_text"] == ""
+
+
+# ── replanning: the DAG grows from its own results ──────────────────────────
+@pytest.mark.asyncio
+async def test_the_replan_tick_asks_off_the_event_loop(live, swarm, monkeypatch):
+    """`propose` is a model call. On the loop it is a frozen cockpit, exactly
+    as the planner was."""
+    import threading
+
+    from aion import swarmreplan
+
+    live._swarm_runner.replan = swarmreplan.ReplanPolicy(max_new_steps=2)
+    seen = {}
+
+    def record(goal, output, **kw):
+        seen["thread"] = threading.current_thread().name
+        return [{"name": "audit", "goal": "audit it"}]
+    monkeypatch.setattr(swarmreplan, "propose", record)
+
+    scout = by_name(swarm, "scout")
+    live._swarm_runner.finish(scout.id, "found three subsystems")
+    await live.swarm_replan_tick()
+
+    assert seen["thread"] != threading.current_thread().name
+    assert by_name(swarm, "audit") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_proposal_is_reported_not_silently_dropped(live, swarm, monkeypatch):
+    from aion import swarmreplan
+
+    live._swarm_runner.replan = swarmreplan.ReplanPolicy(max_new_steps=1,
+                                                         max_total_steps=3)
+    monkeypatch.setattr(swarmreplan, "propose",
+                        lambda goal, output, **kw: [{"name": "audit", "goal": "g"}])
+    live._swarm_runner.finish(by_name(swarm, "scout").id, "out")
+    await live.swarm_replan_tick()
+    assert any("refused" in h for h in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_replanning_off_asks_nothing(live, swarm, monkeypatch):
+    from aion import swarmreplan
+
+    called = []
+    monkeypatch.setattr(swarmreplan, "propose",
+                        lambda *a, **k: called.append(1) or [])
+    live._swarm_runner.finish(by_name(swarm, "scout").id, "out")
+    assert await live.swarm_replan_tick() == []
+    assert called == []

@@ -617,6 +617,7 @@ class Store:
 
             from .swarmbudget import prices_from_harnesses
             from .swarmpolicy import policy_from_config
+            from .swarmreplan import policy_from_config as replan_from_config
 
             # `swarm_budget` in config, currency per DAG. 0 = no ceiling.
             # Parallelism and VRAM say nothing about money: a swarm can sit
@@ -643,6 +644,11 @@ class Store:
                 # re-running work — and spending on it — that nobody asked to
                 # be re-run.
                 retry=policy_from_config(getattr(self, "cfg", {})),
+                # `swarm_replan` in config: 3, or the full dict. Absent means a
+                # finished step proposes nothing, i.e. the static DAG everyone
+                # already has — a swarm must not start writing its own work
+                # because a version changed.
+                replan=replan_from_config(getattr(self, "cfg", {})),
             )
             # Adopt work that outlived the last process. Here rather than in
             # __init__ because the runner is lazy and this is the first moment
@@ -1411,6 +1417,48 @@ class Store:
             n += 1
             name = f"{stem}-{n}"
         return name
+
+    async def swarm_replan_tick(self) -> list[dict]:
+        """Ask the planner what each finished step made necessary, and apply it.
+
+        Lives here rather than in the runner because it is the only part of
+        replanning that blocks: `propose` is a model call, and the runner is
+        driven from the event loop. `to_thread` keeps the cockpit responsive
+        while it waits, exactly as `swarm plan` does.
+
+        Every failure changes nothing. The honest default for "the planner had
+        nothing to say" and for "the planner was unreachable" is the same DAG
+        that was already there.
+        """
+        from . import swarmreplan
+
+        runner = getattr(self, "_swarm_runner", None)
+        if runner is None or not runner.replan.enabled:
+            return []
+        pending = runner.take_replans()
+        applied = []
+        for step in pending:
+            names = [a.name for a in self.swarm.agents.values()]
+            try:
+                raw = await asyncio.to_thread(
+                    swarmreplan.propose, step["goal"], step["output"],
+                    existing_names=names,
+                    max_new=runner.replan.max_new_steps)
+            except Exception as e:  # noqa: BLE001
+                self.state.logs.append(f"replan: {type(e).__name__}: {str(e)[:80]}")
+                continue
+            if not raw:
+                continue
+            out = runner.apply_expansion(step["id"], raw)
+            if out.get("created"):
+                self.state.history.append(
+                    f"swarm: {step['name']} added {', '.join(out['created'])}")
+                applied.append(out)
+            elif out.get("reason"):
+                self.state.history.append(
+                    f"swarm: {step['name']} proposed work that was refused — "
+                    f"{out['reason']}")
+        return applied
 
     async def _swarm_plan(self, goal: str) -> None:
         """`swarm plan <goal>` — propose a DAG, create nothing.
