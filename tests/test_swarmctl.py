@@ -336,6 +336,7 @@ def live(swarm, tmp_path, monkeypatch):
             self.active_harness = "demo"
             self.history = []
             self.swarm_dashboard = ""
+            self.swarm_plan = {}
     s.state = _State()
 
     def spawn(agent, prompt):
@@ -573,3 +574,96 @@ async def test_typed_swarm_status_stores_the_shape_every_view_reads(live, swarm)
 async def test_typed_swarm_status_also_says_it_in_words(live):
     await live._swarm_command("swarm status")
     assert any("swarm:" in h for h in live.state.history)
+
+
+# ── `swarm plan` / `swarm apply` in the terminal ─────────────────────────────
+# The planner existed and only the browser could reach it, so the cockpit —
+# the surface people actually use — had the worst way to build a DAG: one
+# `swarm add ... << deps` line per step, in an order `add_checked` accepts.
+
+def _fake_plan(monkeypatch, steps, problems=()):
+    from aion import swarmplan
+
+    def fake_propose(goal, **kw):
+        return swarmplan.Plan(goal=goal, source="llm",
+                              steps=[swarmplan.Step(**s) for s in steps],
+                              problems=list(problems))
+    monkeypatch.setattr(swarmplan, "propose", fake_propose)
+
+
+@pytest.mark.asyncio
+async def test_planning_creates_nothing_until_apply(live, swarm, monkeypatch):
+    before = set(swarm.agents)
+    _fake_plan(monkeypatch, [{"name": "read", "goal": "read docs", "deps": []},
+                             {"name": "write", "goal": "draft", "deps": ["read"]}])
+    await live._swarm_command("swarm plan write a post")
+    assert set(swarm.agents) == before
+    assert len(live.state.swarm_plan["steps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_creates_the_steps_that_were_shown(live, swarm, monkeypatch):
+    _fake_plan(monkeypatch, [{"name": "read", "goal": "read docs", "deps": []},
+                             {"name": "write", "goal": "draft", "deps": ["read"]}])
+    await live._swarm_command("swarm plan write a post")
+    await live._swarm_command("swarm apply")
+    assert by_name(swarm, "write").dependencies == ["read"]
+    assert live.state.swarm_plan == {}, "an applied plan must stop being pending"
+
+
+@pytest.mark.asyncio
+async def test_apply_does_not_re_plan(live, swarm, monkeypatch):
+    """The model is not deterministic. Re-proposing on apply would create a
+    different DAG from the one the human just read, which makes the review
+    step decorative."""
+    _fake_plan(monkeypatch, [{"name": "first", "goal": "g", "deps": []}])
+    await live._swarm_command("swarm plan a goal")
+    _fake_plan(monkeypatch, [{"name": "second", "goal": "g", "deps": []}])
+    await live._swarm_command("swarm apply")
+    assert by_name(swarm, "first") is not None
+    assert by_name(swarm, "second") is None
+
+
+@pytest.mark.asyncio
+async def test_apply_with_nothing_planned_says_so(live):
+    await live._swarm_command("swarm apply")
+    assert any("nothing planned" in h for h in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_plan_is_not_held(live, monkeypatch):
+    _fake_plan(monkeypatch, [], problems=["the planner did not return usable JSON"])
+    await live._swarm_command("swarm plan something")
+    assert live.state.swarm_plan == {}
+    assert any("refused" in h for h in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_a_planner_that_raises_does_not_take_the_cockpit_with_it(live, monkeypatch):
+    from aion import swarmplan
+
+    def boom(goal, **kw):
+        raise RuntimeError("no provider")
+    monkeypatch.setattr(swarmplan, "propose", boom)
+    await live._swarm_command("swarm plan something")
+    assert live.state.swarm_plan == {}
+    assert any("no provider" in h for h in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_the_planner_does_not_run_on_the_event_loop(live, monkeypatch):
+    """A 30s model call on the loop is a frozen cockpit: no keystrokes, no task
+    updates, no heartbeat, for half a minute."""
+    import asyncio
+
+    from aion import swarmplan
+    seen = {}
+
+    def record(goal, **kw):
+        seen["thread"] = __import__("threading").current_thread().name
+        return swarmplan.Plan(goal=goal, steps=[swarmplan.Step("a", "g", [])])
+    monkeypatch.setattr(swarmplan, "propose", record)
+    main = __import__("threading").current_thread().name
+    await live._swarm_command("swarm plan x")
+    assert seen["thread"] != main
+    assert asyncio.get_running_loop().is_running()

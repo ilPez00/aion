@@ -820,8 +820,8 @@ class AiOSApp(App):
         from .gauges import hbar
         if item is None:
             return (f"[{theme['dim']}]No active swarm.[/]\n"
-                    f"  [{theme['accent']}]swarm create <goal>[/] to start.\n"
-                    f"  [{theme['dim']}]e.g. swarm create research and prototype a dashboard[/]")
+                    f"  [{theme['accent']}]swarm plan <goal>[/] to propose a DAG.\n"
+                    f"  [{theme['dim']}]e.g. swarm plan research and prototype a dashboard[/]")
         data = item.get("data", {})
         # `swarm status` used to store the legacy text dashboard here while the
         # bus stored the dict, so the same panel worked one way in and crashed
@@ -831,6 +831,20 @@ class AiOSApp(App):
             return data or f"[{theme['dim']}]No active swarm.[/]"
         lines = []
         lines.append(f"[{theme['accent']}]SWARM[/]")
+        # A proposed DAG, shown in the same wave view the live one uses — the
+        # point of previewing is to read it the way you will read it running.
+        preview = item.get("plan_preview") or {}
+        if preview.get("steps"):
+            from ..swarmview import render as render_dag
+            src = "proposed" if preview.get("source") == "llm" else "drafted"
+            lines.append(f"[{theme['warn']}]─ Plan ({src}, not created yet) ───────────────[/]")
+            lines.append(f"  [{theme['dim']}]{str(preview.get('goal', ''))[:44]}[/]")
+            lines.append(render_dag(preview["steps"], theme, bars=False, goal_width=26))
+            lines.append(f"  [{theme['accent']}]swarm apply[/][{theme['dim']}] to create these "
+                         f"{len(preview['steps'])} steps[/]")
+            if not data:
+                return "\n".join(lines)
+            lines.append("")
         s = data
         counts = f"🧠 {s.get('working',0)}W · {s.get('waiting',0)}⏳ · {s.get('done',0)}✓ · {s.get('failed',0)}✗ · {s.get('blocked',0)}⊘"
         lines.append(f"  {counts}")
@@ -873,7 +887,7 @@ class AiOSApp(App):
             if dag:
                 lines.append(f"[{theme['dim']}]─ Order ───────────────────────────────────────[/]")
                 lines.append(dag)
-        lines.append(f"[{theme['dim']}]swarm create|add|run|status|stop[/]")
+        lines.append(f"[{theme['dim']}]swarm plan|apply|add|run|status|stop[/]")
         return "\n".join(lines)
 
     def _board_panel(self, theme: dict, item: dict | None = None) -> str:
@@ -1776,7 +1790,7 @@ class AiOSApp(App):
                 f"[{a}]CTRL-K COMMANDS[/]\n"
                 f" [{di}]todo <t>[/]     add to-do item\n"
                 f" [{di}]done <n>[/]     mark to-do #n done\n"
-                f" [{di}]swarm <goal>[/] create a multi-agent swarm\n"
+                f" [{di}]swarm plan <goal>[/] propose a DAG, then [{di}]swarm apply[/]\n"
                 f" [{di}]compare <q>[/]  side-by-side model comparison\n"
                 f" [{di}]agent create <n>[/] create persistent agent entity\n"
                 f" [{di}]agent list[/]   show all agents\n"

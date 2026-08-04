@@ -223,7 +223,8 @@ def _bar(progress: float, width: int, colour: str, dim: str,
 
 def render(agents: Sequence[dict], theme: dict | None = None,
            now: float | None = None, name_width: int = 14,
-           max_rows: int = 14, goal_width: int = 20) -> str:
+           max_rows: int = 14, goal_width: int = 20,
+           bars: bool = True) -> str:
     """The DAG drawn as waves, top to bottom, in running order.
 
     Each row carries the one fact that explains its own state — a retry
@@ -260,8 +261,11 @@ def render(agents: Sequence[dict], theme: dict | None = None,
             st = _swarm_stage(str(ag.get("status") or "idle"))
             col = th.get(stage_theme_key(st), di)
             nm = _name(ag)[:name_width]
+            # A plan that has not been created yet has no progress to show, and
+            # a column of identical empty bars is noise that costs the row the
+            # width its goal needs.
             bar = _bar(float(ag.get("progress") or 0.0), 6, col, di,
-                       str(ag.get("status") or ""))
+                       str(ag.get("status") or "")) if bars else ""
 
             note = ""
             due = float(ag.get("retry_at") or 0.0)
@@ -294,6 +298,6 @@ def render(agents: Sequence[dict], theme: dict | None = None,
                 # nothing is printed twice.
                 note = f"[{di}]{str(ag['goal'])[:goal_width]}[/]"
 
-            lines.append(f"    [{col}]{stage_glyph(st)}[/] [{a}]{nm:{name_width}s}[/] "
-                         f"{bar} {note}")
+            row = f"    [{col}]{stage_glyph(st)}[/] [{a}]{nm:{name_width}s}[/]"
+            lines.append(f"{row} {bar} {note}" if bars else f"{row} {note}")
     return "\n".join(lines)

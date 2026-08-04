@@ -56,6 +56,9 @@ class ViewState:
     settings_providers: dict[str, dict] = field(default_factory=dict)
     active_mode: str = "default"
     swarm_dashboard: str = ""
+    # A proposed DAG waiting for `swarm apply`. Held rather than applied: every
+    # step becomes a prompt a harness executes, so review is the point.
+    swarm_plan: dict = field(default_factory=dict)
     task_history: list[dict] = field(default_factory=list)  # completed tasks
     compare_result: dict = field(default_factory=dict)      # multi-model compare
     suggestions: list[str] = field(default_factory=list)    # proactive jarvis
@@ -316,6 +319,14 @@ class Store:
             s = self.state.swarm_dashboard
             cr = self.state.compare_result
             mode = ContextRouter().agent_mode_for(self)
+            plan = self.state.swarm_plan
+            # A pending plan outranks the live swarm: it is the thing waiting
+            # on a decision, and on the first `swarm plan` of a session there
+            # is no live swarm to show at all — without this the preview would
+            # be a history line saying a DAG exists somewhere unseen.
+            if plan and plan.get("steps"):
+                return [{"type": "swarm_dashboard", "data": s or {},
+                         "plan_preview": plan, "mode_label": "SWARM"}]
             if mode == "swarm" and s:
                 return [{"type": "swarm_dashboard", "data": s,
                          "mode_label": "SWARM"}]
@@ -1392,6 +1403,67 @@ class Store:
             name = f"{stem}-{n}"
         return name
 
+    async def _swarm_plan(self, goal: str) -> None:
+        """`swarm plan <goal>` — propose a DAG, create nothing.
+
+        Building a DAG in the cockpit meant one `swarm add ... << deps` line
+        per step, in an order that satisfied `add_checked`. The planner that
+        removes that work already existed and only the browser could reach it,
+        so the terminal — the surface people actually use — had the worst way
+        to do the thing this program is for.
+
+        The plan is held, not applied: creating N prompts a harness will
+        execute is a decision worth one keystroke of confirmation, and the
+        preview is the whole reason to show a DAG before it runs.
+        """
+        from . import swarmplan
+
+        self.state.history.append(f"swarm: planning '{goal[:40]}' …")
+        try:
+            # The planner calls a model with a 30s timeout. On the event loop
+            # that is a frozen cockpit: no keystrokes, no task updates, no
+            # heartbeat, for half a minute.
+            plan = await asyncio.to_thread(
+                swarmplan.propose, goal,
+                harnesses=list(self.harnesses),
+                existing_names=[a.name for a in self.swarm.agents.values()])
+        except Exception as e:  # noqa: BLE001
+            self.state.swarm_plan = {}
+            self.state.history.append(f"swarm plan: {type(e).__name__}: {str(e)[:80]}")
+            return
+        if not plan.ok:
+            self.state.swarm_plan = {}
+            self.state.history.append(
+                f"swarm plan refused: {'; '.join(plan.problems)[:100]}")
+            return
+        self.state.swarm_plan = plan.as_dict()
+        self.state.history.append(
+            f"swarm plan: {len(plan.steps)} steps — 'swarm apply' to create them")
+
+    def _swarm_apply(self) -> None:
+        """`swarm apply` — create exactly the steps that were shown.
+
+        Re-planning here would create a different DAG from the one on screen:
+        the model is not deterministic, and "review, then commit" means nothing
+        if the commit re-rolls the dice. So the held steps go back through
+        `validate` (same fail-closed path the browser gets) and no further.
+        """
+        held = self.state.swarm_plan
+        if not held or not held.get("steps"):
+            self.state.history.append("swarm: nothing planned — 'swarm plan <goal>' first")
+            return
+        out = self.swarm_command({"action": "plan", "goal": held.get("goal", ""),
+                                  "steps": held["steps"], "apply": True})
+        applied = out.get("applied") or {}
+        created = applied.get("created") or []
+        if created:
+            self.state.swarm_plan = {}
+            self.state.history.append(
+                f"swarm: created {', '.join(created)} — 'swarm run' to start")
+        else:
+            self.state.history.append(
+                f"swarm apply: {applied.get('reason') or '; '.join(out.get('problems') or []) or 'refused'}")
+
     async def _swarm_command(self, text: str) -> None:
         """'swarm create|add|run|status|stop' — the same verbs the HUD sends.
 
@@ -1405,11 +1477,15 @@ class Store:
         """
         parts = text.split()
         if len(parts) < 2:
-            self.state.history.append("usage: swarm create <goal> | add <name> <goal> [deps] | run | status | stop")
+            self.state.history.append("usage: swarm plan <goal> | apply | create <goal> | add <name> <goal> [deps] | run | status | stop")
             return
         sub = parts[1]
         rest = " ".join(parts[2:]) if len(parts) > 2 else ""
-        if sub == "create" and rest:
+        if sub == "plan" and rest:
+            await self._swarm_plan(rest)
+        elif sub == "apply":
+            self._swarm_apply()
+        elif sub == "create" and rest:
             self.swarm.decompose(rest)
             out = self.swarm_command({"action": "add",
                                       "name": self._free_agent_name(),

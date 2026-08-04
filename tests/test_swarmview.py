@@ -262,3 +262,10 @@ def test_a_done_step_draws_a_full_bar_whatever_progress_says():
 
 def test_a_cancelled_step_does_not_claim_to_be_complete():
     assert "░░░░░░" in render([step("a", status="cancelled", progress=0.0)])
+
+
+def test_a_plan_preview_drops_the_empty_progress_bars():
+    # Nothing has run yet, so every bar would be identical and empty — noise
+    # occupying the width the goal needs.
+    out = render([step("a", goal="do the thing")], bars=False)
+    assert "░" not in out and "do the thing" in out

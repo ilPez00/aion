@@ -132,6 +132,21 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   and an exit code, not tokens, so the figures are characters over four times a
   configured price and every payload carries `estimated: True`.
 
+- **`swarm plan <goal>` builds the DAG for you, in the terminal** — the
+  planner (`swarmplan.py`) validated a model-proposed DAG, capped its steps,
+  refused cycles and unresolvable dependencies… and only the browser could
+  reach it. In the cockpit, building a DAG meant one `swarm add <name> <goal>
+  << deps` line per step, in an order `add_checked` accepts — so the surface
+  people actually use had the worst way to do the thing this program is for.
+  `swarm plan` now proposes, `swarm apply` creates, `swarm run` starts: three
+  decisions, because every step is a prompt a harness will execute. The
+  proposal is HELD, drawn in the same wave view the live swarm uses (bars
+  dropped — nothing has run, so they would be a column of identical noise),
+  and `apply` re-validates exactly the steps that were shown rather than
+  re-planning, since a non-deterministic re-roll would make the review
+  decorative. The call runs on a worker thread: a 30s model call on the event
+  loop is a frozen cockpit — no keystrokes, no task updates, no heartbeat.
+
 - **The DAG is drawn in running order, and says why it stopped**
   (`swarmview.py`) — the old view was a flat list with `← deps` glued on the
   end, which answers "what steps exist" (a question nobody asks) and cannot
