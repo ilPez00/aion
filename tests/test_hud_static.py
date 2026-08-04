@@ -149,3 +149,10 @@ def test_the_swarm_sentences_are_not_composed_in_javascript():
     # is a second opinion about the same swarm.
     for invented in ("$", "slots", " est"):
         assert invented not in body.group(0).replace("$(", "").replace("${", "")
+
+
+def test_the_desk_shows_decisions_that_are_already_made():
+    """The gate bar is for what is BLOCKING and then forgets. "What has this
+    fleet been allowed to do" is asked long after the gate is gone."""
+    assert "S.approvals = j.recent" in HUD_JS
+    assert re.search(r"panel\(`Approvals", HUD_JS)

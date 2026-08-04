@@ -1285,8 +1285,14 @@ async function answerGate(gate, approved) {
 }
 
 async function loadGates() {
-  try { renderGates((await api('/api/gates')).gates); }
-  catch (_) { /* the banner keeps its last known state */ }
+  try {
+    const j = await api('/api/gates');
+    renderGates(j.gates);
+    // Decisions already taken, kept for whoever asks later what this fleet was
+    // allowed to do. Held on S rather than drawn here: the bar is for what is
+    // BLOCKING, and burying a live gate under history would invert that.
+    S.approvals = j.recent || [];
+  } catch (_) { /* the banner keeps its last known state */ }
 }
 
 /* ── module: Desk (the cockpit's Desktop workspace) ───────────────────── */
@@ -1390,6 +1396,22 @@ async function loadDesk() {
     if (errs.length) {
       cards.push(panel('Unavailable', el('ul', { class: 'plain' }, errs.map(
         ([k, v]) => el('li', { class: 'err mono-sm', text: `${k}: ${v.error}` })))));
+    }
+
+    // Approvals already given. The gate bar shows what is BLOCKED right now
+    // and then forgets; this is the durable half — the answer to "what has
+    // this fleet been allowed to do", which is a question asked long after
+    // the gate itself is gone.
+    const approvals = S.approvals || [];
+    if (approvals.length) {
+      cards.push(panel(`Approvals · ${approvals.length} recent`,
+        el('ul', { class: 'plain' }, approvals.slice().reverse().slice(0, 12).map(a =>
+          el('li', { class: 'todo' }, [
+            el('span', { class: 'gate-risk', text: (a.decision || '?').toUpperCase() }),
+            el('span', { class: 'grow', title: a.action || '', text: a.action || a.gate }),
+            el('span', { class: 'mono-sm muted',
+                         text: `${a.by || '?'}${a.instance ? ' · ' + a.instance : ''}` }),
+          ])))));
     }
 
     root.replaceChildren(...cards);

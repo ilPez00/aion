@@ -863,9 +863,15 @@ def gates_pending():
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
         from aion import hitl
-        return {"gates": hitl.read_all_pending()}
+        # What is waiting, and what has already been decided. A page that only
+        # shows pending gates answers "is anything blocked" and never "what has
+        # this fleet been allowed to do", which is the question a second person
+        # looking at someone else's cockpit actually has.
+        return {"gates": hitl.read_all_pending(),
+                "recent": hitl.read_all_recent(limit=25)}
     except Exception as e:  # noqa: BLE001
-        return {"gates": [], "error": f"{type(e).__name__}: {str(e)[:180]}"}
+        return {"gates": [], "recent": [],
+                "error": f"{type(e).__name__}: {str(e)[:180]}"}
 
 
 def gate_answer(gate_id: str, approved: bool, instance: str = "") -> dict:

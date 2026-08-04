@@ -100,8 +100,12 @@ class Store:
         self.state = ViewState(active_harness=self._first_harness())
         # human-in-the-loop approval gates. Fail-closed: nothing auto-approves
         # unless a policy vouches for it (none does by default).
-        self.gates = GateBook()
+        # Every decision is written down. The sink is a bound method rather
+        # than an AuditLog instance because constructing a Store must not touch
+        # disk, and the first gate of a session is early enough to open a file.
+        self.gates = GateBook(audit=self._record_approval)
         self._gate_store = None      # lazy: constructing a Store must not touch disk
+        self._audit_log = None       # lazy, same reason
         self._external_agents_cache: tuple[float, list[dict]] = (0.0, [])
         # subscribe to bus topics so the store stays the source of truth
         self.bus.subscribe("task", self._on_task_event)
@@ -992,8 +996,26 @@ class Store:
                 h.resume(task) if task.paused else h.pause(task)
 
     # ---- human-in-the-loop gates ----------------------------------------
+    def _record_approval(self, entry: dict) -> None:
+        """Persist one gate decision. Called by the book, never by a UI."""
+        from .hitl import AuditLog
+
+        if self._audit_log is None:
+            self._audit_log = AuditLog()
+        self._audit_log.record(entry)
+
+    def approval_log(self, limit: int = 20) -> list[dict]:
+        """Recent gate decisions on this cockpit, oldest first."""
+        from .hitl import AuditLog
+
+        if self._audit_log is None:
+            self._audit_log = AuditLog()
+        return self._audit_log.read(limit=limit)
+
     def _resolve_gate(self, approved: bool) -> None:
-        gate = self.gates.resolve_latest(approved)
+        # "cockpit" = somebody pressed a key on this machine. The remote path
+        # says so separately, because those are different levels of evidence.
+        gate = self.gates.resolve_latest(approved, by="cockpit")
         if gate is not None:
             verb = "approved" if approved else "rejected"
             t = self.registry.tasks.get(gate.task_id)
@@ -1017,7 +1039,7 @@ class Store:
 
     def resolve_gate_by_id(self, gate_id: str, approved: bool) -> dict:
         """Resolve one gate by id — what the remote /gate endpoint calls."""
-        gate = self.gates.resolve(gate_id, approved)
+        gate = self.gates.resolve(gate_id, approved, by="remote")
         if gate is None:
             return {"ok": False, "error": f"no pending gate {gate_id!r}"}
         verb = "approved" if approved else "rejected"

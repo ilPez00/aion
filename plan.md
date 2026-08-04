@@ -163,6 +163,23 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **"Who approved what" is now durable** (`hitl.AuditLog`) — a gate decision
+  lived in a task's in-memory log, the gate itself was dropped by
+  `clear_resolved()`, and `gates.json` only ever holds what is still PENDING —
+  so the moment a gate was answered, the answer stopped existing anywhere. For
+  a fleet that runs privileged actions on other machines, that was the one
+  record worth keeping. Now every decision appends to
+  `~/.aion/instances/<id>/approvals.jsonl` with WHO made it: `cockpit` (a
+  keypress here), `remote` (the HUD over the authenticated transport), `policy`
+  (nobody was asked — the most important kind to have on record) or `timeout`
+  (fail-closed). Append-only JSONL because a log that gets rewritten is not
+  evidence of anything, and a torn line from a crash costs exactly that line.
+  Recorded BEFORE the waiting task is released: a crash in between would
+  otherwise leave an action performed with nothing saying who allowed it. A
+  broken sink never deadlocks a gate — a cockpit stuck on a full disk is worse
+  than a gap in a log, and the gap is printed. Like `gates.json`, the file is
+  evidence and never a control channel: nothing reads it back into a book.
+
 - **A DAG can grow from its own results** (`swarmreplan.py`) — the shape used to
   be decided once, before any of it ran, so every step's goal had to be written
   by someone who did not yet know what step one would find. A research step that

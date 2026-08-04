@@ -113,3 +113,44 @@ def test_gated_run_benign_prompt_runs_without_a_gate():
         await s._gated_run(h, task, "summarise the readme")
         assert h.ran is True and not s.gates.has_pending()
     asyncio.run(scenario())
+
+
+# ── the durable record ──────────────────────────────────────────────────────
+def test_a_keypress_approval_lands_in_the_log(tmp_path):
+    """The task log dies with the process and the gate is dropped by
+    `clear_resolved()`. This is the copy that outlives both."""
+    from aion.hitl import AuditLog
+
+    s = _store()
+    s._audit_log = AuditLog(tmp_path / "approvals.jsonl")
+    s.gates.request("t1", "run rm -rf build")
+    s.handle(Intent(IntentType.ACTIVATE))
+
+    entries = s.approval_log()
+    assert len(entries) == 1
+    assert entries[0]["decision"] == "approved"
+    assert entries[0]["by"] == "cockpit"
+    assert entries[0]["action"] == "run rm -rf build"
+
+
+def test_a_remote_answer_is_recorded_as_remote(tmp_path):
+    from aion.hitl import AuditLog
+
+    s = _store()
+    s._audit_log = AuditLog(tmp_path / "approvals.jsonl")
+    g = s.gates.request("t1", "deploy to prod")
+    s.resolve_gate_by_id(g.id, True)
+    assert s.approval_log()[0]["by"] == "remote"
+
+
+def test_the_record_outlives_the_gate(tmp_path):
+    """`clear_resolved()` runs on every resolution — the point of the log is
+    that the evidence does not go with it."""
+    from aion.hitl import AuditLog
+
+    s = _store()
+    s._audit_log = AuditLog(tmp_path / "approvals.jsonl")
+    s.gates.request("t1", "danger")
+    s.handle(Intent(IntentType.BACK))
+    assert s.gates.pending() == [] and s.gates._gates == {}
+    assert s.approval_log()[0]["decision"] == "rejected"
