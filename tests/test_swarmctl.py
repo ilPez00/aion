@@ -667,3 +667,23 @@ async def test_the_planner_does_not_run_on_the_event_loop(live, monkeypatch):
     await live._swarm_command("swarm plan x")
     assert seen["thread"] != main
     assert asyncio.get_running_loop().is_running()
+
+
+@pytest.mark.asyncio
+async def test_the_status_payload_carries_the_sentences_not_just_the_numbers(live, swarm):
+    """The browser is a second renderer of the same swarm. If it composes its
+    own wording from the numbers, the two views drift — so the cockpit decides
+    the words once and ships them."""
+    st = live.swarm_command({"action": "status"})
+    # scout only: writer and editor are waiting on it, which is a queue
+    # position and not readiness.
+    assert st["why"] == "1 ready — `swarm run` to start"
+    assert "spend_text" in st and "capacity_text" in st
+    assert st["capacity_text"].startswith("0/")
+
+
+@pytest.mark.asyncio
+async def test_an_unmetered_swarm_ships_an_empty_spend_line(live):
+    """No prices configured means no figure — not a "$0.00" that reads as
+    "nothing spent" when it means "nothing known"."""
+    assert live.swarm_command({"action": "status"})["spend_text"] == ""

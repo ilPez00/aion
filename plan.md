@@ -132,6 +132,19 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   and an exit code, not tokens, so the figures are characters over four times a
   configured price and every payload carries `estimated: True`.
 
+- **The browser shows the same swarm condition, in the cockpit's words** — the
+  HUD's process graph is rebuilt from checkpoints on disk, and budget, slots
+  and retry state live in the running cockpit, so none of it could appear
+  there. The Agents view now asks the instance for `status` and renders a
+  standing Swarm pane: the condition sentence, the limits, and one block per
+  dead letter with retry/remove wired to the same verbs the TUI uses. The
+  strings are composed by the cockpit (`swarmview`) and printed verbatim — two
+  renderers each phrasing "nothing is running" their own way is how a cockpit
+  starts contradicting itself, and a static test now fails if the JS starts
+  assembling its own. `SwarmRunner.status()` also carries the agent list: only
+  the bus publish ever attached it, so anything reading status() alone saw a
+  swarm with no steps in it.
+
 - **The governor's numbers are on screen, not only in its refusals** — the
   budget could stop a swarm and the slot/VRAM limits could hold ready steps
   back, and neither showed a figure anywhere, so the first time an operator

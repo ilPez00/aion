@@ -647,6 +647,11 @@ class SwarmRunner:
         stalled = self.stalled()
         return {
             **summary,
+            # The steps themselves. `status_summary` counts them and only the
+            # bus publish ever attached the list, so anything reading status()
+            # alone — the browser, `swarmview.explain` — saw a swarm with no
+            # agents in it and reported an empty DAG.
+            "agents": [a.as_dict() for a in self.swarm.agents.values()],
             "in_flight": self._in_flight(),
             "max_parallel": self.max_parallel,
             "vram_used": self._vram_used(),

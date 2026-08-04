@@ -795,7 +795,16 @@ class Store:
                 self.swarm_runner._forget(aid)
             return out
         if action == "status":
-            return self.swarm_runner.status()
+            st = self.swarm_runner.status()
+            # The sentences, not just the numbers. The browser is a second
+            # renderer of the same swarm, and two renderers each phrasing
+            # "nothing is running" their own way is how a cockpit starts
+            # contradicting itself — so the wording is decided once, here.
+            from .swarmview import capacity, explain, spend
+            st["why"] = explain(st.get("agents") or [])
+            st["spend_text"] = spend(st)
+            st["capacity_text"] = capacity(st)
+            return st
         if action in agentctl.DELEGATED:
             return self._swarm_delegate(agent_id, action)
         if action in self.swarm.ACTIONS:

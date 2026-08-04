@@ -126,3 +126,26 @@ def test_named_callbacks_are_wired(cb):
 def test_hud_passes_the_lod_callback_when_constructing_the_graph():
     ctor = HUD_JS.split("new OrganicGraph(", 1)[1][:400]
     assert "onLod" in ctor
+
+
+# ── swarm condition pane ─────────────────────────────────────────────────────
+def test_the_swarm_pane_exists_and_starts_hidden():
+    assert re.search(r'id="swarm-box"[^>]*hidden', HTML)
+
+
+def test_leaving_agents_takes_the_swarm_pane_with_it():
+    """It is not selection-driven, so nothing else would ever hide it: one
+    swarm's budget would sit in the inspector while you browse a file graph."""
+    assert re.search(r"if \(id !== 'agents'\) \$\('swarm-box'\)\.hidden = true", HUD_JS)
+
+
+def test_the_swarm_sentences_are_not_composed_in_javascript():
+    """The cockpit decides the wording (store.swarm_command -> swarmview), so
+    the two renderers of one swarm cannot phrase its condition differently."""
+    assert "st.why" in HUD_JS and "st.spend_text" in HUD_JS and "st.capacity_text" in HUD_JS
+    body = re.search(r"async function loadSwarmStatus\(.*?\n\}", HUD_JS, re.S)
+    assert body, "loadSwarmStatus is gone — did the pane move?"
+    # Scoped to that function: a currency figure or a slot count assembled here
+    # is a second opinion about the same swarm.
+    for invented in ("$", "slots", " est"):
+        assert invented not in body.group(0).replace("$(", "").replace("${", "")

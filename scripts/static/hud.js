@@ -146,6 +146,10 @@ function go(id, opts = {}) {
   if (id !== 'term') closeTerm();
   $('fs-tools').hidden = id !== 'files';
   $('agent-tools').hidden = id !== 'agents';
+  // The swarm pane is not selection-driven, so nothing else would ever take
+  // it down: leaving Agents would leave one swarm's budget on screen while
+  // looking at a file graph.
+  if (id !== 'agents') $('swarm-box').hidden = true;
   $('crumbs').hidden = id !== 'files';
   applyView();
   graph && graph.clearFocus();
@@ -940,7 +944,58 @@ async function loadAgents() {
       // decision here in JS is how two views of one swarm start disagreeing.
       `${s.swarm_why ? ` · swarm: ${s.swarm_why}` : ''}`);
     $('graph-desc').textContent = graph.describe();
+    loadSwarmStatus(a.swarm);
   } catch (e) { setStatus(e.message, true); }
+}
+
+/* The DAG's standing condition: what it is spending, what is limiting it, and
+ * what has run out of attempts. The file snapshot cannot answer any of that —
+ * budget and retries live in the running cockpit — so this asks the instance
+ * directly, and stays silent when no cockpit is up rather than showing zeroes
+ * that would read as "nothing spent".
+ *
+ * Every sentence here is rendered by the cockpit, not composed in JS. Two
+ * renderers phrasing one swarm their own way is how a cockpit contradicts
+ * itself, and this view exists precisely to be believed. */
+async function loadSwarmStatus(swarm) {
+  const box = $('swarm-box');
+  if (!box) return;
+  const instance = (swarm || []).map(s => s.instance).find(Boolean);
+  if (!instance) { box.hidden = true; return; }
+  let st;
+  try {
+    st = await api('/api/swarm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance, action: 'status' }),
+    });
+  } catch { box.hidden = true; return; }   // no live cockpit: say nothing
+  if (!st || st.ok === false) { box.hidden = true; return; }
+
+  const kids = [el('h3', { text: 'Swarm' })];
+  if (st.why) kids.push(el('p', { class: 'mono-sm', text: st.why }));
+  const limits = [st.capacity_text, st.spend_text].filter(Boolean).join(' · ');
+  if (limits) kids.push(el('p', { class: 'muted mono-sm', text: limits }));
+
+  for (const d of (st.dead_letters || []).slice(0, 4)) {
+    // Leading with what a failure BLOCKS, for the same reason the cockpit
+    // does: "what failed" is already on the node; what is stuck behind it is
+    // what decides whether this is worth interrupting the day for.
+    const blocks = (d.blocks || []).length
+      ? `blocks ${d.blocks.slice(0, 3).join(', ')}` : 'blocks nothing else';
+    kids.push(el('p', { class: 'mono-sm',
+                        text: `✗ ${d.name} — ${d.kind} · ${blocks}` }));
+    if (d.error) {
+      kids.push(el('p', { class: 'muted mono-sm', text: String(d.error).slice(0, 120) }));
+    }
+    kids.push(el('div', { class: 'row' }, [
+      el('button', { type: 'button', text: `retry ${d.name}`,
+                     on: { click: () => swarmAct({ action: 'retry', agent_id: d.id }, instance) } }),
+      el('button', { type: 'button', text: 'remove',
+                     on: { click: () => swarmAct({ action: 'remove', agent_id: d.id }, instance) } }),
+    ]));
+  }
+  box.replaceChildren(...kids);
+  box.hidden = false;
 }
 
 const swatch = i => getComputedStyle(document.documentElement)
