@@ -357,3 +357,18 @@ def test_a_step_the_swarm_added_itself_says_so_on_its_row():
 
 def test_a_step_a_human_wrote_carries_no_marker():
     assert "+g" not in render([step("scout", goal="find the docs")])
+
+
+def test_a_race_outranks_everything_that_is_merely_slow():
+    """A cycle stops the DAG loudly. A race produces a wrong result quietly
+    and then reports success, which nothing downstream can detect."""
+    dag = [step("a", status="working", writes=["docs/api.md"]),
+           step("b", writes=["docs/api.md"])]
+    out = explain(dag)
+    assert "both write docs/api.md" in out and "no order between them" in out
+
+
+def test_ordered_writers_do_not_trip_the_warning():
+    dag = [step("draft", status="done", writes=["x"]),
+           step("edit", deps=["draft"], writes=["x"])]
+    assert "write" not in explain(dag)

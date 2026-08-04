@@ -73,6 +73,10 @@ class SwarmAgent:
     # bound on recursive self-expansion: a restart that reset it would let a
     # swarm that had reached its depth limit start growing again.
     generation: int = 0
+    # Paths this step declares it writes. Not a lock and not a sandbox: it is
+    # what makes "these two steps race on docs/api.md" a question anything can
+    # answer, since nothing else in a swarm knows what a harness touches.
+    writes: list[str] = field(default_factory=list)
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -91,6 +95,7 @@ class SwarmAgent:
             "instance": self.instance, "task_id": self.task_id,
             "attempts": self.attempts, "retry_at": self.retry_at,
             "generation": self.generation,
+            "writes": list(self.writes),
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -146,6 +151,7 @@ class SwarmAgent:
             attempts=int(d.get("attempts", 0) or 0),
             retry_at=float(d.get("retry_at", 0) or 0.0),
             generation=int(d.get("generation", 0) or 0),
+            writes=[str(x) for x in (d.get("writes") or [])],
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),
@@ -275,13 +281,14 @@ class SwarmOrchestrator:
 
     def add_agent(self, name: str, goal: str, deps: list[str] | None = None,
                   parent: str | None = None, harness: str = "",
-                  instance: str = "") -> SwarmAgent:
+                  instance: str = "", writes: list[str] | None = None) -> SwarmAgent:
         aid = f"swarm_{uuid.uuid4().hex[:8]}"
         a = SwarmAgent(
             id=aid, name=name, goal=goal,
             dependencies=deps or [],
             harness=harness,
             instance=instance,
+            writes=list(writes or []),
             parent_id=parent,
         )
         self.agents[aid] = a
@@ -513,7 +520,7 @@ class SwarmOrchestrator:
 
     def add_checked(self, name: str, goal: str,
                     deps: list[str] | None = None, harness: str = "",
-                    instance: str = "") -> dict:
+                    instance: str = "", writes: list[str] | None = None) -> dict:
         """add_agent with the validation a public entry point needs.
 
         Names are the dependency key, so a duplicate name does not create a
@@ -543,7 +550,7 @@ class SwarmOrchestrator:
                 f"no agent named {', '.join(missing)} — add dependencies "
                 f"before what depends on them")).as_dict())
         a = self.add_agent(name, goal, deps=clean, harness=harness,
-                           instance=instance)
+                           instance=instance, writes=writes)
         out = self._as_agent(Outcome(True, "add", a.id, "", a.status.value).as_dict())
         out["name"] = a.name
         return out

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .swarmio import artifact_note, blocking_writes, conflicts
 from .swarmpolicy import backoff, classify, should_retry
 
 # A swarm with no limit will start every ready agent at once. On one GPU that
@@ -130,7 +131,8 @@ UPSTREAM_BUDGET_CHARS = 2000
 
 
 def prompt_for(goal: str, upstream: list[tuple[str, str]],
-               budget: int = UPSTREAM_BUDGET_CHARS) -> str:
+               budget: int = UPSTREAM_BUDGET_CHARS,
+               artifacts: str = "") -> str:
     """The prompt an agent is actually given. Pure.
 
     `upstream` is [(name, output)] in dependency order. Dependencies that
@@ -139,8 +141,12 @@ def prompt_for(goal: str, upstream: list[tuple[str, str]],
     input it never received.
     """
     goal = (goal or "").strip()
+    # Where the work LANDED, not only what its stdout said. Without this an
+    # agent told to "polish the draft" has to guess the filename, and its
+    # usual guess is to write a second draft beside the first.
+    tail = f"\n\n{artifacts}" if artifacts else ""
     if not upstream:
-        return goal
+        return f"{goal}{tail}" if tail else goal
     share = max(200, budget // max(1, len(upstream)))
     blocks = []
     for name, text in upstream:
@@ -154,7 +160,7 @@ def prompt_for(goal: str, upstream: list[tuple[str, str]],
         blocks.append(f"### {name}\n{clipped}")
     joined = "\n\n".join(blocks)
     return (f"{goal}\n\n"
-            f"---\nContext from the steps this depends on:\n\n{joined}")
+            f"---\nContext from the steps this depends on:\n\n{joined}{tail}")
 
 
 # ── watching work on another machine ─────────────────────────────────────────
@@ -287,6 +293,7 @@ class SwarmRunner:
     def _slots(self) -> list[Slot]:
         from .swarm import AgentStatus
         out = []
+        claimed: list = []          # admitted this tick, for write conflicts
         self._backing_off = []
         now = self._now()
         for a in self.swarm.agents.values():
@@ -304,12 +311,31 @@ class SwarmRunner:
                     "reason": (f"retrying in {due - now:.0f}s "
                                f"(attempt {a.attempts + 1})")})
                 continue
+            # Two steps writing one file is not a merge conflict — there is no
+            # merge, no branch and no lock, just one of them silently losing.
+            # Holding this one until the other finishes turns a race into the
+            # queue a human would have made by hand.
+            # Both halves of the same question: something already running,
+            # and something admitted earlier in THIS tick. Checking only the
+            # first lets two writers start together on the very first pump,
+            # which is exactly the tick where a fresh DAG races.
+            busy = blocking_writes(a, [x for x in self.swarm.agents.values()
+                                       if x.status is AgentStatus.WORKING]
+                                      + claimed)
+            if busy:
+                self._backing_off.append({
+                    "id": a.id, "name": a.name,
+                    "reason": (f"{busy[0]['step']} is writing "
+                               f"{busy[0]['paths'][0]}")})
+                continue
             hid = getattr(a, "harness", "") or self.harness
             # The prompt is built here as well as in pump(): admission has to
             # price the real thing, and the upstream context it carries is
             # most of its length.
-            prompt = prompt_for(a.goal, self.upstream_of(a))
+            prompt = prompt_for(a.goal, self.upstream_of(a),
+                                artifacts=artifact_note(self._upstream_agents(a)))
             self._prompts[a.id] = prompt
+            claimed.append(a)
             out.append(Slot(id=a.id, name=a.name, harness=hid,
                             vram_mb=self._harness_vram(hid),
                             cost=self.ledger.estimate(hid, prompt)))
@@ -347,8 +373,9 @@ class SwarmRunner:
             agent = self.swarm.agents.get(aid)
             if agent is None:
                 continue
-            prompt = self._prompts.get(aid) or prompt_for(agent.goal,
-                                                          self.upstream_of(agent))
+            prompt = self._prompts.get(aid) or prompt_for(
+                agent.goal, self.upstream_of(agent),
+                artifacts=artifact_note(self._upstream_agents(agent)))
             # Hold the estimate BEFORE the step starts. Without a hold, every
             # agent admitted in one tick sees the same "committed so far" and
             # the budget is blown once per step in a single pump.
@@ -390,6 +417,16 @@ class SwarmRunner:
             started.append(agent.name)
         return {"started": started, "deferred": plan.deferred,
                 "in_flight": self._in_flight()}
+
+    def _upstream_agents(self, agent) -> list:
+        """The dependency agents themselves, for anything needing more than
+        their text (what they wrote, where it landed)."""
+        out = []
+        for dep in agent.dependencies:
+            other = self.swarm.agent_by_name(dep)
+            if other is not None:
+                out.append(other)
+        return out
 
     def upstream_of(self, agent) -> list[tuple[str, str]]:
         """(name, output) for each dependency, in the order declared."""
@@ -679,7 +716,8 @@ class SwarmRunner:
         created = []
         for step in exp.steps:
             out = self.swarm.add_checked(step.name, step.goal, step.deps,
-                                         harness=step.harness)
+                                         harness=step.harness,
+                                         writes=step.writes)
             if not out.get("ok"):
                 self.swarm.log(agent_id,
                                f"[replan] dropped {step.name}: {out.get('reason', '')}")
@@ -737,6 +775,11 @@ class SwarmRunner:
             "budget": self.budget,
             "ledger": self.ledger.as_dict(),
             "max_attempts": self.retry.max_attempts,
+            # Two steps writing one path with nothing ordering them is a race
+            # whose outcome depends on the scheduler. Reported standing, not
+            # only at admission: by the time one is admitted the other may
+            # already have run, and the damage is silent either way.
+            "write_conflicts": conflicts(list(self.swarm.agents.values())),
             "dead_letters": self.dead_letters(),
             "deferred": list(self.last.deferred),
             "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,

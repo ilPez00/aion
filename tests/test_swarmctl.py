@@ -737,3 +737,23 @@ async def test_replanning_off_asks_nothing(live, swarm, monkeypatch):
     live._swarm_runner.finish(by_name(swarm, "scout").id, "out")
     assert await live.swarm_replan_tick() == []
     assert called == []
+
+
+def test_a_typed_add_can_declare_what_the_step_writes(live, swarm):
+    """`>> path` is what makes "these two race on docs/api.md" answerable —
+    nothing else in a swarm knows what a harness touches."""
+    import asyncio
+    asyncio.run(live._swarm_command("swarm add drafter draft the page >> docs/api.md"))
+    assert by_name(swarm, "drafter").writes == ["docs/api.md"]
+
+
+def test_writes_and_deps_can_be_declared_in_either_order(live, swarm):
+    import asyncio
+    asyncio.run(live._swarm_command(
+        "swarm add one write it >> a.md << scout"))
+    asyncio.run(live._swarm_command(
+        "swarm add two write it << scout >> b.md"))
+    assert by_name(swarm, "one").writes == ["a.md"]
+    assert by_name(swarm, "one").dependencies == ["scout"]
+    assert by_name(swarm, "two").writes == ["b.md"]
+    assert by_name(swarm, "two").dependencies == ["scout"]

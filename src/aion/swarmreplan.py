@@ -166,8 +166,11 @@ def validate(raw_steps, *, parent: str, parent_generation: int,
         harness = str(raw.get("harness", "")).strip()
         if harness and known_harnesses and harness not in known_harnesses:
             harness = ""        # fall back rather than fail at run time
+        writes_raw = raw.get("writes") or []
+        writes = ([str(w).strip() for w in writes_raw if str(w).strip()][:10]
+                  if isinstance(writes_raw, list) else [])
         taken.append(Step(name=name, goal=goal[:MAX_GOAL_CHARS], deps=deps,
-                          harness=harness))
+                          harness=harness, writes=writes))
         names_here.add(name)
 
     if taken and topo_order(taken) is None:

@@ -755,10 +755,14 @@ class Store:
             deps = params.get("deps") or []
             if not isinstance(deps, list):
                 return {"ok": False, "reason": "deps must be a list of names"}
+            writes = params.get("writes") or []
+            if not isinstance(writes, list):
+                return {"ok": False, "reason": "writes must be a list of paths"}
             return self.swarm.add_checked(
                 str(params.get("name", "")), str(params.get("goal", "")),
                 [str(d) for d in deps], harness=str(params.get("harness", "")),
-                instance=str(params.get("instance_for", "")))
+                instance=str(params.get("instance_for", "")),
+                writes=[str(w) for w in writes])
         if action == "plan":
             # Propose a DAG from a goal. Creating it is a second, explicit
             # step, and running it is a third -- the same fail-closed shape as
@@ -1556,7 +1560,7 @@ class Store:
         """
         parts = text.split()
         if len(parts) < 2:
-            self.state.history.append("usage: swarm plan <goal> | apply | create <goal> | add <name> <goal> [deps] | run | status | stop")
+            self.state.history.append("usage: swarm plan <goal> | apply | create <goal> | add <name> <goal> [<< deps] [>> writes] | run | status | stop")
             return
         sub = parts[1]
         rest = " ".join(parts[2:]) if len(parts) > 2 else ""
@@ -1575,13 +1579,24 @@ class Store:
         elif sub == "add" and len(parts) >= 4:
             name = parts[2]
             goal = " ".join(parts[3:])
-            deps = []
+            deps: list[str] = []
+            writes: list[str] = []
+            # `>> path[, path]` declares what the step writes. Parsed before
+            # deps so `goal << a >> f` and `goal >> f << a` both work — the
+            # order somebody types two suffixes in is not a thing to be wrong
+            # about.
+            if " >> " in goal:
+                goal, _, tail = goal.partition(" >> ")
+                if " << " in tail:
+                    tail, _, dep_tail = tail.partition(" << ")
+                    deps = [d.strip() for d in dep_tail.split(",") if d.strip()]
+                writes = [w.strip() for w in tail.split(",") if w.strip()]
             if " << " in goal:
-                parts2 = goal.split(" << ", 1)
-                goal = parts2[0]
-                deps = [d.strip() for d in parts2[1].split(",")]
+                goal, _, dep_tail = goal.partition(" << ")
+                deps = [d.strip() for d in dep_tail.split(",") if d.strip()]
             out = self.swarm_command({"action": "add", "name": name,
-                                      "goal": goal, "deps": deps})
+                                      "goal": goal.strip(), "deps": deps,
+                                      "writes": writes})
             self.state.history.append(
                 f"swarm agent added: {name}" if out.get("ok")
                 else f"swarm: {out.get('reason', 'refused')}")

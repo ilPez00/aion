@@ -30,6 +30,7 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
+from .swarmio import conflicts
 from .workflows import _swarm_stage, _theme, stage_glyph, stage_theme_key
 
 __all__ = ["waves", "frontier", "explain", "render", "unresolved_deps",
@@ -186,6 +187,15 @@ def explain(agents: Sequence[dict], now: float | None = None) -> str:
     if not agents:
         return "no swarm — `swarm create <goal>` to start"
     f = frontier(agents, now=now)
+    # Before everything else that is merely slow: a race silently produces a
+    # wrong result and then the DAG reports success, which is the one failure
+    # nothing downstream can detect.
+    races = conflicts(agents)
+    if races:
+        r = races[0]
+        more = f" +{len(races) - 1} more" if len(races) > 1 else ""
+        return (f"{r['steps'][0]} and {r['steps'][1]} both write {r['path']} "
+                f"with no order between them{more}")
     if f["cyclic"]:
         return f"cycle: {', '.join(f['cyclic'][:3])} depend on each other — nothing can start"
     if f["unresolved"]:

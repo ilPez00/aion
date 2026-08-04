@@ -163,6 +163,23 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **Steps say what they write, so races stop being invisible** (`swarmio.py`) —
+  everything a step passed downstream went through one channel: its stdout,
+  spliced into the next prompt. Fine for "here is what I found", useless for
+  what agents actually do, which is write files. Two steps in the same wave
+  editing `docs/api.md` is not a merge conflict — no merge, no branch, no lock,
+  just one of them silently losing. A step may now declare `>> path`, and that
+  declaration answers two questions: `conflicts()` finds writers of one path
+  with NO ordering between them (an ordered pair is a sequence and normal —
+  finding the unordered ones needs reachability, not a set intersection), and
+  the runner holds a step whose paths are being written by something already
+  running OR admitted earlier in the same tick. That second half is the one a
+  test caught: checking only what is already WORKING lets two writers start
+  together on the very first pump, which is exactly when a fresh DAG races.
+  Downstream prompts also name the files upstream wrote — an agent told to
+  "polish the draft" otherwise guesses the filename, and its usual guess is to
+  write a second draft beside the first.
+
 - **"Who approved what" is now durable** (`hitl.AuditLog`) — a gate decision
   lived in a task's in-memory log, the gate itself was dropped by
   `clear_resolved()`, and `gates.json` only ever holds what is still PENDING —

@@ -42,10 +42,14 @@ class Step:
     goal: str
     deps: list[str] = field(default_factory=list)
     harness: str = ""
+    # Paths the step says it will write. Declared, not enforced: it is what
+    # lets `swarmio` see that two steps race on one file before they do.
+    writes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"name": self.name, "goal": self.goal,
-                "deps": list(self.deps), "harness": self.harness}
+                "deps": list(self.deps), "harness": self.harness,
+                "writes": list(self.writes)}
 
 
 @dataclass
@@ -125,8 +129,13 @@ def validate(goal: str, raw_steps, *, known_harnesses=(),
                 f"{name!r}: no harness {harness!r} — using the default")
             harness = ""
 
+        writes_raw = raw.get("writes") or []
+        writes = ([str(w).strip() for w in writes_raw if str(w).strip()][:10]
+                  if isinstance(writes_raw, list) else [])
+
         seen.add(name)
-        steps.append(Step(name=name, goal=step_goal, deps=deps, harness=harness))
+        steps.append(Step(name=name, goal=step_goal, deps=deps,
+                          harness=harness, writes=writes))
 
     # Dependencies resolve against this plan plus what already exists.
     resolvable = seen | prior
@@ -282,7 +291,7 @@ def apply(orchestrator, plan: Plan) -> dict:
     created, failed = [], []
     for step in plan.steps:
         out = orchestrator.add_checked(step.name, step.goal, step.deps,
-                                       harness=step.harness)
+                                       harness=step.harness, writes=step.writes)
         if out.get("ok"):
             created.append(step.name)
         else:
