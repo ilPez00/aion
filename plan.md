@@ -169,6 +169,28 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **Two command branches that could never fire** (`store.py`) — `_run_command`
+  opens with `parts = text.split(" ", 1)`, so `parts` is never longer than two.
+  Two branches were written against a list split on every space, and neither
+  had ever executed. `run <harness> <prompt>` tested `len(parts) >= 3` and read
+  `parts[1]`/`parts[2]`; it fell through to the final fallback instead, which
+  spawns the ACTIVE harness with the whole line — so `run claude explain X` ran
+  on whatever happened to be selected, with "run claude " still inside the
+  prompt. `_agent_run_tool` emits exactly that form, which means the model's
+  only way to choose a harness has never worked and every prompt it sent was
+  prefixed with the command that sent it. `setup set KEY VAL` tested
+  `len(parts) >= 4` and fell to the scope parser, printing a usage line; the
+  env writer behind it had never run once. Neither is visible from the branch
+  itself — you have to be holding a split from a hundred lines earlier — so
+  the tests go through `_run_command` with real text rather than calling the
+  helpers. Making the env writer reachable also made it the first version of
+  that code to actually create `~/.env`, so it now forces 0600, collapses a
+  pre-existing duplicate key rather than shadowing it, and keeps the VALUE out
+  of the logs, which are on screen and published to the HUD. This also
+  corrects the previous cycle: the missing `Path` import was real for
+  `_load_skills_data`, which genuinely ran and failed, but the `setup set`
+  half of that claim was wrong — that code was unreachable, not broken.
+
 - **`store.py` is 560 lines smaller** (`storeswarm.py`) — it had reached 2093
   lines, and the largest single thing in it was the swarm: the lazy runner and
   its five policies, the remote spawn/poll/control hooks, the typed `swarm`
@@ -189,7 +211,9 @@ enables only Models / Tasks / Agent.
   NameError on its third line into an `except Exception: pass` and the Skills
   panel was permanently empty with nothing said about it — a hard breakage made
   indistinguishable from "this machine has no skills installed". The same
-  missing import broke `setup set KEY VAL`. `remote add` referenced
+  missing import sat in `setup set KEY VAL` — though that turned out to be a
+  smaller claim than it first looked, and the next cycle corrects it: that
+  branch could never run at all, for an unrelated reason. `remote add` referenced
   `RemoteNode`, which two OTHER methods in the same class imported locally and
   that one did not, so the only command that CREATES a remote could not run.
   And the web PTY editor called `shlex.quote` with no `shlex` imported — the
@@ -472,6 +496,14 @@ enables only Models / Tasks / Agent.
    scope only and 404s on the Actions API, so CI has never been *observed*
    green from here — including the lint gate added in the last cycle. One
    command turns "should pass" into "does pass".
+
+### Next feature (named, not started)
+
+- **Todo tab ↔ praxis.** Wire the Desktop todo list to the praxis backend so
+  the two are one list rather than two that disagree.
+- **Any AI as an axiom provider.** Today `axiom` means one provider; the goal
+  is the harness treatment — whichever model is configured answers, and the
+  caller does not know which.
 
 ### Software
 

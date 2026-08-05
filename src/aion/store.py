@@ -925,26 +925,15 @@ class Store(SwarmCommands):
         if parts[0] in ("setup", "scan"):
             if parts[0] == "setup" and len(parts) >= 2 and parts[1] == "wizard":
                 return
-            if parts[0] == "setup" and len(parts) >= 4 and parts[1] == "set":
-                key = parts[2].upper()
-                val = parts[3]
-                env_path = Path.home() / ".env"
-                lines = []
-                found = False
-                if env_path.exists():
-                    for line in env_path.read_text().splitlines():
-                        stripped = line.strip()
-                        if "=" in stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() == key:
-                            lines.append(f"{key}={val}")
-                            found = True
-                            continue
-                        lines.append(line)
-                if not found:
-                    lines.append(f"{key}={val}")
-                env_path.write_text("\n".join(lines) + "\n")
-                self.state.logs.append(f"setup: {key} written to ~/.env")
-                self.state.logs = self.state.logs[-50:]
-                return
+            # Same defect as the `run` branch above: `len(parts) >= 4` against
+            # a list that `split(" ", 1)` caps at two. `setup set KEY VAL` has
+            # never reached this code — it fell through to the scope parser
+            # and printed a usage line.
+            if parts[0] == "setup" and len(parts) == 2:
+                sub = parts[1].split(" ", 2)
+                if len(sub) == 3 and sub[0] == "set":
+                    self._env_set(sub[1].upper(), sub[2])
+                    return
             from .profile import SCOPES, load, scan, save
             prev = load()
             if parts[0] == "setup":
@@ -1055,10 +1044,21 @@ class Store(SwarmCommands):
             await self._swarm_command(text)
             return
         # Explicit "run <harness> <prompt>" — used by the agent's tool calls
-        # and by users. 3+ parts: parts[0]=run, parts[1]=harness, rest=prompt.
-        if parts[0] == "run" and len(parts) >= 3 and parts[1] in self.harnesses:
-            await self._spawn(parts[1], parts[2])
-            return
+        # and by users.
+        #
+        # This used to test `len(parts) >= 3` and read `parts[1]` / `parts[2]`,
+        # but `parts` is `text.split(" ", 1)` and therefore never longer than
+        # two. The branch could not fire, so `run claude explain X` fell all
+        # the way through to the final fallback, which spawns the ACTIVE
+        # harness with the whole line — the named harness ignored, and "run
+        # claude " left glued to the front of the prompt. `_agent_run_tool`
+        # emits exactly this form, so the model's one way to choose a harness
+        # silently did not.
+        if parts[0] == "run" and len(parts) == 2:
+            hid, _, prompt = parts[1].partition(" ")
+            if hid in self.harnesses and prompt.strip():
+                await self._spawn(hid, prompt.strip())
+                return
         if len(parts) == 2 and parts[0] in self.harnesses:
             await self._spawn(parts[0], parts[1])
             return
@@ -1085,6 +1085,44 @@ class Store(SwarmCommands):
             await self._chat(text)
         else:
             await self._spawn(self.state.active_harness, text)
+
+    def _env_set(self, key: str, val: str) -> None:
+        """Write one `KEY=value` into `~/.env`, replacing any existing KEY.
+
+        This is where provider API keys land, so two things matter beyond
+        getting the line in. The file is rewritten whole, which means an
+        existing key is REPLACED rather than shadowed by a second line further
+        down — a duplicate would leave which value wins up to whoever parses
+        it. And the mode is forced to 0600: this became reachable in the same
+        change that fixed the dispatcher, so it is the first version of this
+        code that ever actually creates the file, and a world-readable file of
+        API keys is not a thing to leave for later.
+        """
+        env_path = Path.home() / ".env"
+        lines: list[str] = []
+        found = False
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                stripped = line.strip()
+                if ("=" in stripped and not stripped.startswith("#")
+                        and stripped.split("=", 1)[0].strip() == key):
+                    if found:
+                        continue          # drop a pre-existing duplicate
+                    lines.append(f"{key}={val}")
+                    found = True
+                    continue
+                lines.append(line)
+        if not found:
+            lines.append(f"{key}={val}")
+        env_path.write_text("\n".join(lines) + "\n")
+        try:
+            env_path.chmod(0o600)
+        except OSError as e:      # a mode we cannot set is worth saying
+            self.state.logs.append(f"setup: could not chmod ~/.env: {e}")
+        # The VALUE never goes in the log. This runs in a cockpit whose logs
+        # are on screen, published to the HUD, and kept for 50 lines.
+        self.state.logs.append(f"setup: {key} written to ~/.env")
+        self.state.logs = self.state.logs[-50:]
 
     async def _run_compare(self, text: str) -> None:
         """Side-by-side multi-model comparison. Switches Agent ws to show it."""
