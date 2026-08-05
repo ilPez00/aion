@@ -169,6 +169,23 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **The model was being told to say things nothing accepts** (`interpret.py`,
+  `voicecmd.py`) — the plain-language translator's prompt listed `goto` targets
+  `memory`, `sys`, `hermes`, `skills`, `projects` and `swarm`, none of which
+  are workspaces, and omitted `runs` and `net`, which are. A model obeying that
+  prompt exactly produced "goto: no workspace 'sys'". Neither half could see
+  it: the prompt was self-consistent, the dispatcher was self-consistent, and
+  the disagreement lived between them — the same shape as the `ToolEnv` crash
+  and the dead `run` branch. Both prompts now DERIVE their vocabulary from the
+  thing that validates it (`workspace_ids()` off the live config, the app list
+  off `APP_SYNONYMS`, the voice module list off `MODULE_WORDS`), because a
+  hardcoded vocabulary is only correct on the day it is typed and nothing about
+  it being wrong later is visible from either end. Tests compare rendered
+  prompt against source of truth in both directions, including that every verb
+  the prompt asks for survives `llm_translate`'s allowlist rather than being
+  requested and then discarded. Also pinned: voice can still never be told to
+  approve a gate.
+
 - **The agent chat crashed on every message** (`agent.py`, `llm.py`) — `_chat`
   built its `ToolEnv` with `think=`, a keyword the dataclass has no field for,
   so constructing the tool environment raised `TypeError` before the model

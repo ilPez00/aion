@@ -126,16 +126,26 @@ def interpret(text: str) -> str | None:
 
 
 # ---- LLM fallback (blocking; caller wraps in executor) -------------------
-_LLM_PROMPT = """You translate a user's plain-language request into ONE aion palette command, or NONE.
+# The vocabulary in this prompt IS a contract with `store._run_command`: every
+# name here is one the model will be told works. Both halves were internally
+# consistent and disagreed with each other — the goto list named `memory`,
+# `sys`, `hermes`, `skills`, `projects` and `swarm`, none of which are
+# workspaces, and omitted `runs` and `net`, which are. A model obeying the
+# prompt exactly produced "goto: no workspace 'sys'".
+#
+# So the lists are DERIVED rather than typed. A hardcoded vocabulary is only
+# correct on the day it is written, and nothing about being wrong later is
+# visible from either side.
+_LLM_PROMPT_TMPL = """You translate a user's plain-language request into ONE aion palette command, or NONE.
 
 Commands:
-  app <mail|edit|sheet|files|git|rss|monitor> [args]   launch a program
+  app <{apps}> [args]   launch a program
   apps                    list programs
   todo <text> | todo done <n> | todo rm <n>
   setup <scopes from: dev writing media data comms finance>
   scan                    refresh disk trackers
   observe ai | observe off
-  goto <desktop|models|tasks|agent|memory|vault|sys|hermes|skills|projects|term|swarm|settings>
+  goto <{workspaces}>
   run <harness> <prompt>  run an AI task
 
 Reply with exactly the command and nothing else. If the request is
@@ -144,11 +154,34 @@ conversation or doesn't map cleanly, reply NONE.
 Request: """
 
 
+def workspace_ids() -> list[str]:
+    """The workspaces `goto` can actually reach, from the live config.
+
+    Falls back to the three shipped by default rather than to nothing: a
+    prompt with an empty list invites the model to invent targets, which is
+    the failure this function exists to remove.
+    """
+    try:
+        from .core import load_config
+        ids = [str(w.get("id") or "")
+               for w in (load_config().get("workspaces") or [])]
+        return [i for i in ids if i]
+    except Exception:                      # noqa: BLE001 — a prompt, not a gate
+        return ["models", "tasks", "agent"]
+
+
+def build_prompt() -> str:
+    """The translator prompt, with its vocabulary read off the real thing."""
+    return _LLM_PROMPT_TMPL.format(
+        apps="|".join(APP_SYNONYMS),
+        workspaces="|".join(workspace_ids()) or "models|tasks|agent")
+
+
 def llm_translate(text: str, timeout: int = 10) -> str | None:
     """Ask the cheap-tier LLM chain to canonicalize. None on miss/failure."""
     try:
         from .llm import ChatSession, chat_send
-        reply = chat_send(ChatSession(), _LLM_PROMPT + text, timeout=timeout)
+        reply = chat_send(ChatSession(), build_prompt() + text, timeout=timeout)
     except Exception:
         return None
     if not reply:

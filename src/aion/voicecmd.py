@@ -221,11 +221,18 @@ ALLOWED_ARGS: dict[str, set[str]] = {
     "chat": {"text"},
 }
 
+# The module list is derived from MODULE_WORDS rather than typed out, because
+# `_validate` rejects any module not in MODULE_WORDS: a prompt naming one that
+# is not there tells the model to emit something guaranteed to be thrown away,
+# and the model has no way to find that out. The two lists agreed when this
+# was written, which is exactly the state the interpret.py prompt was in
+# before six of its workspaces stopped existing.
 _LLM_PROMPT = """You translate a spoken phrase into ONE aion HUD action.
 Reply with a single line of JSON and nothing else.
 
 Actions and their arguments:
-  {"action":"goto","args":{"module":"desk|files|agents|repos|vault|system|board|term|agent|latex|settings"}}
+  {"action":"goto","args":{"module":"%(modules)s"}}""" % {
+    "modules": "|".join(MODULE_WORDS)} + """
   {"action":"scan","args":{"dir":"<path or folder name>"}}      show a directory as a graph
   {"action":"filter","args":{"query":"<text>"}}                  dim non-matching nodes ("" clears)
   {"action":"search","args":{"query":"<text>"}}                  open the search palette
