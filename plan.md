@@ -169,6 +169,20 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **`store.py` is 560 lines smaller** (`storeswarm.py`) — it had reached 2093
+  lines, and the largest single thing in it was the swarm: the lazy runner and
+  its five policies, the remote spawn/poll/control hooks, the typed `swarm`
+  verbs, plan/apply, the replan tick. One question — how does a plan get run —
+  answered in the middle of a file that also handles todos, env vars, chat,
+  boards and the task registry. Moved as a mixin rather than redesigned: every
+  method keeps the `self` it had, no call site changes, and the diff is a
+  relocation that can be verified method-by-method rather than a reshuffle
+  where a regression cannot be bisected. The module docstring names every
+  Store attribute it reaches for instead of pretending to be decoupled, since
+  it is not, and a test pins that list. The lint gate from the previous cycle
+  earned itself immediately here: the moved code used `asyncio` through
+  `store.py`'s module-level import, and `F821` caught it before the tests ran.
+
 - **A lint gate, and the four live bugs that justified it** (`ruff` in CI) —
   nothing in this repo ever checked for names that do not exist, and four had
   shipped. `store.py` never imported `Path`, so `_load_skills_data` raised
@@ -461,10 +475,10 @@ enables only Models / Tasks / Agent.
 
 ### Software
 
-1. **Split `store.py`** (~2100 lines). Incrementally: one cohesive group of
-   command verbs per cycle, tests moving alongside, rather than a single large
-   reshuffle where a regression cannot be bisected. The first extraction is
-   also the test of whether the seams are where they look.
+1. **Split `store.py`** — first cut done (2093 → 1534; the swarm half is now
+   `storeswarm.py`). Next candidates, same method: the `setup`/`profile`/env
+   block, then memory/todo/vault. The seam test (`tests/test_store_split.py`)
+   carries a line-count ratchet, so each extraction has to hold.
 2. **mypy, per-module.** Its own cycle with an opt-in list, starting from the
    pure modules that already have full signatures (`swarm*.py`, `hitl.py`).
    Switched on repo-wide it produces thousands of findings and a gate everyone
