@@ -1,9 +1,15 @@
 # aion — plan & status
 
-**aion = splitscreen HUD + application desktop.** 8 unified workspaces, driven by
-one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
+**aion = splitscreen HUD + application desktop + orchestrator.** Workspaces are
+config-driven (three shipped by default, ten in a full install), driven by one
+`Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
+See `docs/IDENTITY.md` for what the product is and what it refuses to be.
 
 ## Workspaces
+
+The eight below are the panels with real content. A full install also carries
+**Runs** (loop history) and **Net** (peers/tunnels); the shipped default config
+enables only Models / Tasks / Agent.
 
 | # | Workspace | Absorbs | Content |
 |---|-----------|---------|---------|
@@ -441,21 +447,62 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
 
 ## Roadmap — next
 
-1. **Colmi accel offsets** — run the verify harness against the real ring, pin
+### Needs a human
+
+0. **Revoke the flagged Gemini keys.** 16 of 29 stored keys returned 403
+   "reported as leaked" — Google flags that when a key turns up somewhere
+   public. They are live credentials until revoked in the console, and no
+   amount of work in this repo changes that. Re-probe first if the count is
+   stale; revoke regardless.
+0b. **`gh auth refresh -s repo,workflow`.** The active token carries `copilot`
+   scope only and 404s on the Actions API, so CI has never been *observed*
+   green from here — including the lint gate added in the last cycle. One
+   command turns "should pass" into "does pass".
+
+### Software
+
+1. **Split `store.py`** (~2100 lines). Incrementally: one cohesive group of
+   command verbs per cycle, tests moving alongside, rather than a single large
+   reshuffle where a regression cannot be bisected. The first extraction is
+   also the test of whether the seams are where they look.
+2. **mypy, per-module.** Its own cycle with an opt-in list, starting from the
+   pure modules that already have full signatures (`swarm*.py`, `hitl.py`).
+   Switched on repo-wide it produces thousands of findings and a gate everyone
+   disables — which is worse than no gate, because it looks like one.
+3. **Coverage floor** on `core.py` / `store.py` / `harnesses.py`. Worth having
+   *after* (1): a percentage on a 2100-line module reports something nobody can
+   act on.
+
+### Hardware / field (all blocked on physical access)
+
+4. **Colmi accel offsets** — run the verify harness against the real ring, pin
    `decode_accel()`, tune `TapDetector.threshold`. *(blocks the ring "button" in field)*
-2. **Real APK** — pair phone Wireless Debugging, `tailscale serve` HTTPS the PWA,
+5. **Real APK** — pair phone Wireless Debugging, `tailscale serve` HTTPS the PWA,
    Bubblewrap build (`twa-manifest.json`), `adb install`. *(blocked on phone pairing code)*
-3. **Pendant → physis ingest** — the transport is **done**: HTTP pull against the
+6. **Pendant → physis ingest** — the transport is **done**: HTTP pull against the
    endpoints the cyclops firmware already serves (`/snap`, `/audio.wav`,
    `/stream`), in `deck/pendant.py`, LAN-only, stdlib. BLE was never viable for
    VGA JPEGs at the ~2 KB/s notify throughput bring-up measured. What is left is
    feeding `PendantEvent` blobs into the physis context (vision → sightings,
    audio → transcriber) and registering the link in `ui/app.py` next to
    `DeckInput`/`RingInput`. Point it with `AION_PENDANT_HOST`.
-4. **HUD coherence stream** — feed `Iteration.coherence` into the DAG edge animation.
+7. **assetlinks.json route** in `aion_web.py` for TWA trust (needed by the APK).
+
+### Brain
+
+8. **HUD coherence stream** — feed `Iteration.coherence` into the DAG edge animation.
    *(the live channel now exists; this is the next payload to put on it)*
-5. **Research priming** — use physis `reconstruct()` to skip queries a past run covered.
-6. **assetlinks.json route** in `aion_web.py` for TWA trust (needed by the APK).
+9. **Research priming** — use physis `reconstruct()` to skip queries a past run covered.
+
+### A note on where the effort has gone
+
+Cycles 9–12 added five modules to the swarm subsystem in a row (event log,
+stated values, liveness, plus the lint gate that fell out of it). That
+subsystem is now the most developed part of aion by a wide margin, and the
+gaps chosen were the ones already to hand rather than the ones ranked against
+everything else. The list above is ordered by what is actually blocking, not by
+what is nearest — the hardware items have been "next" for longer than any of
+the swarm work existed.
 
 ## Verification
 
