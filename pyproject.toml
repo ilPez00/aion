@@ -14,7 +14,10 @@ voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice c
 voice-tts = ["edge-tts"]                             # optional: text-to-speech output
 deck = ["pyserial"]                                  # optional: CyclUno control deck
 ring = ["bleak"]                                     # optional: Colmi R02 smart ring (BLE)
-dev = ["pytest", "pytest-asyncio", "ruff"]
+# pyyaml is a TEST dependency: tests/test_lint_gate.py parses ci.yml to check
+# every job installs the tools it runs. Skipping that test when the import is
+# missing would recreate the failure it exists to catch.
+dev = ["pytest", "pytest-asyncio", "ruff", "pyyaml"]
 web = ["websockets", "pyte", "requests", "python-dotenv"]  # optional: web HUD server
 
 [project.scripts]

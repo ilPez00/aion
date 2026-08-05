@@ -169,6 +169,19 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **CI had never been green** (`.github/workflows/ci.yml`) — 25 of 25 runs red,
+  going back as far as the API lists. The `tests` job was fine; the `guard` job
+  ran `python -m pytest` with no install step and ended every run in "No module
+  named pytest". It had been failing since it was written, so the rules that
+  stop a blind `git add -A` from sweeping credentials into a commit — the exact
+  guard this repo has needed twice — had never once executed. A job that fails
+  for a setup reason looks identical to one that fails for a real one, and a
+  red X that is always there stops being read. Now checked rather than trusted:
+  a test parses `ci.yml` and fails if any job runs a Python tool it never
+  installs. `pyyaml` is a declared dev dependency for it, because skipping that
+  test when the import is missing would recreate the failure it exists to
+  catch.
+
 - **The model was being told to say things nothing accepts** (`interpret.py`,
   `voicecmd.py`) — the plain-language translator's prompt listed `goto` targets
   `memory`, `sys`, `hermes`, `skills`, `projects` and `swarm`, none of which
@@ -543,10 +556,15 @@ enables only Models / Tasks / Agent.
    public. They are live credentials until revoked in the console, and no
    amount of work in this repo changes that. Re-probe first if the count is
    stale; revoke regardless.
-0b. **`gh auth refresh -s repo,workflow`.** The active token carries `copilot`
-   scope only and 404s on the Actions API, so CI has never been *observed*
-   green from here — including the lint gate added in the last cycle. One
-   command turns "should pass" into "does pass".
+0b. ~~`gh auth refresh -s repo,workflow`~~ — **done, and it found something.**
+   CI had never been green: 25 of 25 runs red. The `tests` job passes (the
+   lint gate included, now verified rather than assumed); the `guard` job had
+   no install step and ended every single run in "No module named pytest". So
+   the staged-content rules — the ones that stop a blind `git add -A` from
+   sweeping credentials into a commit — had never once executed in CI, and the
+   red X had been there long enough to read as background. Note for the
+   future: `GITHUB_TOKEN` in the environment carries `copilot` scope only and
+   overrides the keyring token, so Actions queries need `env -u GITHUB_TOKEN`.
 
 ### Next feature (named, not started)
 

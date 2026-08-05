@@ -60,6 +60,17 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install
+        # This job had no install step, so every run of it since it was
+        # written ended in "No module named pytest" — 25 of 25 red. The rules
+        # below are the ones that stop a blind `git add -A` from sweeping
+        # credentials into a commit, and they had never once executed here.
+        # `[dev]` rather than bare pytest so this resolves the same way the
+        # tests job does.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
       - name: Staged-content rules
         # The same rules the pre-commit hook applies, run against the pushed
         # commits. A hook can be skipped with --no-verify or simply not

@@ -103,6 +103,29 @@ def test_ci_actually_runs_the_linter():
     assert "ruff check src/ tests/ scripts/" in ci
 
 
+def test_every_job_installs_what_it_runs():
+    """The `guard` job had no install step, so all 25 of its runs ended in
+    "No module named pytest" — a red X that had been there so long it read as
+    background noise. The rules it never ran are the ones that stop a blind
+    `git add -A` from sweeping credentials into a commit.
+
+    Checked here rather than trusted, because a job that fails for a setup
+    reason looks exactly like a job that fails for a real one, and the repo's
+    own history is that nobody opened it for months.
+    """
+    import yaml
+
+    spec = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    for name, job in (spec.get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        runs = " ".join(str(s.get("run", "")) for s in steps)
+        needs_python = "python -m pytest" in runs or "python -m ruff" in runs
+        if needs_python:
+            assert "pip install" in runs, (
+                f"job {name!r} runs a python tool it never installs")
+
+
 @pytest.mark.skipif(subprocess.run([sys.executable, "-m", "ruff", "--version"],
                                    capture_output=True).returncode != 0,
                     reason="ruff not installed in this environment")
