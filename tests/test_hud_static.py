@@ -158,6 +158,15 @@ def test_the_desk_shows_decisions_that_are_already_made():
     assert re.search(r"panel\(`Approvals", HUD_JS)
 
 
+def test_the_browser_shows_what_the_running_steps_are_doing():
+    """A busy swarm rendered as a bar at zero and nothing else, so "working"
+    and "wedged since lunch" looked identical from here. The wording is the
+    cockpit's — the browser must not decide when a step counts as quiet."""
+    body = re.search(r"async function loadSwarmStatus\(.*?\n\}", HUD_JS, re.S)
+    assert body and "st.live" in body.group(0)
+    assert "quiet" not in body.group(0)
+
+
 def test_the_browser_shows_the_values_a_run_stated():
     """Not "produced 4kB of output" — the handful of values the run turns on.
     Qualified by step, because two steps stating `path` is the normal case."""

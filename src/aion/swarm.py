@@ -82,6 +82,12 @@ class SwarmAgent:
     # prompts carry whole: reparsing on reload would be fine today and quietly
     # different the moment the pattern changes under a checkpoint.
     facts: dict[str, str] = field(default_factory=dict)
+    # When anything was last heard from this step while it ran. 0 means
+    # nothing has been, which is NOT the same as "it is dead": a harness that
+    # reports once at exit is silent for its whole life and perfectly healthy.
+    # Checkpointed, because a remote step keeps working across a restart here
+    # and resetting its clock would hide a peer that stopped answering.
+    last_seen: float = 0.0
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -102,6 +108,11 @@ class SwarmAgent:
             "generation": self.generation,
             "writes": list(self.writes),
             "facts": dict(self.facts),
+            # When it started, not only how old it is: `age_s` counts from
+            # creation, so a step planned this morning and started a minute
+            # ago reads as hours long. A running row needs the second one.
+            "started": self.started,
+            "last_seen": self.last_seen,
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -159,6 +170,7 @@ class SwarmAgent:
             generation=int(d.get("generation", 0) or 0),
             writes=[str(x) for x in (d.get("writes") or [])],
             facts={str(k): str(v) for k, v in (d.get("facts") or {}).items()},
+            last_seen=float(d.get("last_seen", 0) or 0.0),
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),

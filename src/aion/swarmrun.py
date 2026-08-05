@@ -245,10 +245,11 @@ class SwarmRunner:
                  vram_total: int = DEFAULT_VRAM_MB,
                  harness_vram=None, spawn_remote=None, poll_remote=None,
                  budget: float = 0.0, prices=None, retry=None,
-                 replan=None, events=None, clock=None) -> None:
+                 replan=None, events=None, heartbeat=None, clock=None) -> None:
         import time
 
         from .swarmbudget import Ledger
+        from .swarmlive import HeartbeatPolicy
         from .swarmpolicy import RetryPolicy
         from .swarmreplan import ReplanPolicy
 
@@ -274,6 +275,10 @@ class SwarmRunner:
         # from the event loop. The cockpit drains this, asks off-thread, and
         # hands the answer back to `apply_expansion`.
         self._replan_queue: list[str] = []
+        # When a WORKING step stops counting as alive. Off by default: this is
+        # the only policy here that ENDS work rather than declining to start
+        # it, so it does nothing at all until someone asks for it.
+        self.heartbeat = heartbeat or HeartbeatPolicy()
         # Where transitions go. Injected and no-op by default: the runner is a
         # scheduler, and a scheduler that cannot run without a writable disk is
         # a worse scheduler. `events(kind, step, **fields)`.
@@ -372,6 +377,12 @@ class SwarmRunner:
         """
         from .swarm import AgentStatus
 
+        # Before admitting anything: a wedged step is still holding a slot,
+        # VRAM and a place in `_in_flight()`, so a swarm can be entirely full
+        # of work that stopped existing. Reaping first is what turns those
+        # back into capacity on this tick rather than the next one.
+        self.reap()
+
         plan = admit(self._slots(), running=self._in_flight(),
                      max_parallel=self.max_parallel,
                      vram_total=self.vram_total, vram_used=self._vram_used(),
@@ -398,6 +409,17 @@ class SwarmRunner:
             # immediately would otherwise find the agent still IDLE and the
             # completion would be dropped.
             self.swarm.set_status(aid, AgentStatus.WORKING)
+            # Stamped from the RUNNER's clock, not the orchestrator's. Liveness
+            # compares `started` against `self._now()`, and two clocks in one
+            # subtraction is a number that means nothing — which is what an
+            # injected clock produced before this line existed. Re-stamped per
+            # attempt on purpose: "has this attempt wedged" is the question,
+            # and the event log already measures the whole story across tries.
+            agent.started = self._now()
+            # A pulse from the attempt that just died is not a pulse from this
+            # one. Clearing it is what makes a retried step start out as "never
+            # heard from" rather than inheriting the old run's liveness.
+            agent.last_seen = 0.0
             self.events("started", agent.name, attempt=agent.attempts,
                         harness=getattr(agent, "harness", "") or self.harness,
                         instance=getattr(agent, "instance", "") or "")
@@ -475,7 +497,7 @@ class SwarmRunner:
 
     # -- completion --------------------------------------------------------
     def on_task_state(self, task_id: str, state: str, output: str = "",
-                      error: str = "") -> dict | None:
+                      error: str = "", progress: float | None = None) -> dict | None:
         """A task we own reached a new state. Advance its agent if terminal.
 
         Returns the pump result when the DAG moved, so a caller driving this
@@ -485,6 +507,10 @@ class SwarmRunner:
         if aid is None:
             return None                     # not ours; the cockpit has others
         if state in ("running", "pending"):
+            # Not nothing. This used to return immediately, so a swarm knew a
+            # step's progress was 0.0 right up to the moment it was 1.0, and
+            # had no way at all to tell a working step from a wedged one.
+            self._heard(aid, progress)
             return None
         if state == "done":
             self.finish(aid, output)
@@ -497,6 +523,73 @@ class SwarmRunner:
         else:
             return None
         return self.pump()
+
+    def live_lines(self) -> list[str]:
+        """One line per running step: what it is, and how long it has been it.
+
+        Plain text, composed once. Both surfaces print these verbatim for the
+        same reason they share `explain()` — a cockpit whose two views phrase
+        the same swarm differently is a cockpit that gets argued with.
+        """
+        from .swarm import AgentStatus
+        from .swarmlive import assess, render_live
+
+        out = []
+        for a in self.swarm.agents.values():
+            if a.status is not AgentStatus.WORKING:
+                continue
+            shown = render_live(assess(a, self._now(), self.heartbeat))
+            out.append(f"{a.name} — {shown}" if shown else f"{a.name} — running")
+        return out
+
+    def reap(self) -> list[str]:
+        """End the running steps the heartbeat policy no longer believes in.
+
+        Routed through `fail()` rather than `cancel()` on purpose. A wedged
+        step is a FAILURE — an unclassifiable one, which the retry policy
+        treats as transient and runs again, and running a hung step again is
+        very often the correct move. `cancel()` would mark it as a decision
+        somebody made, and nobody made it. `fail()` also settles the ledger
+        against the task the step really did run, where `cancel()` releases
+        the hold: a reaped step burned whatever it burned before it wedged.
+
+        `fail()` drops the task watch, so a harness that wakes up later finds
+        no agent behind its id — a late completion cannot land on the retry.
+
+        Does nothing at all unless a policy was configured.
+        """
+        from .swarm import AgentStatus
+        from .swarmlive import sweep
+
+        running = [a for a in self.swarm.agents.values()
+                   if a.status is AgentStatus.WORKING]
+        reaped = []
+        for found in sweep(running, self._now(), self.heartbeat):
+            agent = self.swarm.agents.get(found["id"])
+            if agent is None:
+                continue
+            self.swarm.log(found["id"], f"[run] reaped: {found['why']}")
+            self.events("reaped", agent.name, state=found["state"],
+                        reason=found["why"])
+            self.fail(found["id"], found["why"])
+            reaped.append(agent.name)
+        return reaped
+
+    def _heard(self, agent_id: str, progress: float | None = None) -> None:
+        """Something was heard from a running step. Stamp it.
+
+        The stamp is what separates "never reported" from "reported and then
+        stopped" — the only one of those two silences that says anything.
+        """
+        agent = self.swarm.agents.get(agent_id)
+        if agent is None:
+            return
+        agent.last_seen = self._now()
+        if progress is not None:
+            try:
+                agent.progress = max(0.0, min(1.0, float(progress)))
+            except (TypeError, ValueError):
+                pass
 
     def finish(self, agent_id: str, output: str = "") -> None:
         from .swarm import AgentStatus
@@ -850,6 +943,10 @@ class SwarmRunner:
             # only at admission: by the time one is admitted the other may
             # already have run, and the damage is silent either way.
             "write_conflicts": conflicts(list(self.swarm.agents.values())),
+            # Composed here so the browser prints what the cockpit says rather
+            # than deciding for itself when a step counts as quiet — two
+            # renderers disagreeing about that is worse than either verdict.
+            "live": self.live_lines(),
             "timeline": self.timeline(),
             "dead_letters": self.dead_letters(),
             "deferred": list(self.last.deferred),
@@ -869,8 +966,26 @@ class SwarmRunner:
         from six panels.
         """
         from .swarm import AgentStatus
+        from .swarmlive import assess
 
         if self._in_flight():
+            # "Something is running" was treated as proof that nothing is
+            # wrong, which made the one failure that kills a swarm silently —
+            # a step stuck in WORKING — the single condition this refused to
+            # diagnose. Only reported for a step that WAS talking and stopped:
+            # a harness that reports once at exit is silent and healthy, and
+            # saying otherwise every time would train people to ignore it.
+            quiet = []
+            for a in self.swarm.agents.values():
+                if a.status is not AgentStatus.WORKING:
+                    continue
+                live = assess(a, self._now(), self.heartbeat)
+                if live.state in ("quiet", "stalled"):
+                    quiet.append((live.silent_for, a.name))
+            if quiet:
+                silent_for, name = max(quiet)
+                return (f"{name} has been silent for "
+                        f"{silent_for / 60:.0f}m since last reporting")
             return ""
         if not self.swarm.agents:
             return ""

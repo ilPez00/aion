@@ -315,15 +315,18 @@ def _bar(progress: float, width: int, colour: str, dim: str,
 def render(agents: Sequence[dict], theme: dict | None = None,
            now: float | None = None, name_width: int = 14,
            max_rows: int = 14, goal_width: int = 20,
-           bars: bool = True) -> str:
+           bars: bool = True, heartbeat=None) -> str:
     """The DAG drawn as waves, top to bottom, in running order.
 
     Each row carries the one fact that explains its own state — a retry
     countdown, the upstream that failed, the attempt count — so the view never
     forces a jump to the log to find out why a row is the colour it is.
     """
+    from .swarmlive import HeartbeatPolicy, assess, render_live
+
     th = _theme(theme)
     a, er, di = th["accent"], th["err"], th["dim"]
+    heartbeat = heartbeat or HeartbeatPolicy()
     items = list(agents)
     if not items:
         return f"[{di}](no steps)[/]"
@@ -374,6 +377,19 @@ def render(agents: Sequence[dict], theme: dict | None = None,
             elif str(ag.get("status")) == "failed":
                 tries = f" ×{attempts}" if attempts > 1 else ""
                 note = f"[{er}]failed{tries}[/]"
+            elif str(ag.get("status")) == "working":
+                # A running row said nothing about itself except its bar, and
+                # the bar sat at zero for most harnesses. "4m" answers the
+                # question actually being asked of a busy swarm — is this the
+                # step that has been going since I made coffee — and "quiet
+                # 6m" answers the one nothing could answer at all.
+                live = assess(ag, at, heartbeat)
+                shown = render_live(live)
+                note = (f"[{th['warn'] if live.state != 'working' else di}]"
+                        f"{shown}[/]") if shown else ""
+                if live.state == "working" and ag.get("goal"):
+                    note = (f"{note} [{di}]"
+                            f"{str(ag['goal'])[:max(4, goal_width - 6)]}[/]")
             elif ag.get("instance"):
                 # Instances are machine names and they collide at the head
                 # ("workstation" / "workstation-2"), so cut less here than for

@@ -163,6 +163,38 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **A running step can now be asked whether it is still alive** (`swarmlive.py`)
+  — `stalled()` opened with `if self._in_flight(): return ""`, so the one
+  condition it refused to diagnose was the one that kills a swarm quietly: a
+  step stuck in WORKING. A wedged subprocess, a sleeping peer, a model call
+  that never returns — the agent stayed WORKING, every panel reported a healthy
+  busy swarm, and the DAG waited forever on a step nothing was running. Nothing
+  timed it out because nothing was watching: harnesses report progress through
+  `set_progress`, and the swarm threw every one of those updates away
+  (`on_task_state` returned early on "running", and the store's `cur != prev`
+  guard dropped the rest), so a step's progress was 0.0 right up to the moment
+  it was 1.0. The load-bearing distinction is between two silences — a step
+  that NEVER reported says nothing at all, because plenty of CLI harnesses
+  block until they exit and report once, and a watchdog that kills on that
+  invents the failure it was installed to catch; a step that reported
+  repeatedly and then STOPPED is evidence. Same discipline as a physis
+  coherence of 0.0 meaning "no reading" rather than "bad". So `stall_after`
+  only ever fires on the second kind, and the first is bounded — if at all — by
+  a separate, blunter `max_runtime`, the only instrument that sees a mute
+  harness. Everything is off by default (`swarm_heartbeat`), because this is
+  the one policy here that ENDS work rather than declining to start it. A
+  reaped step is FAILED rather than cancelled: nobody decided to stop it, an
+  unclassifiable failure is one the retry policy runs again, and `fail()`
+  settles the ledger against the run that really happened where `cancel()`
+  would release it. Reaping happens at the top of `pump()`, since a wedged step
+  holds a slot and VRAM that only become capacity again once it is let go. Two
+  clock bugs fell out of the tests: `started` was stamped from the
+  orchestrator's `time.time()` while liveness compared it against the runner's
+  injected clock, and `heard` used a strict `>` that made a harness reporting
+  the instant it starts indistinguishable from one that never reported. On
+  screen: running rows carry `4m` / `10m, quiet 6m`, composed once and printed
+  verbatim by both surfaces.
+
 - **A step can state a value, not just describe it** (`swarmfacts.py`) — the
   second half of the handoff problem. `swarmio` fixed where the work LANDED;
   this fixes the small number of VALUES a run turns on — the base URL the scout

@@ -15,7 +15,7 @@ append-only event log, one line per transition, written beside the snapshot.
     started    a step got a task            finished   it produced output
     failed     it did not                   retry      it will run again, in Ns
     gave_up    it will not                  expanded   it added N steps
-    cancelled  a human stopped it
+    cancelled  a human stopped it          reaped     it stopped answering
 
 Same shape as `hitl.AuditLog`, for the same reasons: appending cannot destroy
 what came before, a line torn by a crash costs exactly that line, and the file
@@ -35,7 +35,7 @@ from pathlib import Path
 __all__ = ["EventLog", "timeline", "render_timeline", "duration_text", "KINDS"]
 
 KINDS = ("started", "finished", "failed", "retry", "gave_up", "expanded",
-         "cancelled")
+         "cancelled", "reaped")
 
 # Terminal outcomes, in the order that decides a row's verdict when a step
 # somehow has more than one (a cancel racing a finish, say).

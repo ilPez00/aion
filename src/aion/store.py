@@ -621,6 +621,7 @@ class Store:
 
             from .swarmbudget import prices_from_harnesses
             from .swarmpolicy import policy_from_config
+            from .swarmlive import policy_from_config as heartbeat_from_config
             from .swarmlog import EventLog
             from .swarmreplan import policy_from_config as replan_from_config
 
@@ -659,6 +660,11 @@ class Store:
                 # happened", so a finished run could not say how long a step
                 # took or how many tries it needed.
                 events=EventLog().record,
+                # `swarm_heartbeat` in config. Absent means a WORKING step is
+                # never ended for going quiet — this is the only policy here
+                # that stops work rather than declining to start it, so it
+                # stays off until someone sets a bound on purpose.
+                heartbeat=heartbeat_from_config(getattr(self, "cfg", {})),
             )
             # Adopt work that outlived the last process. Here rather than in
             # __init__ because the runner is lazy and this is the first moment
@@ -1995,12 +2001,21 @@ class Store:
         # an agent's task reaching a terminal state completes the agent, which
         # unblocks its dependents, which the next pump starts. Guarded so a
         # swarm problem cannot take down ordinary task bookkeeping.
-        if getattr(self, "_swarm_runner", None) is not None and cur != prev:
+        if getattr(self, "_swarm_runner", None) is not None:
             try:
-                self._swarm_runner.on_task_state(
-                    tid, cur.value,
-                    output="\n".join(task.log[-20:]),
-                    error=(task.log[-1] if task.log else ""))
+                if cur != prev:
+                    self._swarm_runner.on_task_state(
+                        tid, cur.value,
+                        output="\n".join(task.log[-20:]),
+                        error=(task.log[-1] if task.log else ""),
+                        progress=task.progress)
+                elif cur.value in ("running", "pending"):
+                    # Same state, fresh progress. `set_progress` publishes on
+                    # this topic too, and the `cur != prev` guard threw every
+                    # one of those away — which is why a swarm had no way to
+                    # tell a step that is working from one that is wedged.
+                    self._swarm_runner.on_task_state(
+                        tid, cur.value, progress=task.progress)
             except Exception as e:  # noqa: BLE001
                 self.state.logs.append(f"swarm: {type(e).__name__}: {str(e)[:120]}")
         if prev is not None and cur != prev:

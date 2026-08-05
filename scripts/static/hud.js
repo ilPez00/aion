@@ -976,6 +976,13 @@ async function loadSwarmStatus(swarm) {
   const limits = [st.capacity_text, st.spend_text].filter(Boolean).join(' · ');
   if (limits) kids.push(el('p', { class: 'muted mono-sm', text: limits }));
 
+  // What the running steps are doing right now, in the cockpit's words. A
+  // busy swarm used to render as a bar at zero and nothing else, so "working"
+  // and "wedged since lunch" looked the same from here.
+  for (const line of (st.live || []).slice(0, 4)) {
+    kids.push(el('p', { class: 'mono-sm', text: line }));
+  }
+
   // The values the run stated. Qualified by step for the same reason the
   // cockpit qualifies them: two steps naming a thing `path` is normal, and a
   // flat list would silently show one of them.
