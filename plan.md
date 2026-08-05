@@ -169,6 +169,24 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **The dead-branch class is now checked mechanically**
+  (`tests/test_split_bounds.py`) — having found two branches that indexed past
+  their own `split(" ", 1)`, the question worth answering was whether there
+  were more. Nothing existing could answer it: the type checker is happy (the
+  code is well-typed), the tests cannot be (a dead branch has no behaviour to
+  assert on), and review would need someone holding a split from a hundred
+  lines earlier. It is a two-line arithmetic fact about one function, so it is
+  checked as one — an AST pass that finds every local assigned from a bounded
+  split and fails on any `len(v) >= k` or `v[i]` in the same function that the
+  bound makes impossible. Function-scoped, because `_agent_command` splits
+  without a limit two methods away and a file-wide check would call its
+  `parts[3]` a bug. Run against the pre-fix commit it reports exactly the two
+  known sites and nothing else; against the tree, nothing. The first version
+  used "narrowest binding wins" and produced a false positive on working code
+  where one name is split two different ways in two branches that each return
+  — so the rule is the nearest binding ABOVE the use, and that false positive
+  is now a test. Calling working code dead is the worse failure of the two.
+
 - **Two command branches that could never fire** (`store.py`) — `_run_command`
   opens with `parts = text.split(" ", 1)`, so `parts` is never longer than two.
   Two branches were written against a list split on every space, and neither
