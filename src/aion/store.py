@@ -910,14 +910,21 @@ class Store(SwarmCommands):
             arg = parts[1].strip() if len(parts) == 2 else ""
             sub = arg.split(" ", 1)
             if sub[0] == "done" and len(sub) == 2 and sub[1].strip().isdigit():
+                # Read the text BEFORE checking it off: `items()` reorders so
+                # done items sink, and afterwards index n is a different todo.
+                item = next((i for i in self.todos.items()
+                             if i["n"] == int(sub[1])), None)
                 ok = self.todos.done(int(sub[1]))
                 self.state.logs.append(f"todo #{sub[1]} done" if ok else "todo: bad index")
+                if ok and item:
+                    await self._praxis_mirror("complete", item["text"])
             elif sub[0] == "rm" and len(sub) == 2 and sub[1].strip().isdigit():
                 ok = self.todos.rm(int(sub[1]))
                 self.state.logs.append(f"todo #{sub[1]} removed" if ok else "todo: bad index")
             elif arg:
                 self.todos.add(arg)
                 self.state.logs.append(f"todo added: {arg[:40]}")
+                await self._praxis_mirror("add", arg)
             else:
                 self.state.logs.append("usage: todo <text> | todo done <n> | todo rm <n>")
             self.state.logs = self.state.logs[-50:]
@@ -1085,6 +1092,67 @@ class Store(SwarmCommands):
             await self._chat(text)
         else:
             await self._spawn(self.state.active_harness, text)
+
+    @property
+    def praxis(self):
+        """The praxis mirror, built once. Disabled unless configured.
+
+        Lazy for the same reason the swarm runner is: a Store is constructed
+        in pieces and in tests, and a client that reads config at import time
+        would make praxis a dependency of merely having a cockpit.
+        """
+        if getattr(self, "_praxis", None) is None:
+            from .praxis import PraxisClient, config_from
+            self._praxis = PraxisClient(config_from(getattr(self, "cfg", {})),
+                                        links=self._praxis_links())
+        return self._praxis
+
+    def _praxis_links(self) -> dict:
+        """todo text -> praxis node id, across restarts.
+
+        Kept beside the todos rather than in them: `todos.md` is a plain
+        checklist a human edits in any editor, and salting it with service ids
+        would break that the first time someone tidied the file.
+        """
+        import json
+
+        from .fleet import shared_path
+        self._praxis_links_path = shared_path("praxis-links.json")
+        try:
+            data = json.loads(self._praxis_links_path.read_text("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    async def _praxis_mirror(self, verb: str, text: str) -> None:
+        """Push one todo change to praxis, off-thread, never fatally.
+
+        The local list is the source of truth. A todo that could not be
+        mirrored is still a todo, so a failure is a log line and nothing else
+        — and it IS a log line, because a mirror that fails silently is worse
+        than no mirror: you would trust two lists that quietly disagree.
+        """
+        import asyncio
+        import json
+
+        client = self.praxis
+        if not client.cfg.enabled:
+            return
+        try:
+            fn = client.add_todo if verb == "add" else client.complete_todo
+            result = await asyncio.to_thread(fn, text)
+        except Exception as e:                       # noqa: BLE001
+            self.state.logs.append(f"praxis: {type(e).__name__}: {str(e)[:80]}")
+            return
+        if not result.ok:
+            self.state.logs.append(f"praxis: {result.reason[:100]}")
+            return
+        try:
+            self._praxis_links_path.parent.mkdir(parents=True, exist_ok=True)
+            self._praxis_links_path.write_text(
+                json.dumps(client.links, indent=1), encoding="utf-8")
+        except OSError as e:
+            self.state.logs.append(f"praxis: could not save links: {e}")
 
     def _env_set(self, key: str, val: str) -> None:
         """Write one `KEY=value` into `~/.env`, replacing any existing KEY.

@@ -169,6 +169,25 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **The todo list mirrors into praxis** (`praxis.py`) — two lists of the same
+  intentions that did not know about each other. Praxis has no todo model, so
+  this is a mapping rather than a sync: an added todo becomes a goal node with
+  no progress under an `aion` parent, and a checked one sets that node to 1.0
+  AND logs an action record, because praxis models "what I mean to do" and
+  "what I did" as different things and a completion is both. Two endpoints
+  means two failure modes, and the rule the module is built around is that
+  neither may reach the cockpit: the local markdown file stays the source of
+  truth, every call soft-fails with a reason, and a mirror failure is a log
+  line — but it IS a log line, since a mirror that fails silently leaves you
+  trusting two lists that quietly disagree. Pure by construction: the client
+  takes a `transport` callable, so mapping, validation and every refusal are
+  testable with no praxis running — which was necessary, because the
+  configured deployment 404s. Local-side validation earns its place: praxis
+  rejects goal names under three characters and unknown domains, and finding
+  that out as a 400 per todo is worse than declining once with the reason. Off
+  entirely until `AION_PRAXIS_URL`/`KEY`/`USER` are set. **The live round trip
+  is unproven** — see the roadmap.
+
 - **A loop's opinion of itself now leaves the process** (`core.py`,
   `organic.js`) — the factory harness has written `task.coherence` every
   iteration since coherence scoring existed, and `Task.as_dict()` never carried
@@ -583,13 +602,22 @@ Nothing blocking. Both items that were here are closed:
    future: `GITHUB_TOKEN` in the environment carries `copilot` scope only and
    overrides the keyring token, so Actions queries need `env -u GITHUB_TOKEN`.
 
-### Next feature (named, not started)
+### Next feature
 
-- **Todo tab ↔ praxis.** Wire the Desktop todo list to the praxis backend so
-  the two are one list rather than two that disagree.
+- **Todo tab ↔ praxis** — client and mapping built (`praxis.py`), off until
+  configured. **Not yet verified against a live praxis:** the configured
+  Railway deployment answers "Application not found", and running the backend
+  locally needs `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` + `DATABASE_URL`.
+  Point `AION_PRAXIS_URL` / `AION_PRAXIS_KEY` / `AION_PRAXIS_USER` at a real
+  instance and the round trip is one command from being proven.
 - **Any AI as an axiom provider.** Today `axiom` means one provider; the goal
   is the harness treatment — whichever model is configured answers, and the
   caller does not know which.
+- **Prove the multi-machine path.** Two local instances on different ports,
+  one registered as a peer of the other, a swarm DAG with steps pinned to
+  each. The fleet/remote/transport code is written and unit-tested but has
+  never been seen to work end to end from here — and `remote add`, the only
+  command that creates a peer, raised NameError until it was fixed.
 
 ### Software
 
