@@ -976,6 +976,22 @@ async function loadSwarmStatus(swarm) {
   const limits = [st.capacity_text, st.spend_text].filter(Boolean).join(' · ');
   if (limits) kids.push(el('p', { class: 'muted mono-sm', text: limits }));
 
+  // The values the run stated. Qualified by step for the same reason the
+  // cockpit qualifies them: two steps naming a thing `path` is normal, and a
+  // flat list would silently show one of them.
+  const stated = [];
+  for (const a of (st.agents || [])) {
+    for (const [k, v] of Object.entries(a.facts || {})) {
+      stated.push([`${a.name}.${k}`, String(v)]);
+    }
+  }
+  if (stated.length) {
+    kids.push(el('h4', { text: 'Values' }));
+    for (const [k, v] of stated.slice(0, 8)) {
+      kids.push(el('p', { class: 'mono-sm', text: `${k} = ${v.slice(0, 80)}` }));
+    }
+  }
+
   for (const d of (st.dead_letters || []).slice(0, 4)) {
     // Leading with what a failure BLOCKS, for the same reason the cockpit
     // does: "what failed" is already on the node; what is stuck behind it is

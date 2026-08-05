@@ -576,6 +576,27 @@ async def test_typed_swarm_status_also_says_it_in_words(live):
     assert any("swarm:" in h for h in live.state.history)
 
 
+@pytest.mark.asyncio
+async def test_typed_swarm_log_reports_a_run_after_the_fact(live, swarm):
+    """`status` answers "what is". Nothing answered "what happened", which is
+    the question asked once the run is over."""
+    await live._swarm_command("swarm log")
+    assert any("nothing has run yet" in h for h in live.state.history)
+
+
+@pytest.mark.asyncio
+async def test_typed_swarm_facts_lists_the_values_the_run_stated(live, swarm):
+    """Otherwise the only way to see what a step produced is to open its
+    output and read for it — the situation FACT lines exist to end."""
+    await live._swarm_command("swarm facts")
+    assert any("no values stated yet" in h for h in live.state.history)
+    agent = next(iter(swarm.agents.values()))
+    agent.facts = {"api_base": "https://x.test"}
+    await live._swarm_command("swarm facts")
+    assert any(f"{agent.name}.api_base = https://x.test" in h
+               for h in live.state.history)
+
+
 # ── `swarm plan` / `swarm apply` in the terminal ─────────────────────────────
 # The planner existed and only the browser could reach it, so the cockpit —
 # the surface people actually use — had the worst way to build a DAG: one

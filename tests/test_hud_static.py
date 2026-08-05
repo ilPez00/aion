@@ -156,3 +156,11 @@ def test_the_desk_shows_decisions_that_are_already_made():
     fleet been allowed to do" is asked long after the gate is gone."""
     assert "S.approvals = j.recent" in HUD_JS
     assert re.search(r"panel\(`Approvals", HUD_JS)
+
+
+def test_the_browser_shows_the_values_a_run_stated():
+    """Not "produced 4kB of output" — the handful of values the run turns on.
+    Qualified by step, because two steps stating `path` is the normal case."""
+    body = re.search(r"async function loadSwarmStatus\(.*?\n\}", HUD_JS, re.S)
+    assert body and "a.facts" in body.group(0)
+    assert "${a.name}.${k}" in body.group(0)

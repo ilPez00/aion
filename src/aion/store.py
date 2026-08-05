@@ -1585,6 +1585,17 @@ class Store:
                 self.state.history.append(
                     f"  {row['step']}: {row['outcome'] or 'running'} "
                     f"in {duration_text(row['seconds'])}{tries}")
+        elif sub == "facts":
+            # Every value the run has stated, in one place. Otherwise the only
+            # way to see what a step produced is to open its output and read
+            # for it, which is the situation FACT lines exist to end.
+            stated = [(a.name, a.facts) for a in self.swarm.agents.values()
+                      if getattr(a, "facts", None)]
+            if not stated:
+                self.state.history.append("swarm: no values stated yet")
+            for name, facts in stated:
+                for key, value in facts.items():
+                    self.state.history.append(f"  {name}.{key} = {value}")
         elif sub == "create" and rest:
             self.swarm.decompose(rest)
             out = self.swarm_command({"action": "add",

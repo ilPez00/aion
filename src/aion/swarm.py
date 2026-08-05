@@ -77,6 +77,11 @@ class SwarmAgent:
     # what makes "these two steps race on docs/api.md" a question anything can
     # answer, since nothing else in a swarm knows what a harness touches.
     writes: list[str] = field(default_factory=list)
+    # Values this step STATED, pulled out of its output by `swarmfacts.parse`.
+    # Checkpointed separately from `output` because they are what downstream
+    # prompts carry whole: reparsing on reload would be fine today and quietly
+    # different the moment the pattern changes under a checkpoint.
+    facts: dict[str, str] = field(default_factory=dict)
     parent_id: str | None = None
     sub_agents: list[str] = field(default_factory=list)
     progress: float = 0.0            # 0..1
@@ -96,6 +101,7 @@ class SwarmAgent:
             "attempts": self.attempts, "retry_at": self.retry_at,
             "generation": self.generation,
             "writes": list(self.writes),
+            "facts": dict(self.facts),
             "parent": self.parent_id,
             "subs": len(self.sub_agents),
             "has_output": bool(self.output),
@@ -152,6 +158,7 @@ class SwarmAgent:
             retry_at=float(d.get("retry_at", 0) or 0.0),
             generation=int(d.get("generation", 0) or 0),
             writes=[str(x) for x in (d.get("writes") or [])],
+            facts={str(k): str(v) for k, v in (d.get("facts") or {}).items()},
             parent_id=d.get("parent"),
             sub_agents=[str(x) for x in (d.get("sub_agents") or [])],
             progress=float(d.get("progress", 0.0) or 0.0),

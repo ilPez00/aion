@@ -163,6 +163,28 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **A step can state a value, not just describe it** (`swarmfacts.py`) — the
+  second half of the handoff problem. `swarmio` fixed where the work LANDED;
+  this fixes the small number of VALUES a run turns on — the base URL the scout
+  found, the migration id, the port the server came up on. They arrived buried
+  in a page of reasoning, and three things went wrong with them: the upstream
+  budget clips prose by character count, so the one line that mattered was as
+  likely to be past the cut as anything else; the next agent re-read the prose
+  and re-decided what the value was, differently; and nothing else could see
+  more than "produced 4kB of output". A step may now write `FACT key=value` on
+  its own line, and those are carried WHOLE into every downstream prompt in
+  their own block, exempt from the prose budget — the sentence explaining a
+  value is compressible, the value is not. Keys stay qualified by the step that
+  stated them (`scout.api_base`), because two upstream steps naming a thing
+  `path` is the normal case and picking a winner silently is how a swarm
+  produces a confidently wrong answer. Line-oriented rather than a JSON block:
+  asking a CLI harness for JSON works most of the time, and "most of the time"
+  over a hundred steps is a parser that fails for reasons nobody can reproduce.
+  A step is only ASKED for facts when something depends on it. Also fixed here:
+  the prompt was built in two places — admission priced one string and the
+  runner sent another, so a budget could govern a prompt that was never sent.
+  `swarm facts` in the cockpit, a Values block in the HUD.
+
 - **The swarm remembers what happened, not only what is** (`swarmlog.py`) —
   everything durable about a run was a SNAPSHOT: `swarm.json` holds the DAG as
   it stands and each write replaces the last, so the file answers "what is the

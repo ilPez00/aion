@@ -26,6 +26,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .swarmfacts import instruction as facts_instruction
+from .swarmfacts import note as facts_note
+from .swarmfacts import parse as parse_facts
 from .swarmio import artifact_note, blocking_writes, conflicts
 from .swarmpolicy import backoff, classify, should_retry
 
@@ -340,8 +343,7 @@ class SwarmRunner:
             # The prompt is built here as well as in pump(): admission has to
             # price the real thing, and the upstream context it carries is
             # most of its length.
-            prompt = prompt_for(a.goal, self.upstream_of(a),
-                                artifacts=artifact_note(self._upstream_agents(a)))
+            prompt = self._prompt_for_agent(a)
             self._prompts[a.id] = prompt
             claimed.append(a)
             out.append(Slot(id=a.id, name=a.name, harness=hid,
@@ -381,9 +383,7 @@ class SwarmRunner:
             agent = self.swarm.agents.get(aid)
             if agent is None:
                 continue
-            prompt = self._prompts.get(aid) or prompt_for(
-                agent.goal, self.upstream_of(agent),
-                artifacts=artifact_note(self._upstream_agents(agent)))
+            prompt = self._prompts.get(aid) or self._prompt_for_agent(agent)
             # Hold the estimate BEFORE the step starts. Without a hold, every
             # agent admitted in one tick sees the same "committed so far" and
             # the budget is blown once per step in a single pump.
@@ -439,6 +439,31 @@ class SwarmRunner:
                 out.append(other)
         return out
 
+    def _has_dependents(self, agent) -> bool:
+        """Is anything waiting on this step's result?
+
+        Decides whether the step is asked to state facts. A leaf step's values
+        are read by nobody, and a prompt that asks for them anyway spends room
+        on ceremony — which is how an operator learns to skim the block.
+        """
+        return any(agent.name in (other.dependencies or [])
+                   for other in self.swarm.agents.values())
+
+    def _prompt_for_agent(self, agent) -> str:
+        """The full prompt for a step: goal, upstream prose, where the work
+        landed, the values it stated, and how to state its own.
+
+        One function because admission has to PRICE the same string that gets
+        sent — two builders drift, and the drift shows up as a budget that
+        governs a prompt nobody sent.
+        """
+        upstream = self._upstream_agents(agent)
+        extras = [artifact_note(upstream), facts_note(upstream)]
+        if self._has_dependents(agent):
+            extras.append(facts_instruction())
+        return prompt_for(agent.goal, self.upstream_of(agent),
+                          artifacts="\n\n".join(x for x in extras if x))
+
     def upstream_of(self, agent) -> list[tuple[str, str]]:
         """(name, output) for each dependency, in the order declared."""
         out = []
@@ -479,6 +504,10 @@ class SwarmRunner:
         if agent is None:
             return
         agent.output = output or agent.output
+        # Pulled out HERE rather than when a downstream prompt is built: the
+        # values a step stated are part of its result, and a result that has to
+        # be re-derived on every read is a result nothing can be sure of.
+        agent.facts = parse_facts(agent.output)
         agent.progress = 1.0
         # The hold becomes the real figure: this is the only moment both
         # halves of the exchange are known.

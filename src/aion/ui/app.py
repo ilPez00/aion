@@ -905,7 +905,8 @@ class AiOSApp(App):
         # Last, because it is the block you act on after reading the rest: a
         # step that has spent its attempts is a decision waiting on a person.
         lines.extend(render_dead_letters(run_st, theme))
-        lines.append(f"[{theme['dim']}]swarm plan|apply|add|run|status|log|stop[/]")
+        lines.append(f"[{theme['dim']}]swarm "
+                     f"plan|apply|add|run|status|log|facts|stop[/]")
         return "\n".join(lines)
 
     def _board_panel(self, theme: dict, item: dict | None = None) -> str:
