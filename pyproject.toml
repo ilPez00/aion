@@ -14,7 +14,7 @@ voice = ["faster-whisper", "sounddevice", "numpy"]   # optional: offline voice c
 voice-tts = ["edge-tts"]                             # optional: text-to-speech output
 deck = ["pyserial"]                                  # optional: CyclUno control deck
 ring = ["bleak"]                                     # optional: Colmi R02 smart ring (BLE)
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "ruff"]
 web = ["websockets", "pyte", "requests", "python-dotenv"]  # optional: web HUD server
 
 [project.scripts]
@@ -26,3 +26,38 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Deliberately narrow. The point of running a linter here is to catch the
+# class of defect nothing else catches — the four `F821`s that shipped were a
+# missing `Path` import that left the Skills panel permanently empty behind a
+# bare `except Exception: pass`, a `remote add` that raised NameError, and a
+# `shlex` the web PTY editor needed. Style is not the target: this codebase's
+# formatting is a deliberate house style, and a lint gate that argues with it
+# is one people learn to skip.
+select = [
+    "E9",    # syntax / IO errors — cannot be style disagreements
+    "F",     # pyflakes: undefined names, redefinitions, broken f-strings
+    "B",     # bugbear: mutable defaults, raise-without-from, silent bugs
+]
+ignore = [
+    # 101 sites, and most are load-bearing: a bare `import evdev` that exists
+    # to prove the dependency is present reads as unused. Worth a pass of its
+    # own, not worth blocking every push on.
+    "F401",
+    # Nearly all are theme tuples unpacked in one line and used partially
+    # (`ok_, wa, er = ...`). Noise, not defects.
+    "F841",
+    # `zip(a, b)` where the lengths are structurally equal. Real in general,
+    # not real at any of the seven sites here.
+    "B905",
+    # `for i, x in enumerate(...)` where only `x` is used. Harmless.
+    "B007",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]   # tests insert src/ on sys.path before importing aion

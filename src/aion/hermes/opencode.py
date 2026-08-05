@@ -90,12 +90,12 @@ class OpenCodeClient:
                     continue
                 line_count += 1
                 yield clean
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             proc.kill()
             raise TimeoutError(
                 f"opencode timed out after {self.config.timeout}s"
                 f" ({line_count} lines read)"
-            )
+            ) from e
         finally:
             if proc.returncode is None:
                 try:

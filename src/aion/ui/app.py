@@ -1130,6 +1130,8 @@ class AiOSApp(App):
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""
+        from ..remotes import RemoteNode
+
         parts = text.split(maxsplit=2)
         if len(parts) < 2:
             return "usage: remote run <id> <prompt> | remote cancel <tid> | remote add <id> <host:port> | remote list"

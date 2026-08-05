@@ -163,6 +163,26 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **A lint gate, and the four live bugs that justified it** (`ruff` in CI) —
+  nothing in this repo ever checked for names that do not exist, and four had
+  shipped. `store.py` never imported `Path`, so `_load_skills_data` raised
+  NameError on its third line into an `except Exception: pass` and the Skills
+  panel was permanently empty with nothing said about it — a hard breakage made
+  indistinguishable from "this machine has no skills installed". The same
+  missing import broke `setup set KEY VAL`. `remote add` referenced
+  `RemoteNode`, which two OTHER methods in the same class imported locally and
+  that one did not, so the only command that CREATES a remote could not run.
+  And the web PTY editor called `shlex.quote` with no `shlex` imported — the
+  one line in that handler doing shell-injection quoting was the broken one.
+  All four share a shape tests structurally cannot catch: an undefined name in
+  a branch nothing covers, behind a handler that swallows it. The ruleset is
+  deliberately narrow — pyflakes, syntax errors and the bugbear checks that
+  find real defects — with four documented relaxations and a test that pins
+  that list by exact set, because a gate whose exclusions grow by quiet append
+  converges on selecting nothing. Style is not the target: this codebase's
+  formatting is a house style and a linter that argues with it is one people
+  learn to skip.
+
 - **A running step can now be asked whether it is still alive** (`swarmlive.py`)
   — `stalled()` opened with `if self._in_flight(): return ""`, so the one
   condition it refused to diagnose was the one that kills a swarm quietly: a

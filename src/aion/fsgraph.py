@@ -96,7 +96,7 @@ STOP = {
     "with", "from", "this", "that", "new", "old", "test", "tests", "main",
     "index", "init", "py", "js", "ts", "md", "txt", "json", "self", "def",
     "import", "return", "none", "true", "false", "null", "class", "function",
-    "const", "let", "var", "www", "com", "http", "https", "org",
+    "const", "let", "www", "com", "http", "https", "org",
 }
 
 # Build/vendor dirs. Not hidden, so the hidden-files toggle misses them, and

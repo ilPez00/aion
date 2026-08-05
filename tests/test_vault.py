@@ -3,6 +3,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion.notes import write_note, vault_root
@@ -31,8 +33,5 @@ def test_write_note_sanitizes_path():
 
 
 def test_write_note_empty_path_raises():
-    try:
+    with pytest.raises(ValueError):
         write_note("", "x", root=Path("/tmp"))
-        assert False, "expected ValueError"
-    except ValueError:
-        pass

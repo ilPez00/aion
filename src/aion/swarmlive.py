@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = ["HeartbeatPolicy", "Liveness", "assess", "sweep",
-           "policy_from_config", "render_live"]
+           "policy_from_config", "render_live", "OFF"]
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,12 @@ class HeartbeatPolicy:
     @property
     def enabled(self) -> bool:
         return self.stall_after > 0 or self.max_runtime > 0
+
+
+# The "watch nothing" policy, named once. A frozen dataclass is safe as a
+# default argument, but a shared singleton says out loud that every caller
+# omitting the argument gets the same do-nothing policy.
+OFF = HeartbeatPolicy()
 
 
 @dataclass(frozen=True)
@@ -93,8 +99,7 @@ def _field(agent, name: str):
     return getattr(agent, name, None)
 
 
-def assess(agent, now: float,
-           policy: HeartbeatPolicy = HeartbeatPolicy()) -> Liveness:
+def assess(agent, now: float, policy: HeartbeatPolicy = OFF) -> Liveness:
     """Judge one running step. Pure — no clock, no registry, no I/O.
 
     `started` is the fallback for `last_seen` so a step that has never been
@@ -126,8 +131,7 @@ def assess(agent, now: float,
     return Liveness("working", elapsed, silent_for, heard)
 
 
-def sweep(agents, now: float,
-          policy: HeartbeatPolicy = HeartbeatPolicy()) -> list[dict]:
+def sweep(agents, now: float, policy: HeartbeatPolicy = OFF) -> list[dict]:
     """Every running step this policy would end, with the reason.
 
     Returns rather than acts: what to DO with a wedged step (fail it into the

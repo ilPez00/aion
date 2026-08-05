@@ -31,7 +31,7 @@ def cmd_list(args) -> int:
     peers = sshlink.load_peers()
     if not peers:
         print("no peers configured.")
-        print(f"  add one:  aion.sh peers add <id> <user@host>")
+        print("  add one:  aion.sh peers add <id> <user@host>")
         print(f"  config:   {sshlink.peers_path()}")
         return 0
     print(f"{'ID':<14} {'TARGET':<28} {'REMOTE':<8} STATE")

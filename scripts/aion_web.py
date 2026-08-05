@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import secrets
 import shutil
 import subprocess

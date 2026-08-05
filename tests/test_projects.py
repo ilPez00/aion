@@ -61,7 +61,7 @@ def _make_sessions_db(path: Path, cwd_for: Path, sessions_today: int,
         per = tokens // sessions_today if sessions_today else 0
         rows.append((f"s{i}", str(cwd_for), midnight + 3600 + i, per, 0, 0))
     # one session in the distant past, must NOT count as today
-    rows.append((f"old", str(cwd_for), midnight - 86400, 999999, 0, 0))
+    rows.append(("old", str(cwd_for), midnight - 86400, 999999, 0, 0))
     conn.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?)", rows)
     conn.commit()
     conn.close()

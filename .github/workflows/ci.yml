@@ -29,6 +29,14 @@ jobs:
           # and CI is the only place that is checked for free.
           pip install -e ".[dev,web]"
 
+      - name: Lint
+        # Before the tests, because the failures it catches are the ones tests
+        # structurally cannot: an undefined name inside a branch nobody covers,
+        # sitting behind a bare `except Exception: pass`. Four of those were
+        # live in the tree the day this step was added. The ruleset is narrow
+        # on purpose — see the comment in pyproject.toml.
+        run: python -m ruff check src/ tests/ scripts/
+
       - name: Tests
         # test_term.py drives a real pty and is excluded everywhere, including
         # in AGENTS.md's factory gates. Excluding it here keeps CI and the
