@@ -163,6 +163,26 @@ one `Intent` bus across keyboard / joystick / voice / CyclUno deck / Colmi ring.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **The swarm remembers what happened, not only what is** (`swarmlog.py`) —
+  everything durable about a run was a SNAPSHOT: `swarm.json` holds the DAG as
+  it stands and each write replaces the last, so the file answers "what is the
+  state" and can answer none of the questions that come up afterwards — how
+  long the scrape took, whether the writer retried, which step added the three
+  nobody remembers planning. State forgets. Every transition now appends one
+  line to `~/.aion/instances/<id>/swarm-events.jsonl` (`started finished failed
+  retry gave_up expanded cancelled`), same shape and same reasons as
+  `hitl.AuditLog`: appending cannot destroy what came before, a line torn by a
+  crash costs exactly that line, and the file is evidence rather than a control
+  channel — nothing reads it back into a swarm. `gave_up` is kept distinct from
+  `failed` because a dead-lettered step and one that never had a retry budget
+  are different stories about the same red mark. `timeline()` is the pure half:
+  it folds the log into one row per step, measuring duration from the FIRST
+  start to the last terminal event, so a step that failed twice before working
+  reports what it actually cost rather than the cost of the attempt that
+  happened to succeed. A step still running gets no duration invented for it —
+  filling in "now" makes a stalled step look like a slow one. `swarm log`
+  prints it; `status()` carries it; a broken log prints and never stops a run.
+
 - **Steps say what they write, so races stop being invisible** (`swarmio.py`) —
   everything a step passed downstream went through one channel: its stdout,
   spliced into the next prompt. Fine for "here is what I found", useless for

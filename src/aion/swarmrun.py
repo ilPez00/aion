@@ -242,7 +242,7 @@ class SwarmRunner:
                  vram_total: int = DEFAULT_VRAM_MB,
                  harness_vram=None, spawn_remote=None, poll_remote=None,
                  budget: float = 0.0, prices=None, retry=None,
-                 replan=None, clock=None) -> None:
+                 replan=None, events=None, clock=None) -> None:
         import time
 
         from .swarmbudget import Ledger
@@ -271,6 +271,14 @@ class SwarmRunner:
         # from the event loop. The cockpit drains this, asks off-thread, and
         # hands the answer back to `apply_expansion`.
         self._replan_queue: list[str] = []
+        # Where transitions go. Injected and no-op by default: the runner is a
+        # scheduler, and a scheduler that cannot run without a writable disk is
+        # a worse scheduler. `events(kind, step, **fields)`.
+        self.events = events or (lambda kind, step="", **fields: None)
+        # If the sink is an EventLog, keep the handle: `timeline()` reads the
+        # file back rather than accumulating a second copy in memory, which
+        # would be the snapshot problem again with extra steps.
+        self.event_log = getattr(events, "__self__", None)
         # Injected so a backoff can be tested without sleeping through it.
         self._now = clock or time.time
         # Steps holding a slot open until their backoff expires. Rebuilt every
@@ -390,6 +398,9 @@ class SwarmRunner:
             # immediately would otherwise find the agent still IDLE and the
             # completion would be dropped.
             self.swarm.set_status(aid, AgentStatus.WORKING)
+            self.events("started", agent.name, attempt=agent.attempts,
+                        harness=getattr(agent, "harness", "") or self.harness,
+                        instance=getattr(agent, "instance", "") or "")
             where = getattr(agent, "instance", "") or ""
             try:
                 if where and self.spawn_remote is not None:
@@ -474,6 +485,7 @@ class SwarmRunner:
         self.ledger.settle(agent_id, self._prompts.get(agent_id, ""),
                            agent.output)
         self.swarm.set_status(agent_id, AgentStatus.DONE)
+        self.events("finished", agent.name, chars=len(agent.output or ""))
         self._forget(agent_id)
         # A result is the only moment there is anything new to plan WITH, so
         # this is where a DAG stops being a fixed shape. Queued, not asked:
@@ -511,6 +523,9 @@ class SwarmRunner:
             agent.retry_at = self._now() + backoff(agent.attempts, self.retry)
             agent.progress = 0.0
             self.swarm.log(agent_id, f"[run] {why}")
+            self.events("retry", agent.name, attempt=agent.attempts,
+                        wait=round(agent.retry_at - self._now(), 1),
+                        error=error[:200])
             self.swarm.set_status(agent_id, AgentStatus.IDLE)
             return
         if self.retry.enabled:
@@ -518,6 +533,12 @@ class SwarmRunner:
             # dead-lettered step and a step that never had a policy look
             # identical in the log.
             self.swarm.log(agent_id, f"[run] giving up: {why}")
+        # `gave_up` when a policy stopped retrying, `failed` when there was no
+        # policy to stop: a dead-lettered step and one that never had a retry
+        # budget are different stories about the same red mark.
+        self.events("gave_up" if self.retry.enabled else "failed", agent.name,
+                    attempts=int(getattr(agent, "attempts", 0) or 0),
+                    error=error[:200], reason=why)
         self.swarm.set_status(agent_id, AgentStatus.FAILED)
 
     def cancel(self, agent_id: str, why: str = "") -> None:
@@ -530,6 +551,7 @@ class SwarmRunner:
         if why:
             self.swarm.log(agent_id, f"[run] {why}")
         self.swarm.set_status(agent_id, AgentStatus.CANCELLED)
+        self.events("cancelled", self.swarm.agents[agent_id].name, reason=why)
         self._forget(agent_id)
 
     def _own(self, agent_id: str, task_id: str, instance: str = "") -> None:
@@ -732,9 +754,28 @@ class SwarmRunner:
                 created.append(step.name)
         if created:
             self.swarm.log(agent_id, f"[replan] added {', '.join(created)}")
+            self.events("expanded", agent.name, count=len(created),
+                        added=created)
             self.swarm.checkpoint()
         return {"ok": bool(created), "created": created,
                 "dropped": exp.dropped, "reason": ""}
+
+    def timeline(self, limit: int = 200) -> list[dict]:
+        """One row per step from the event log: when, how long, how it ended.
+
+        Empty when no log is attached — the runner never keeps a second copy in
+        memory, because a history that lives in a process is the snapshot
+        problem again with extra steps.
+        """
+        from .swarmlog import timeline as fold
+
+        log = getattr(self, "event_log", None)
+        if log is None:
+            return []
+        try:
+            return fold(log.read(limit=limit))
+        except Exception:  # noqa: BLE001
+            return []      # a status call must not fail on an unreadable log
 
     def dead_letters(self) -> list[dict]:
         """Steps that ran out of attempts and now need a person.
@@ -780,6 +821,7 @@ class SwarmRunner:
             # only at admission: by the time one is admitted the other may
             # already have run, and the damage is silent either way.
             "write_conflicts": conflicts(list(self.swarm.agents.values())),
+            "timeline": self.timeline(),
             "dead_letters": self.dead_letters(),
             "deferred": list(self.last.deferred),
             "remote": {w.agent_id: {"instance": w.instance, "task": w.task_id,

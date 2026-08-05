@@ -621,6 +621,7 @@ class Store:
 
             from .swarmbudget import prices_from_harnesses
             from .swarmpolicy import policy_from_config
+            from .swarmlog import EventLog
             from .swarmreplan import policy_from_config as replan_from_config
 
             # `swarm_budget` in config, currency per DAG. 0 = no ceiling.
@@ -653,6 +654,11 @@ class Store:
                 # already has — a swarm must not start writing its own work
                 # because a version changed.
                 replan=replan_from_config(getattr(self, "cfg", {})),
+                # An append-only record of transitions, beside the snapshot.
+                # The snapshot answers "what is"; nothing answered "what
+                # happened", so a finished run could not say how long a step
+                # took or how many tries it needed.
+                events=EventLog().record,
             )
             # Adopt work that outlived the last process. Here rather than in
             # __init__ because the runner is lazy and this is the first moment
@@ -1560,7 +1566,7 @@ class Store:
         """
         parts = text.split()
         if len(parts) < 2:
-            self.state.history.append("usage: swarm plan <goal> | apply | create <goal> | add <name> <goal> [<< deps] [>> writes] | run | status | stop")
+            self.state.history.append("usage: swarm plan <goal> | apply | add <name> <goal> [<< deps] [>> writes] | run | status | log | stop")
             return
         sub = parts[1]
         rest = " ".join(parts[2:]) if len(parts) > 2 else ""
@@ -1568,6 +1574,17 @@ class Store:
             await self._swarm_plan(rest)
         elif sub == "apply":
             self._swarm_apply()
+        elif sub == "log":
+            from .swarmlog import duration_text
+
+            rows = self.swarm_runner.timeline()
+            if not rows:
+                self.state.history.append("swarm: nothing has run yet")
+            for row in rows[-8:]:
+                tries = f" ×{row['attempts']}" if row["attempts"] > 1 else ""
+                self.state.history.append(
+                    f"  {row['step']}: {row['outcome'] or 'running'} "
+                    f"in {duration_text(row['seconds'])}{tries}")
         elif sub == "create" and rest:
             self.swarm.decompose(rest)
             out = self.swarm_command({"action": "add",
