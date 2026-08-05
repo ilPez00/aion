@@ -22,6 +22,7 @@ class ToolEnv:
     compare: object = None      # compare(prompt: str) -> str
     mem: object = None          # mem(query: str) -> str
     note: object = None         # note(fact: str) -> str
+    think: object = None        # think(question: str) -> str (gbrain)
     state: object = None        # state() -> str (snapshot of cockpit)
     vault: object = None        # vault(path: str, content: str) -> str
     swarm: object = None        # swarm(goal: str) -> str
@@ -71,6 +72,8 @@ def execute(text: str, env: ToolEnv) -> tuple[str, str]:
                 out = env.mem(args)
             elif name == "note":
                 out = env.note(args)
+            elif name == "think":
+                out = env.think(args)
             elif name == "state":
                 out = env.state()
             elif name == "vault":

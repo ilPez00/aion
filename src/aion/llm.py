@@ -31,6 +31,7 @@ SYSTEM_PROMPT = (
     "  <tool compare>which model is better?</tool> -> side-by-side model compare\n"
     "  <tool mem>status query</tool>          -> search persistent memory\n"
     "  <tool note>a useful fact</tool>        -> save a note\n"
+    "  <tool think>a question</tool>          -> reason over memory (gbrain)\n"
     "  <tool state></tool>                    -> snapshot of current cockpit state\n"
     "  <tool vault>path::content</tool>       -> write a vault note (path like 'ideas/x')\n"
     "  <tool swarm>goal</tool>                -> plan a multi-agent swarm for a goal\n"

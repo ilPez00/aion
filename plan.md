@@ -169,6 +169,22 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **The agent chat crashed on every message** (`agent.py`, `llm.py`) — `_chat`
+  built its `ToolEnv` with `think=`, a keyword the dataclass has no field for,
+  so constructing the tool environment raised `TypeError` before the model
+  call, before any tool, before anything that could catch it. Talking to the
+  cockpit's own agent has been impossible for as long as the `think` tool has
+  existed. It was wired at one end out of four: the tool surface is a contract
+  between the prompt in `llm.py` that tells the model which tools exist,
+  `ToolEnv`'s fields, `execute`'s dispatch, and the environment the store
+  builds — and `think` was in none of the first three. Now in all four, with a
+  set-comparison test in each direction, because the interesting failure is
+  never "this tool is wrong", it is "these two halves of one contract are each
+  correct alone". The existing tests could not have caught it: they assert
+  each tool's RETURN STRING, and every one passed while `_agent_run_tool` was
+  emitting a command the dispatcher could not parse. Right answer, wrong
+  effect, nothing joining the two.
+
 - **The dead-branch class is now checked mechanically**
   (`tests/test_split_bounds.py`) — having found two branches that indexed past
   their own `split(" ", 1)`, the question worth answering was whether there
