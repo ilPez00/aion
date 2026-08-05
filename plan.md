@@ -551,11 +551,11 @@ enables only Models / Tasks / Agent.
 
 ### Needs a human
 
-0. **Revoke the flagged Gemini keys.** 16 of 29 stored keys returned 403
-   "reported as leaked" — Google flags that when a key turns up somewhere
-   public. They are live credentials until revoked in the console, and no
-   amount of work in this repo changes that. Re-probe first if the count is
-   stale; revoke regardless.
+Nothing blocking. Both items that were here are closed:
+
+0. ~~Revoke the flagged Gemini keys~~ — **owner decided not to act.** 16 of 29
+   stored keys return 403 "reported as leaked". Recorded, not open; do not
+   re-raise it.
 0b. ~~`gh auth refresh -s repo,workflow`~~ — **done, and it found something.**
    CI had never been green: 25 of 25 runs red. The `tests` job passes (the
    lint gate included, now verified rather than assumed); the `guard` job had
