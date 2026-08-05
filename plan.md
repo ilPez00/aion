@@ -169,6 +169,23 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **A loop's opinion of itself now leaves the process** (`core.py`,
+  `organic.js`) — the factory harness has written `task.coherence` every
+  iteration since coherence scoring existed, and `Task.as_dict()` never carried
+  it. So it died where it was computed: the web HUD, a peer polling `/task`,
+  the process graph all had a progress bar and nothing about whether the work
+  was going anywhere. A loop 80% through its budget producing fluent nonsense
+  looked exactly like one about to succeed. Now on the wire, and on the edge
+  feeding each task — coherent work travels a taut, brighter line, drifting
+  work sags further and dims. The load-bearing part is the encoding: `null`,
+  never 0.0, when nothing scored the loop. A disabled brain, an unreachable
+  one and a harness that does not score all report 0.0, so transmitting that as
+  a measurement paints an unscored loop as maximally incoherent — a verdict
+  invented out of an absence, and the same trap `swarmlive` avoids with
+  "never heard from" versus "went quiet". Every visual change sits inside the
+  `!== null` guard, so a graph with no scoring anywhere looks untouched, and
+  the pulse honours reduced-motion.
+
 - **CI had never been green** (`.github/workflows/ci.yml`) — 25 of 25 runs red,
   going back as far as the API lists. The `tests` job was fine; the `guard` job
   ran `python -m pytest` with no install step and ended every run in "No module
@@ -605,8 +622,8 @@ Nothing blocking. Both items that were here are closed:
 
 ### Brain
 
-8. **HUD coherence stream** — feed `Iteration.coherence` into the DAG edge animation.
-   *(the live channel now exists; this is the next payload to put on it)*
+8. ~~**HUD coherence stream**~~ — done. `Iteration.coherence` reaches the graph
+   and animates the edge feeding each task.
 9. **Research priming** — use physis `reconstruct()` to skip queries a past run covered.
 
 ### A note on where the effort has gone

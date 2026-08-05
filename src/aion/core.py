@@ -152,6 +152,19 @@ class Task:
             "domain": self.domain,
             "state": self.state.value, "progress": round(self.progress, 3),
             "eta": self.eta, "log": self.log[-50:],
+            # A loop's own opinion of itself, per iteration. The factory
+            # harness has been writing these since coherence scoring existed
+            # and `as_dict` never carried them, so they died in this process:
+            # every remote view had a progress bar and nothing about whether
+            # the work was going anywhere.
+            #
+            # `None` rather than 0.0 when there is no reading. 0.0 is the value
+            # a dead or disabled brain returns, and a viewer that cannot tell
+            # it from a measured 0.0 paints an unscored loop as maximally
+            # incoherent — inventing a verdict out of an absence. Same rule the
+            # factory's own drift detector follows.
+            "coherence": self.coherence if self.coherence else None,
+            "novelty": self.novelty if self.state.value == "running" else None,
         }
 
 

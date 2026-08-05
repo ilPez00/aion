@@ -872,13 +872,20 @@ async function loadAgents() {
         detail: `${t.state} · ${Math.round((t.progress || 0) * 100)}%` +
                 `${t.eta ? ` · eta ${t.eta}s` : ''}${t.domain ? ` · ${t.domain}` : ''}`,
         taskLog: t.log, state: t.state, instance: t.instance, harness: t.harness,
-        taskId: t.id,
+        taskId: t.id, coherence: t.coherence,
       });
+      // `coherence` is null when nothing scored this loop — a disabled brain,
+      // an unreachable one, or a harness that does not score at all. Null is
+      // NOT zero here: drawing "no reading" as the worst reading invents a
+      // verdict, so an unscored edge keeps exactly the look it always had.
+      const coh = typeof t.coherence === 'number' ? t.coherence : null;
       if (nodes.some(n => n.id === `h${t.harness}`)) {
         links.push({ source: `h${t.harness}`, target: id,
-                     weight: 0.4 + 0.6 * (t.progress || 0), kind: 'hub' });
+                     weight: 0.4 + 0.6 * (t.progress || 0), kind: 'hub',
+                     coherence: coh });
       } else {
-        links.push({ source: `i${t.instance}`, target: id, weight: 0.4, kind: 'hub' });
+        links.push({ source: `i${t.instance}`, target: id, weight: 0.4,
+                     kind: 'hub', coherence: coh });
       }
     }
     // Swarm dependency DAG. `deps` holds agent NAMES, not ids (see the

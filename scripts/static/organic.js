@@ -141,7 +141,11 @@ class OrganicGraph {
     const byId = new Map(this.nodes.map(n => [n.id, n]));
     this.links = links
       .map(l => ({ s: byId.get(l.source), t: byId.get(l.target),
-                   w: l.weight ?? 0.5, kind: l.kind || 'sim' }))
+                   w: l.weight ?? 0.5, kind: l.kind || 'sim',
+                   // null when nothing scored this loop. Carried as-is: the
+                   // renderer must be able to tell "no reading" from a
+                   // measured zero, and `?? 0` here would erase exactly that.
+                   coh: typeof l.coherence === 'number' ? l.coherence : null }))
       .filter(l => l.s && l.t);
     for (const n of this.nodes) { n.deg = 0; n.anchor = null; }
     for (const l of this.links) {
@@ -514,10 +518,22 @@ class OrganicGraph {
       ctx.strokeStyle = active ? this._theme.accent
                               : (l.kind === 'hub' ? l.s.color : this._theme.faint);
       ctx.lineWidth = (active ? 1.6 : 0.7) + l.w * 1.2;
+      // A scored loop shows its own opinion of itself on the edge feeding it:
+      // coherent work travels along a taut, brighter line, drifting work sags
+      // further and dims. An UNSCORED edge (coh === null) is left exactly as
+      // it was — the whole point is that "nobody measured" must not render as
+      // "measured badly", which is what any `|| 0` fallback would do.
+      let cohSag = 0;
+      if (l.coh !== null && !dim) {
+        ctx.globalAlpha = 0.24 + 0.5 * Math.max(0, l.coh) + (active ? 0.4 : 0);
+        // Drift pulls the curve away from the straight line; flow flattens it.
+        cohSag = -l.coh * 7;
+        if (!REDUCED) cohSag += Math.sin(this.tick * 0.06) * (1 - Math.abs(l.coh)) * 2;
+      }
       const mx = (l.s.x + l.t.x) / 2, my = (l.s.y + l.t.y) / 2;
       const nx = -(l.t.y - l.s.y), ny = l.t.x - l.s.x;
       const nl = Math.hypot(nx, ny) || 1;
-      const sag = 9 + breathe * 2.5;
+      const sag = 9 + breathe * 2.5 + cohSag;
       ctx.beginPath();
       ctx.moveTo(l.s.x, l.s.y);
       ctx.quadraticCurveTo(mx + (nx / nl) * sag, my + (ny / nl) * sag, l.t.x, l.t.y);
