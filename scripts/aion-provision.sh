@@ -26,7 +26,11 @@ PORT="${AION_NODE_PORT:-8765}"
 say() { printf '[provision] %s\n' "$*"; }
 die() { printf '[provision] FAILED: %s\n' "$*" >&2; exit 1; }
 
-[ -d "$REPO/.git" ] || die "no aion checkout at $REPO (set AION_REPO)"
+# `git rev-parse`, not `[ -d .git ]`: in a WORKTREE `.git` is a file pointing
+# at the real git dir, and air's node runs from one. The directory test
+# rejected a perfectly good checkout.
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
+  || die "no aion checkout at $REPO (set AION_REPO)"
 cd "$REPO"
 
 # ── 1. python + deps ────────────────────────────────────────────────────────
