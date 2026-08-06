@@ -254,7 +254,10 @@ def test_rehydrate_re_attaches_the_watch(store):
     assert runner.rehydrate()["adopted"] == ["heavy"]
     aid = back.agent_by_name("heavy").id
     assert runner.task_of[aid] == "t0007"
-    assert runner.agent_of["t0007"] == aid
+    # Namespaced by instance: task ids are unique per registry, not per fleet,
+    # so two machines in one DAG both hand back `t0007`. Asserted through
+    # `_key` rather than the raw string so this says what it means.
+    assert runner.agent_of[runner._key("workstation", "t0007")] == aid
     assert runner.watches[aid].instance == "workstation"
 
 

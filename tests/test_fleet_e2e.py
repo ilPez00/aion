@@ -269,3 +269,60 @@ def test_the_keys_every_consumer_reads_are_present():
     for key in ("hostname", "instance", "version", "active_harness",
                 "running_count", "tasks", "headless"):
         assert key in payload, key
+
+
+# ── task ids collide across machines ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_two_machines_returning_the_same_task_id_do_not_collide(pair):
+    """Every registry allocates `t0001`, `t0002`, ... from zero, so a DAG with
+    a step on each machine gets the SAME id back from both.
+
+    Keyed on the bare id, the second registration overwrote the first: one
+    step was finished twice and the other waited forever, taking every
+    dependent with it. The DAG stopped with no error anywhere — the peers both
+    reported `done`, and the cockpit disagreed.
+
+    Found the first time a real DAG ran on two real machines.
+    """
+    from aion.swarm import AgentStatus, SwarmOrchestrator
+    from aion.swarmrun import SwarmRunner
+
+    a, b, client = pair
+    orch = SwarmOrchestrator(persist=False)
+    orch.add_agent("on_alpha", "look", instance="alpha")
+    orch.add_agent("on_beta", "measure", instance="beta")
+
+    loop = asyncio.get_running_loop()
+    peers = {"alpha": a, "beta": b}
+
+    def sync(coro):
+        return asyncio.run_coroutine_threadsafe(coro, loop).result(5)
+
+    def spawn_remote(instance, agent, prompt):
+        return sync(client.run_task(peers[instance].node(), prompt,
+                                    harness="demo"))["task_id"]
+
+    def poll_remote(instance, task_id):
+        return sync(client.task_state(peers[instance].node(), task_id))
+
+    r = SwarmRunner(orch, spawn=lambda ag, p: None,
+                    spawn_remote=spawn_remote, poll_remote=poll_remote,
+                    max_parallel=4)
+    await asyncio.to_thread(r.pump)
+
+    # The collision only bites when both machines hand back the same id.
+    ids = {w.instance: w.task_id for w in r.watches.values()}
+    assert ids["alpha"] == ids["beta"], (
+        "test is not exercising the bug — the ids differ")
+
+    for inst in ("alpha", "beta"):
+        tid = ids[inst]
+        peers[inst].finish(tid, f"done on {inst}")
+    await asyncio.to_thread(r.poll)
+
+    for name in ("on_alpha", "on_beta"):
+        agent = orch.agent_by_name(name)
+        assert agent.status is AgentStatus.DONE, (
+            f"{name} never advanced — its completion went to the other machine's step")
+        assert agent.instance in agent.output

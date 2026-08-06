@@ -497,15 +497,30 @@ class SwarmRunner:
 
     # -- completion --------------------------------------------------------
     def on_task_state(self, task_id: str, state: str, output: str = "",
-                      error: str = "", progress: float | None = None) -> dict | None:
+                      error: str = "", progress: float | None = None,
+                      instance: str = "") -> dict | None:
         """A task we own reached a new state. Advance its agent if terminal.
 
         Returns the pump result when the DAG moved, so a caller driving this
         from the bus does not have to know whether to tick.
+
+        `instance` namespaces the lookup. Task ids are allocated per registry
+        (`t0001`, `t0002`, ...), so two machines running one DAG hand back the
+        SAME id for different work — see `_key`.
         """
-        aid = self.agent_of.get(task_id)
+        aid = self.agent_of.get(self._key(instance, task_id))
         if aid is None:
             return None                     # not ours; the cockpit has others
+        return self._advance(aid, state, output, error, progress)
+
+    def _advance(self, aid: str, state: str, output: str = "",
+                 error: str = "", progress: float | None = None) -> dict | None:
+        """Move one KNOWN agent to a new task state.
+
+        Split from `on_task_state` because a remote poll already knows which
+        agent it is asking about — the watch carries it — and must not
+        re-derive it from a task id that is only unique on one machine.
+        """
         if state in ("running", "pending"):
             # Not nothing. This used to return immediately, so a swarm knew a
             # step's progress was 0.0 right up to the moment it was 1.0, and
@@ -676,11 +691,23 @@ class SwarmRunner:
         self.events("cancelled", self.swarm.agents[agent_id].name, reason=why)
         self._forget(agent_id)
 
+    @staticmethod
+    def _key(instance: str, task_id: str) -> str:
+        """Task ids are unique per REGISTRY, not per fleet.
+
+        Every instance allocates `t0001`, `t0002`, ... from zero, so a DAG with
+        a step on pansa and a step on air gets `t0003` back from both. Keyed by
+        the bare id, the second registration silently overwrote the first: one
+        step was finished twice and the other waited forever, taking every
+        dependent with it. Found the first time a real DAG ran on two machines.
+        """
+        return f"{instance}\x00{task_id}" if instance else task_id
+
     def _own(self, agent_id: str, task_id: str, instance: str = "") -> None:
         """Record that this agent's work is this task. One place, because the
         mapping now lives in three: two dicts and the checkpointed agent."""
         self.task_of[agent_id] = task_id
-        self.agent_of[task_id] = agent_id
+        self.agent_of[self._key(instance, task_id)] = agent_id
         agent = self.swarm.agents.get(agent_id)
         if agent is not None:
             agent.task_id = task_id
@@ -689,9 +716,12 @@ class SwarmRunner:
 
     def _forget(self, agent_id: str) -> None:
         task_id = self.task_of.pop(agent_id, None)
+        watch = self.watches.pop(agent_id, None)
         if task_id:
-            self.agent_of.pop(task_id, None)
-        self.watches.pop(agent_id, None)
+            # Namespaced, or forgetting a remote step deletes the mapping of
+            # whichever OTHER machine happens to share that task id.
+            self.agent_of.pop(
+                self._key(watch.instance if watch else "", task_id), None)
         agent = self.swarm.agents.get(agent_id)
         if agent is not None:
             agent.task_id = ""
@@ -753,7 +783,10 @@ class SwarmRunner:
             return False
         if verdict == "lost":
             self.fail(watch.agent_id, detail)
-        elif self.on_task_state(watch.task_id, verdict, output=detail) is None:
+        # `_advance`, not `on_task_state`: the watch already knows which agent
+        # this is, and looking it up by task id resolved to the wrong step the
+        # moment two machines both returned `t0003`.
+        elif self._advance(watch.agent_id, verdict, output=detail) is None:
             return False
         self.pump()
         return True
