@@ -76,6 +76,14 @@ case "${1:-run}" in
     shift || true
     exec "$PY" scripts/aion_web.py "$@"
     ;;
+  node)
+    # A machine that can be GIVEN work with nobody sitting at it. The remote
+    # listener otherwise only exists while the Textual cockpit is open, which
+    # is exactly backwards for the machines you dispatch to.
+    ensure_venv
+    shift || true
+    exec "$PY" scripts/aion_node.py "$@"
+    ;;
   up)
     # The "just start everything" command. Physis brain if it's there, the web
     # HUD, and a browser pointed at it. Everything else is opt-in flags.

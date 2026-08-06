@@ -33,8 +33,20 @@ paths they use for a local instance.
 
 ## Setup
 
-On the machine you want to reach, make sure aion's remote listener is running
-(it is, by default, on loopback port 8765).
+On the machine you want to reach, aion's remote listener has to be running on
+loopback port 8765. **The cockpit starts it, so a machine with nobody sitting
+at it has nothing listening** — which is backwards, since the machines you
+dispatch to are exactly the ones you are not sitting at. On a headless box, or
+one running only the web HUD, start the node:
+
+```bash
+./aion.sh node --port 8765          # foreground
+setsid nohup ./aion.sh node --port 8765 >~/.aion/node.log 2>&1 &   # detached
+```
+
+Both ends also need the same `~/.aion/token`: the tunnel proves which machine
+you reached, the token proves the caller is a fleet member. Copy it across
+(and keep a backup of whatever was there).
 
 On the controller:
 
