@@ -1,0 +1,52 @@
+# aion headless node — a machine that can be given work with nobody at it.
+#
+# Install as a USER unit, not a system one. The node runs as you, reads
+# ~/.aion/token and ~/.aion/config.json, and spawns harnesses that expect your
+# environment and your credentials. A root service would need all of that
+# copied somewhere else and would run prompt execution as root, which is a
+# strictly worse trade for zero benefit.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/aion-node.service ~/.config/systemd/user/
+#   # if the default port is taken (check: ss -lntp | grep 8765) override it:
+#   systemctl --user edit aion-node        # add: [Service]\nEnvironment=AION_NODE_PORT=8775
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aion-node
+#   systemctl --user status aion-node
+#
+# So it survives logout as well as reboot (otherwise the user manager exits
+# with your last session and the peer goes dark until you log in again):
+#
+#   sudo loginctl enable-linger $USER
+#
+[Unit]
+Description=aion headless node (fleet peer)
+Documentation=file:%h/aion/docs/ssh-peers.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AION_NODE_PORT=8765
+WorkingDirectory=%h/aion
+ExecStart=%h/aion/.venv/bin/python %h/aion/scripts/aion_node.py --port ${AION_NODE_PORT}
+
+# The node holds real work and answers a socket. Restarting it is right; doing
+# so in a tight loop when the port is already taken is not — that is the one
+# failure that will not fix itself, and a 5s loop turns it into log spam that
+# buries the reason.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# It listens on loopback only and executes prompts. Nothing about that needs
+# write access to the rest of the filesystem.
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+StandardOutput=append:%h/.aion/node.log
+StandardError=append:%h/.aion/node.log
+
+[Install]
+WantedBy=default.target

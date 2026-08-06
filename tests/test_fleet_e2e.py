@@ -223,3 +223,49 @@ async def test_a_swarm_step_named_for_another_instance_runs_there(pair):
     assert agent.status is AgentStatus.WORKING
     assert len(b.registry.tasks) == 1
     assert a.ran == [], "the step ran locally instead of on the peer"
+
+
+# ── one status payload, two producers ───────────────────────────────────────
+
+def test_the_status_payload_names_the_machine_not_the_instance():
+    """`peers test` printed `?` for every peer because the headless node's
+    `/status` had no `hostname`, while the cockpit's did. Two hand-rolled
+    copies of one payload, drifted.
+
+    The instance id is `main` on every box in the fleet, so a peer list keyed
+    on it is four rows that all say the same thing.
+    """
+    import socket
+
+    from aion import fleet
+    from aion.core import Bus
+    from aion.store import Store
+
+    payload = fleet.status_payload(Store(bus=Bus()), headless=True)
+    assert payload["hostname"] == socket.gethostname()
+    assert payload["headless"] is True
+
+
+def test_both_producers_build_the_same_shape():
+    """Every consumer — the peers CLI, the HUD's peer table,
+    `fetch_status` — reads fields by name. A payload built in two places is a
+    contract with itself."""
+    import inspect
+
+    from aion.ui import app as app_mod
+
+    src = inspect.getsource(app_mod.AiOSApp)
+    assert "status_payload(" in src, "the cockpit hand-rolls /status again"
+    node = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "status_payload(" in node, "the node hand-rolls /status again"
+
+
+def test_the_keys_every_consumer_reads_are_present():
+    from aion import fleet
+    from aion.core import Bus
+    from aion.store import Store
+
+    payload = fleet.status_payload(Store(bus=Bus()))
+    for key in ("hostname", "instance", "version", "active_harness",
+                "running_count", "tasks", "headless"):
+        assert key in payload, key

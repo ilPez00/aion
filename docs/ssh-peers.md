@@ -44,6 +44,34 @@ one running only the web HUD, start the node:
 setsid nohup ./aion.sh node --port 8765 >~/.aion/node.log 2>&1 &   # detached
 ```
 
+`setsid nohup` does not survive a reboot, which for a peer means the fleet
+quietly loses a machine. For anything permanent install the user unit:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/aion-node.service ~/.config/systemd/user/
+systemctl --user enable --now aion-node
+sudo loginctl enable-linger $USER     # so it runs without you logged in
+```
+
+A **user** unit, not a system one: the node reads `~/.aion/token`, your config
+and your credentials, and spawns harnesses that expect your environment.
+Running prompt execution as root would need all of that copied elsewhere and
+buys nothing.
+
+If 8765 is taken on that machine (`ss -lntp | grep 8765` — other projects like
+it too), pick another port and tell the peer entry about it, or the tunnel
+forwards to a closed port:
+
+```bash
+systemctl --user edit aion-node       # [Service] / Environment=AION_NODE_PORT=8775
+./aion.sh peers add air gio@air --key ~/.ssh/aion_air --remote-port 8775
+```
+
+The `permitopen=` in the peer's `authorized_keys` has to name the same port —
+it is an allowlist of one destination, so a mismatch is refused as
+`administratively prohibited`.
+
 Both ends also need the same `~/.aion/token`: the tunnel proves which machine
 you reached, the token proves the caller is a fleet member. Copy it across
 (and keep a backup of whatever was there).

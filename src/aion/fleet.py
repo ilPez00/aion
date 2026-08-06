@@ -342,6 +342,43 @@ class Heartbeat:
             pass
 
 
+def status_payload(store, *, headless: bool = False, version: str = "") -> dict:
+    """What `/status` answers, wherever it is answered from.
+
+    The cockpit and the headless node both expose a `RemoteServer`, and each
+    used to build this dict itself. They disagreed: the node omitted
+    `hostname`, so `peers test` printed `?` for every machine and the HUD's
+    peer rows fell back to an IP. Four peers all reporting the same instance
+    id is not a display bug, it is a fleet you cannot read.
+
+    One builder because every consumer — the peers CLI, the web HUD's peer
+    table, `RemoteClient.fetch_status` — reads fields by name. A payload built
+    in two places is a contract with itself, and this one had already drifted
+    on `hostname`, `version`, `running_count` and the shape of `tasks`.
+    """
+    registry = getattr(store, "registry", None)
+    tasks = list(getattr(registry, "tasks", {}).values()) if registry else []
+    state = getattr(store, "state", None)
+    return {
+        # The machine, not the instance id. `instance_id()` is "main" on every
+        # box in the fleet, which is exactly the collision this fixes.
+        "hostname": socket.gethostname(),
+        "instance": instance_id(),
+        "version": version or (getattr(store, "cfg", {}) or {}).get("app_name", "aion"),
+        "active_harness": getattr(state, "active_harness", "") or "",
+        "running_count": sum(1 for t in tasks
+                             if t.state.value in ("running", "pending")),
+        "tasks": [{"id": t.id, "label": t.label, "state": t.state.value,
+                   "progress": t.progress} for t in tasks][:20],
+        "stats": {k: v for k, v in (getattr(state, "stats", {}) or {}).items()
+                  if k in ("system", "stats")},
+        "harnesses": sorted(getattr(store, "harnesses", {}) or {}),
+        # Lets a cockpit tell a machine nobody is sitting at from one with a
+        # terminal open on it.
+        "headless": bool(headless),
+    }
+
+
 def discover_local(include_self: bool = True) -> list[LocalPeer]:
     """Every aion instance on this machine, newest heartbeat first.
 

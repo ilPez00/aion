@@ -229,18 +229,11 @@ class AiOSApp(App):
         # ── Remote server + nodes ─────────────────────────────────────────
         from ..remotes import RemoteNode
         from .. import fleet as _fleet
-        self._remote_server.on_status = lambda: {
-            "hostname": __import__("socket").gethostname(),
-            "version": self.cfg.get("app_name", "aion"),
-            "active_harness": self.store.state.active_harness,
-            "running_count": sum(1 for t in self.store.registry.tasks.values()
-                                 if t.state.value in ("running", "pending")),
-            "tasks": [{"id": t.id, "label": t.label, "state": t.state.value,
-                       "progress": t.progress}
-                      for t in self.store.registry.tasks.values()][:20],
-            "stats": {k: v for k, v in self.store.state.stats.items()
-                      if k in ("system", "stats")},
-        }
+        # Built by `fleet.status_payload`, the same call the headless node
+        # makes. Two hand-rolled copies had already drifted apart on
+        # `hostname`, which is what made every peer report `?`.
+        self._remote_server.on_status = lambda: _fleet.status_payload(
+            self.store, headless=False)
         # A named harness is honoured. This used to drop `h` on the floor and
         # send everything through the command parser, so routing a task to a
         # specific harness silently ran it on whatever happened to be active.

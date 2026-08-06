@@ -56,7 +56,7 @@ async def serve(port: int, quiet: bool = False) -> None:
 
     # 127.0.0.1 is not a default here, it is the design. See the docstring.
     server = RemoteServer(host="127.0.0.1", port=port)
-    server.on_status = lambda: _status(store, registry)
+    server.on_status = lambda: fleet.status_payload(store, headless=True)
     server.on_run = lambda prompt, harness: _run(store, prompt, harness)
     server.on_task_query = store.task_state
     server.on_task = lambda tid, action: store.control_task(tid, action)
@@ -88,22 +88,6 @@ async def serve(port: int, quiet: bool = False) -> None:
         await server.stop()
         if not quiet:
             print("[node] stopped")
-
-
-def _status(store, registry) -> dict:
-    from aion import fleet
-
-    return {
-        "instance": fleet.instance_id(),
-        "tasks": [t.as_dict() for t in registry.tasks.values()],
-        "running": sum(1 for t in registry.tasks.values()
-                       if t.state.value == "running"),
-        "active_harness": getattr(store.state, "active_harness", ""),
-        "harnesses": sorted(store.harnesses),
-        # Says what this process is, so a cockpit polling it can tell a
-        # headless node from a machine with someone sitting at it.
-        "headless": True,
-    }
 
 
 def _run(store, prompt: str, harness: str) -> dict:
