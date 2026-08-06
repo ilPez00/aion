@@ -1,15 +1,38 @@
-"""Tests for the FCM -> Groq -> OpenRouter fallback chain (Cycle B).
+"""Tests for the OmniRoute -> FCM -> Groq -> OpenRouter fallback chain.
 
-Mocks the three backend senders so we verify routing + warning handling
-without needing live credentials (all three are currently down from this host).
+Mocks the backend senders so routing and warning handling are verified with
+no live credentials and no network.
+
+The chain has FOUR backends and this file used to mock three. OmniRoute is
+tried FIRST, so on any machine where it answers, these tests took its reply
+instead of the mocked fallbacks -- and made a real LLM call while doing it.
+They passed here only because OmniRoute happens to be down on this host, and
+failed the moment the suite ran on another machine in the fleet:
+
+    assert '<tool state></tool>'.startswith('⚠️ LLM unavailable ...')
+
+A test whose result depends on whether a network service is up is not testing
+what it says it tests. `_no_network` is autouse so a test added later cannot
+reintroduce the hole by forgetting one backend.
 """
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion import llm
 from aion.llm import ChatSession
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Every backend stubbed as down. Individual tests override what they mean
+    to exercise; nothing here is left able to reach a real provider."""
+    for fn in ("_omniroute_chat", "_fcm_chat", "_groq_chat", "_openrouter_chat"):
+        monkeypatch.setattr(llm, fn,
+                            lambda m, timeout=30, _f=fn: f"⚠️ {_f} stubbed down")
 
 
 def test_fallback_uses_first_ok_backend(monkeypatch):

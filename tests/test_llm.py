@@ -1,10 +1,25 @@
-"""Tests for llm.py multi-model comparison helper."""
+"""Tests for llm.py multi-model comparison helper.
+
+Same hermeticity guard as `test_llm_fallback`: the backend chain has four
+senders and these tests stub two of them by name. Anything they do not stub
+can reach a real provider on a machine where it is up, which is a test whose
+result depends on the weather.
+"""
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aion import llm
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    for fn in ("_omniroute_chat", "_fcm_chat", "_groq_chat", "_openrouter_chat"):
+        monkeypatch.setattr(llm, fn,
+                            lambda m, timeout=30, _f=fn: f"⚠️ {_f} stubbed down")
 
 
 def test_chat_send_multi_calls_providers(monkeypatch):
