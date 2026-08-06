@@ -203,3 +203,60 @@ def test_the_revision_is_cached_rather_than_shelled_out_per_poll():
     first = fleet._self_revision()
     assert fleet._REVISION_CACHE is not None
     assert fleet._self_revision() is first
+
+
+# ── reporting ───────────────────────────────────────────────────────────────
+
+def test_the_report_is_stable_so_it_can_be_compared():
+    """Both surfaces only speak when the line CHANGES. A cockpit that repeats
+    "up to date" every quarter hour trains you to stop reading it, so the
+    description has to be identical for an identical situation."""
+    a = describe(compare(Revision(sha="aaaaaaa"), upstream="bbbbbbb"))
+    b = describe(compare(Revision(sha="aaaaaaa"), upstream="bbbbbbb"))
+    assert a == b
+
+
+def test_the_cockpit_checks_on_its_own_interval_not_the_heartbeat():
+    """`git ls-remote` is a network call. Riding the heartbeat would put it in
+    front of every task update and status refresh in the cockpit."""
+    src = (ROOT / "src" / "aion" / "ui" / "app.py").read_text(encoding="utf-8")
+    assert "self.set_interval(self._updates.check_every, self._check_updates)" in src
+    assert "_updates.enabled" in src
+
+
+def test_the_cockpit_check_runs_off_the_event_loop():
+    """A six-second freeze every fifteen minutes is worse than not checking."""
+    src = (ROOT / "src" / "aion" / "ui" / "app.py").read_text(encoding="utf-8")
+    block = src.split("def _check_updates")[1].split("\n    def ")[0]
+    assert "asyncio.to_thread" in block
+    assert "asyncio.create_task" in block
+
+
+def test_the_node_reports_too():
+    """The machine nobody looks at is where a stale checkout survives
+    longest — air was three weeks behind while answering every request."""
+    src = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "_update_watch" in src
+    block = src.split("async def _update_watch")[1]
+    assert "policy.enabled" in block          # off unless configured
+    assert "if line != last" in block         # only on change
+
+
+def test_neither_surface_pulls_on_drift_alone():
+    """Reporting and applying are separate switches. Both surfaces gate the
+    pull on `auto_pull` as well as on being behind — and `pull()` refuses
+    independently anyway, so this is a second lock on the same door rather
+    than the only one."""
+    for path, flag in ((ROOT / "src" / "aion" / "ui" / "app.py",
+                        "self._updates.auto_pull"),
+                       (ROOT / "scripts" / "aion_node.py", "policy.auto_pull")):
+        src = path.read_text(encoding="utf-8")
+        assert f"drift.behind_origin and {flag}" in src, path.name
+
+
+def test_applying_an_update_says_a_restart_is_needed():
+    """Swapping the source under a running process gets a node that is
+    neither version."""
+    for path in (ROOT / "src" / "aion" / "ui" / "app.py",
+                 ROOT / "scripts" / "aion_node.py"):
+        assert "restart to run the new code" in path.read_text(encoding="utf-8")

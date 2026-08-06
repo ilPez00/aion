@@ -283,6 +283,13 @@ def _theme_defaults() -> dict:
 
 DEFAULT_LAYOUT = {
     "app_name": "aion",
+    # Is this machine running the same aion as the rest of the fleet? Report
+    # only — `auto_pull` stays off, because an orchestrator that restarts
+    # itself onto new code mid-DAG is not something to enable by default.
+    # 1800s: a fleet that drifts by half an hour is fine; one that drifts for
+    # three weeks (as air did) is not, and a tighter interval only adds
+    # `git ls-remote` calls nobody reads the result of.
+    "updates": {"check_every": 1800, "auto_pull": False},
     # palette lives in ui/theme.py, which also carries the WCAG audit that
     # tests/test_theme.py enforces. Imported lazily-ish (module-level is fine,
     # ui.theme has no dependencies) so there is exactly one source of truth.

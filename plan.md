@@ -30,6 +30,26 @@ enables only Models / Tasks / Agent.
   - **Colmi R02 ring** (BLE): HR/SpO2/battery telemetry + accel-derived taps. `deck/ring.py` + `input.RingInput`.
   - **XIAO pendant** (cam/mic): scaffold only. `deck/pendant.py`.
 
+## The fleet, as actually deployed
+
+Not aspirational — this is what is running and verified end to end.
+
+| machine | role | port | state |
+|---|---|---|---|
+| **omo** | cockpit | — | this repo, `~/dev/aion` |
+| **pansa** | peer | 8765 | `aion-node` unit, lingering, suite green (py3.11) |
+| **air** | peer | 8775 | ditto (8765/8766 held by `jarvis_ai`); runs from the `~/aion-main` worktree |
+| **pi** | — | — | offline since 2026-08-05; provision with the script when it returns |
+
+Bring a machine up with `scripts/aion-provision.sh` ON that machine, then
+`aion.sh peers add` on the controller and install the printed key line. The
+token is copied by hand on purpose — see the script's header for why it and
+the peer key are the two steps it refuses to automate.
+
+Verified on real hardware, not just loopback: a task dispatched from omo runs
+on pansa; a single DAG with `scout` on pansa, `probe` on air and `report`
+local completes with the cross-machine dependency resolving.
+
 ## Status — done
 
 - Core cockpit: harnesses, Intent bus, Fleet, remotes, 494+ tests.
@@ -168,6 +188,66 @@ enables only Models / Tasks / Agent.
   their own block, leading with what each failure is holding up — "what
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
+
+- **The fleet says what it is running** (`selfupdate.py`, `aion.sh update`) — a
+  fleet drifts silently. pansa sat a commit behind for a day; air was three
+  weeks behind on a branch nobody remembered checking out. Both answered
+  `/status` and accepted work throughout, and finding out meant ssh-ing into
+  each box to run `git rev-parse` by hand, which means nobody did. `/status`
+  now carries the revision and one command prints the whole fleet. Two
+  questions kept apart because they have different answers: **behind origin**
+  is actionable, **differs from a peer** is diagnosis only. Code is never
+  fetched from a peer — a peer is trusted with fleet membership, not with
+  supplying the software the fleet runs, and treating one as an update source
+  means a single compromised node owns every other node. A test asserts that
+  behaviourally: the argv git receives must name a remote, never anything
+  peer-derived. A differing peer is not called "ahead" or "behind", because
+  without walking a shared history that is a guess. An unknown revision is
+  never agreement. Checking is off by default, `auto_pull` off separately and
+  impossible to enable without checking, and pull is `--ff-only` so a divergent
+  machine is refused rather than silently merged by nobody.
+
+- **One script makes a machine a node** (`scripts/aion-provision.sh`) — pansa
+  and air were brought up by hand and ended up different: a venv with no pip,
+  an editable install pointing at a stale checkout, two ports, one machine
+  with no token. Each difference was rediscovered later as a confusing failure
+  somewhere else. The script is idempotent and verifies rather than assumes —
+  it checks the `aion` package resolves to the checkout being provisioned, and
+  refuses a port held by another process instead of losing a bind race into a
+  restart loop. It will not install the peer key or copy the token: those are
+  the two steps where a mistake grants access rather than withholding it.
+  Writing it found two bugs in itself, both from running it for real — the
+  port check fired before stopping our own node (so re-provisioning a working
+  machine failed), and `[ -d .git ]` rejects a worktree, which is how air runs.
+
+- **A headless node** (`aion.sh node`) — `RemoteServer` was constructed inside
+  the Textual cockpit, so a machine only accepted work while a human had a
+  terminal open on it, and the docs claimed the listener ran "by default".
+  Backwards: the machines you dispatch to are the ones you are not sitting at.
+  Same Store, same handlers, same socket, no face. Loopback only and
+  deliberately ignoring `AION_LISTEN=lan`, since `/run` executes prompts.
+
+- **Task ids collide across machines** (`swarmrun.py`) — the first real
+  three-machine DAG stranded half of itself. Ids are allocated per registry
+  from zero, so pansa and air both returned `t0003`; `agent_of` was keyed on
+  the bare id, the second registration overwrote the first, and `_apply_poll`
+  re-derived the agent from that map. One step was finished twice, the other
+  waited forever, and every dependent waited with it. Nothing errored: both
+  peers reported `done` and the cockpit disagreed. Now keyed by
+  `(instance, task_id)`, and the poll advances the agent the watch already
+  knows rather than looking one up by an id that is unique on one machine
+  only. The regression test asserts the two ids are EQUAL before proceeding,
+  so it cannot quietly stop exercising the bug.
+
+- **The tests could reach a live LLM** (`test_llm*.py`) — running the suite on
+  pansa and air for the first time turned up three failures asserting against
+  `'<tool state></tool>'`, a real model reply. The backend chain has four
+  senders and the tests stubbed three; OmniRoute is tried first, so on any
+  machine where it answers the tests took its reply and made a live API call
+  doing it. They passed here only because OmniRoute is down on this host — the
+  docstring even said so, as though it were a fixture. Both files now stub
+  every backend via an autouse fixture. Only a different machine could have
+  found this.
 
 - **Two machines, on a real socket** (`tests/test_fleet_e2e.py`) — everything
   about running work elsewhere (`RemoteServer`, `RemoteClient`, the shared
@@ -631,11 +711,27 @@ Nothing blocking. Both items that were here are closed:
 - **Any AI as an axiom provider.** Today `axiom` means one provider; the goal
   is the harness treatment — whichever model is configured answers, and the
   caller does not know which.
-- ~~**Prove the multi-machine path.**~~ Done — `tests/test_fleet_e2e.py` runs
-  two instances on a real loopback socket and dispatches work from one to the
-  other. Still untested with a genuinely remote peer (network, latency, a
-  sleeping laptop), but the protocol, the auth and the swarm's remote hooks
-  are no longer taken on faith.
+- ~~**Prove the multi-machine path.**~~ Done, and then done for real: two
+  instances on a loopback socket in CI, and separately a live DAG across omo,
+  pansa and air. The second one found the task-id collision that the first
+  could not.
+- **Caveman compression** — the missing layer named earlier: compress a step's
+  output before it enters the next step's prompt, so a long result costs less
+  context without losing what is load-bearing. `swarmfacts` already exempts
+  stated values from the budget; this is the other half, for the prose. Not
+  started.
+- **Skill / MCP surface for spawned harnesses** — a child process gets one
+  string in and one string out, which is why `FACT key=value`, prompt-spliced
+  upstream output and `artifact_note` exist at all. An MCP server over the
+  verbs that already exist (`/status`, `/run`, `/task`, `/swarm`,
+  `store.swarm_command`, `runner.timeline`) would replace those workarounds.
+  Three things to decide first: a child calling `/run` spends outside the
+  ledger, so `swarm_budget` stops bounding anything; a `run` tool inside a
+  step is a second unbounded path to self-expansion that `max_generations`
+  does not see; and it makes aion a service to agents as well as a host of
+  them, which is a real scope change against `docs/IDENTITY.md`. Must be
+  driven by a real client, not written and unit-tested — it is exactly the
+  two-halves-never-exercised-together shape that produced ten defects here.
 
 ### Software
 

@@ -72,6 +72,8 @@ async def serve(port: int, quiet: bool = False) -> None:
         print("[node] loopback only — reach it with: ssh -L <local>:127.0.0.1:"
               f"{port} <this host>")
 
+    updates = asyncio.create_task(_update_watch(cfg, quiet))
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -85,9 +87,55 @@ async def serve(port: int, quiet: bool = False) -> None:
     try:
         await stop.wait()
     finally:
+        updates.cancel()
         await server.stop()
         if not quiet:
             print("[node] stopped")
+
+
+async def _update_watch(cfg: dict, quiet: bool) -> None:
+    """Say when this node falls behind origin. Off unless configured.
+
+    A node is the machine nobody looks at, which is exactly where a stale
+    checkout survives longest — air was three weeks behind while answering
+    every request. The report goes to the log the unit already writes, so
+    `journalctl --user -u aion-node` or `~/.aion/node.log` has it.
+
+    Reports only. `auto_pull` still has to be asked for, and even then the new
+    code needs a restart: swapping the source under a running process gets a
+    node that is neither version.
+    """
+    from aion.selfupdate import (compare, describe, local_revision,
+                                 policy_from_config, pull, upstream_revision)
+
+    policy = policy_from_config(cfg)
+    if not policy.enabled:
+        return
+    root = Path(__file__).resolve().parents[1]
+    last = ""
+    while True:
+        try:
+            local = await asyncio.to_thread(local_revision, root)
+            upstream = await asyncio.to_thread(
+                upstream_revision, root, policy.remote, policy.branch)
+            drift = compare(local, upstream)
+            line = describe(drift)
+            # Only on change: a node logging "up to date" every quarter hour
+            # is noise that buries the one line that matters.
+            if line != last and not drift.in_sync:
+                print(f"[node] {line}", flush=True)
+            last = line
+            if drift.behind_origin and policy.auto_pull:
+                moved, msg = await asyncio.to_thread(pull, root, policy)
+                print(f"[node] update: {msg}", flush=True)
+                if moved and not quiet:
+                    print("[node] restart to run the new code", flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            print(f"[node] update check failed: {type(e).__name__}: {e}",
+                  flush=True)
+        await asyncio.sleep(policy.check_every)
 
 
 def _run(store, prompt: str, harness: str) -> dict:

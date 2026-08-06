@@ -275,6 +275,14 @@ class AiOSApp(App):
         # this process's bus, so it has to be asked. Without this timer a
         # cross-machine DAG starts its remote step and then waits forever.
         self.set_interval(beat_s, self._poll_swarm)
+        # Is this machine running the same aion as the rest of the fleet? Off
+        # unless `updates.check_every` is configured, and on its own interval
+        # because it talks to the network — this must not ride the heartbeat.
+        from ..selfupdate import policy_from_config as _update_policy
+        self._updates = _update_policy(self.cfg)
+        self._update_line = ""
+        if self._updates.enabled:
+            self.set_interval(self._updates.check_every, self._check_updates)
         for rn in self.cfg.get("remote_nodes", []):
             self._remote_nodes[rn["id"]] = RemoteNode(
                 id=rn["id"], host=rn["host"], port=rn.get("port", 8765),
@@ -1204,6 +1212,52 @@ class AiOSApp(App):
             )
         except OSError:
             pass    # a missing ~/.aion is not worth killing the cockpit over
+
+    def _check_updates(self) -> None:
+        """Is this machine running the same aion as the fleet? Report only.
+
+        Off the event loop: `git ls-remote` and a status poll per peer are
+        network calls, and a cockpit that freezes for six seconds every
+        quarter of an hour is worse than one that never checked.
+
+        Reports and stops there unless `auto_pull` was explicitly asked for.
+        Restarting an orchestrator onto new code while a DAG is mid-flight is
+        not something to do on a timer.
+        """
+        async def run() -> None:
+            from ..selfupdate import compare, describe, local_revision, pull
+            from ..selfupdate import upstream_revision
+
+            root = Path(__file__).resolve().parents[3]
+            try:
+                local = await asyncio.to_thread(local_revision, root)
+                upstream = await asyncio.to_thread(
+                    upstream_revision, root, self._updates.remote,
+                    self._updates.branch)
+                # Against origin only. Peer drift needs a status poll per
+                # peer, which is N network calls on a UI timer, and it is the
+                # half with no action attached — `aion.sh update` is where
+                # that belongs, run when you want to know.
+                drift = compare(local, upstream)
+            except Exception as e:                   # noqa: BLE001
+                self.store.state.logs.append(f"update check: {type(e).__name__}")
+                return
+            line = describe(drift)
+            # Only speak when something changed. A cockpit that repeats "up to
+            # date" every fifteen minutes trains you to stop reading it.
+            if line != self._update_line:
+                self._update_line = line
+                if not drift.in_sync:
+                    self.store.state.logs.append(f"aion: {line}")
+                    self.store.state.logs = self.store.state.logs[-50:]
+            if drift.behind_origin and self._updates.auto_pull:
+                moved, msg = await asyncio.to_thread(pull, root, self._updates)
+                self.store.state.logs.append(f"aion update: {msg}")
+                if moved:
+                    self.store.state.logs.append(
+                        "aion: restart to run the new code")
+
+        asyncio.create_task(run())
 
     def _poll_swarm(self) -> None:
         """Advance anything in the swarm that no event will announce.
