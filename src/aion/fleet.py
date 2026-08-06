@@ -342,6 +342,25 @@ class Heartbeat:
             pass
 
 
+def _self_revision() -> dict:
+    """This checkout's revision, for `/status`. Cheap and cached.
+
+    Cached because `/status` is polled on a timer by every peer watching this
+    machine, and shelling out to git per poll would make a health check into a
+    load source. A process does not change its own HEAD without restarting.
+    """
+    global _REVISION_CACHE
+    if _REVISION_CACHE is None:
+        from .selfupdate import local_revision
+        rev = local_revision(Path(__file__).resolve().parents[2])
+        _REVISION_CACHE = {"sha": rev.short, "branch": rev.branch,
+                           "dirty": rev.dirty}
+    return _REVISION_CACHE
+
+
+_REVISION_CACHE: dict | None = None
+
+
 def status_payload(store, *, headless: bool = False, version: str = "") -> dict:
     """What `/status` answers, wherever it is answered from.
 
@@ -373,6 +392,10 @@ def status_payload(store, *, headless: bool = False, version: str = "") -> dict:
         "stats": {k: v for k, v in (getattr(state, "stats", {}) or {}).items()
                   if k in ("system", "stats")},
         "harnesses": sorted(getattr(store, "harnesses", {}) or {}),
+        # What code this machine is actually running. Without it the only way
+        # to find a peer three weeks behind is to ssh in and ask git, which
+        # means nobody does it and the fleet drifts silently.
+        "revision": _self_revision(),
         # Lets a cockpit tell a machine nobody is sitting at from one with a
         # terminal open on it.
         "headless": bool(headless),

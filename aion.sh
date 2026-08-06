@@ -76,6 +76,13 @@ case "${1:-run}" in
     shift || true
     exec "$PY" scripts/aion_web.py "$@"
     ;;
+  update)
+    # What is every machine in the fleet running? Reports drift; only pulls
+    # from origin, and only when asked.
+    ensure_venv
+    shift || true
+    exec "$PY" scripts/aion_update.py "$@"
+    ;;
   node)
     # A machine that can be GIVEN work with nobody sitting at it. The remote
     # listener otherwise only exists while the Textual cockpit is open, which
