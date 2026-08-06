@@ -64,11 +64,23 @@ else
 fi
 
 # ── 3. the listener ─────────────────────────────────────────────────────────
-# Refuse rather than fight for a port. air already had 8765 and 8766 taken by
-# an unrelated service, and a node that loses the bind race dies in a restart
-# loop whose real cause is buried in the log.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# Stop our own node BEFORE testing the port. Re-provisioning a working machine
+# must not fail because that machine is working — the first version of this
+# refused on pansa for exactly that reason, which is the opposite of
+# idempotent.
+if systemctl --user is-active --quiet aion-node 2>/dev/null; then
+  say "stopping the running node to re-provision"
+  systemctl --user stop aion-node
+fi
+
+# Now anything still holding the port belongs to somebody else. Refuse rather
+# than fight for it: air already had 8765 and 8766 taken by an unrelated
+# service, and a node that loses the bind race dies in a restart loop whose
+# real cause is buried in a log.
 if command -v ss >/dev/null 2>&1 && ss -lntH 2>/dev/null | grep -qE "[:.]${PORT}\b"; then
-  die "port $PORT is already in use — rerun with AION_NODE_PORT=<free port>"
+  die "port $PORT is held by another process — rerun with AION_NODE_PORT=<free port>"
 fi
 
 mkdir -p "$HOME/.config/systemd/user"
@@ -85,10 +97,9 @@ EOF
   say "override: port ${PORT}, repo ${REPO}"
 fi
 
-# systemctl --user needs a session bus, and an ssh command that is not a login
-# shell has none. Setting it explicitly is what makes this work over ssh --
-# without it `enable` silently reports the unit as not-found.
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# XDG_RUNTIME_DIR is exported above, before the first systemctl call: an ssh
+# command that is not a login shell has no session bus, and without it
+# `enable` silently reports the unit as not-found.
 systemctl --user daemon-reload
 systemctl --user enable --now aion-node
 sleep 3
