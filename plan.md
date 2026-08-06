@@ -169,6 +169,24 @@ enables only Models / Tasks / Agent.
   failed" is already on the row above; "what is stuck behind it" is what
   decides fix-now from fix-Monday.
 
+- **Two machines, on a real socket** (`tests/test_fleet_e2e.py`) — everything
+  about running work elsewhere (`RemoteServer`, `RemoteClient`, the shared
+  token, the swarm's `spawn_remote`/`poll_remote` hooks, a step's `instance`)
+  was written and unit-tested against fakes and had never been seen to work.
+  There is one machine here, so no test ever opened a port. That gap was not
+  academic: `remote add`, the only command that CREATES a peer, raised
+  NameError for as long as it existed and nothing noticed, because nothing in
+  the suite ever asked a second instance to do anything. Now two instances run
+  in one process on loopback with separate registries, and the assertions are
+  the ones that only hold if the transport is real — B creates the task and A
+  does not, a wrong token gets nothing back from `/run` (the route that is
+  arbitrary remote execution), an unreachable peer is `None` rather than an
+  exception, an unknown task id is a definite error rather than an empty
+  state, and a swarm step pinned to `beta` produces a task on beta. Still
+  untested against a genuinely remote peer — latency, a dropped tunnel, a
+  laptop that sleeps mid-task — but the protocol and the auth are no longer
+  taken on faith.
+
 - **The todo list mirrors into praxis** (`praxis.py`) — two lists of the same
   intentions that did not know about each other. Praxis has no todo model, so
   this is a mapping rather than a sync: an added todo becomes a goal node with
@@ -613,11 +631,11 @@ Nothing blocking. Both items that were here are closed:
 - **Any AI as an axiom provider.** Today `axiom` means one provider; the goal
   is the harness treatment — whichever model is configured answers, and the
   caller does not know which.
-- **Prove the multi-machine path.** Two local instances on different ports,
-  one registered as a peer of the other, a swarm DAG with steps pinned to
-  each. The fleet/remote/transport code is written and unit-tested but has
-  never been seen to work end to end from here — and `remote add`, the only
-  command that creates a peer, raised NameError until it was fixed.
+- ~~**Prove the multi-machine path.**~~ Done — `tests/test_fleet_e2e.py` runs
+  two instances on a real loopback socket and dispatches work from one to the
+  other. Still untested with a genuinely remote peer (network, latency, a
+  sleeping laptop), but the protocol, the auth and the swarm's remote hooks
+  are no longer taken on faith.
 
 ### Software
 
