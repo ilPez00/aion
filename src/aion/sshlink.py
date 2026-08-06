@@ -19,7 +19,7 @@ That buys, for no new protocol code:
     client; nothing before now authenticated the server)
   - per-peer identity: each controller gets its own key in the remote's
     authorized_keys, so one peer can be revoked without re-keying the fleet
-  - capability restriction: `restrict,permitopen="127.0.0.1:8765"` in
+  - capability restriction: `restrict,port-forwarding,permitopen="127.0.0.1:8765"` in
     authorized_keys means the key can open exactly one forward and nothing
     else -- no shell, no other ports, no agent forwarding
   - the remote listener stays bound to 127.0.0.1. Nothing new is exposed.
@@ -270,15 +270,28 @@ def authorized_keys_line(pubkey: str, remote_port: int = BASE_PORT,
                          source: str = "") -> str:
     """The line to append to the REMOTE machine's ~/.ssh/authorized_keys.
 
-    `restrict` disables everything (pty, agent/X11/port forwarding, user rc)
-    and then `permitopen` re-enables exactly one thing: a forward to the aion
-    listener on that machine's loopback. A key installed this way cannot get a
-    shell, cannot reach any other port, and cannot be used to pivot into the
-    network behind the peer -- it can talk to aion or nothing.
+    `restrict` disables everything (pty, agent/X11/port forwarding, user rc).
+    `port-forwarding` then re-enables the one capability a peer needs, and
+    `permitopen` narrows it to a single destination: the aion listener on that
+    machine's loopback. A key installed this way cannot get a shell, cannot
+    reach any other port, and cannot be used to pivot into the network behind
+    the peer -- it can talk to aion or nothing.
+
+    `port-forwarding` is NOT optional, and leaving it out is the bug this
+    docstring used to describe: `permitopen` does not re-enable forwarding, it
+    only restricts forwarding that is already permitted. Without it sshd
+    answers every tunnel with
+
+        channel N: open failed: administratively prohibited: open failed
+
+    which surfaces as "the tunnel is up but no aion answered" -- a message
+    that sends you looking at the listener, the port and the token, none of
+    which are the problem.
 
     `from=` pins the source address when the controller has a stable one.
     """
-    opts = ["restrict", f'permitopen="127.0.0.1:{remote_port}"']
+    opts = ["restrict", "port-forwarding",
+            f'permitopen="127.0.0.1:{remote_port}"']
     if source:
         opts.insert(0, f'from="{source}"')
     return f"{','.join(opts)} {pubkey.strip()}"

@@ -59,15 +59,28 @@ ssh-keygen -t ed25519 -f ~/.ssh/aion_pi5 -C aion-peer   # a key just for this
 `~/.ssh/authorized_keys`:
 
 ```
-restrict,permitopen="127.0.0.1:8765" ssh-ed25519 AAAA... aion-peer
+restrict,port-forwarding,permitopen="127.0.0.1:8765" ssh-ed25519 AAAA... aion-peer
 ```
 
 `restrict` disables everything — pty, shell, agent forwarding, X11, port
-forwarding, user rc files — and `permitopen` re-enables exactly one thing: a
-forward to aion on that machine's loopback. **A key installed this way cannot
-get a shell and cannot reach any other host or port.** If the controller is
-compromised, what the attacker gains is the ability to talk to aion on the
-peer, not a foothold on the peer.
+forwarding, user rc files. `port-forwarding` puts back the single capability a
+peer needs, and `permitopen` narrows it to one destination: aion on that
+machine's loopback. **A key installed this way cannot get a shell and cannot
+reach any other host or port.** If the controller is compromised, what the
+attacker gains is the ability to talk to aion on the peer, not a foothold on
+the peer.
+
+`port-forwarding` is not optional. `permitopen` does not re-enable forwarding,
+it only restricts forwarding that is already allowed, so `restrict,permitopen=…`
+on its own produces
+
+```
+channel 2: open failed: administratively prohibited: open failed
+```
+
+which `peers test` reports as *"tunnel up … but no aion answered"* — a message
+that sends you looking at the listener, the port and the token, none of which
+are the problem.
 
 Add `from="203.0.113.4"` at the front to pin the source address:
 

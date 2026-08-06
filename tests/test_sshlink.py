@@ -195,12 +195,32 @@ def test_ssh_parses_target_as_hostname_not_option():
 
 # ── authorized_keys ──────────────────────────────────────────────────────────
 def test_authorized_key_line_is_restricted():
-    """`restrict` turns everything off; permitopen turns exactly one thing back
-    on. The key can reach aion on that host or nothing -- no shell, no pivot."""
+    """`restrict` turns everything off; `port-forwarding` puts back the one
+    capability a peer needs and `permitopen` narrows it to one destination.
+    The key can reach aion on that host or nothing -- no shell, no pivot."""
     line = authorized_keys_line("ssh-ed25519 AAAA test@host", 8765)
     assert line.startswith("restrict,")
     assert 'permitopen="127.0.0.1:8765"' in line
     assert line.endswith("ssh-ed25519 AAAA test@host")
+
+
+def test_the_line_actually_permits_forwarding():
+    """The bug this file used to assert was correct behaviour.
+
+    `permitopen` does NOT re-enable forwarding -- it only restricts forwarding
+    that is already allowed. `restrict,permitopen=...` alone means sshd answers
+    every tunnel with "administratively prohibited", which `peers test` reports
+    as "tunnel up but no aion answered": a message that sends you looking at
+    the listener, the port and the token, none of which are the problem.
+
+    Found by linking a real peer. The old assertions all passed.
+    """
+    line = authorized_keys_line("k", 8765)
+    opts = line.split(" ")[0].split(",")
+    assert "port-forwarding" in opts, (
+        "restrict without port-forwarding disables the tunnel entirely")
+    assert opts.index("restrict") < opts.index("port-forwarding"), (
+        "restrict must come first or it re-disables the forwarding")
 
 
 def test_authorized_key_line_honours_remote_port():
