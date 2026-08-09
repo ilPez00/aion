@@ -22,15 +22,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from aion.selfupdate import (  # noqa: E402
-    UpdatePolicy, compare, describe, local_revision, pull, upstream_revision)
+    Revision, UpdatePolicy, compare, describe, local_revision, pull,
+    upstream_revision)
 
 
-async def peer_revisions(timeout: float = 8.0) -> dict[str, str]:
-    """Ask every configured peer what it is running. Silence is not a crash."""
+async def peer_revisions(timeout: float = 8.0) -> dict[str, Revision]:
+    """Ask every configured peer what it is running. Silence is not a crash.
+
+    Returns the whole Revision, not just the sha. `/status` has always carried
+    `dirty`, and this function threw it away — so a peer with uncommitted work
+    reported "differs from origin" and never the reason it could not act on
+    that. pansa sat in exactly that state for weeks.
+    """
     from aion.remotes import RemoteClient, RemoteNode
     from aion.sshlink import TunnelPool, load_peers
 
-    out: dict[str, str] = {}
+    out: dict[str, Revision] = {}
     peers = [p for p in load_peers() if p.enabled]
     if not peers:
         return out
@@ -39,7 +46,7 @@ async def peer_revisions(timeout: float = 8.0) -> dict[str, str]:
         try:
             state = pool.ensure(peer)
             if not state or not state.local_port:
-                out[peer.id] = ""
+                out[peer.id] = Revision()
                 continue
             node = RemoteNode(id=peer.id, host="127.0.0.1",
                               port=state.local_port)
@@ -47,7 +54,9 @@ async def peer_revisions(timeout: float = 8.0) -> dict[str, str]:
         except Exception:                      # noqa: BLE001
             status = None
         rev = (status or {}).get("revision") or {}
-        out[peer.id] = str(rev.get("sha") or "")
+        out[peer.id] = Revision(sha=str(rev.get("sha") or ""),
+                                branch=str(rev.get("branch") or ""),
+                                dirty=bool(rev.get("dirty")))
     return out
 
 
@@ -67,9 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"local    {local.short or '?':>8}  {local.branch or '?'}"
           f"{'  (dirty)' if local.dirty else ''}")
     print(f"origin   {upstream[:7] or '?':>8}")
-    for pid, sha in sorted(peers.items()):
-        mark = "=" if local.same_as(sha) else ("?" if not sha else "≠")
-        print(f"{pid:<8} {sha[:7] or '?':>8}  {mark}")
+    for pid, rev in sorted(peers.items()):
+        mark = "=" if local.same_as(rev) else ("?" if not rev.sha else "≠")
+        note = "  (dirty — will refuse to update)" if rev.dirty else ""
+        print(f"{pid:<8} {rev.short or '?':>8}  {mark}{note}")
     print(f"\n{describe(drift)}")
 
     if args.pull and drift.behind_origin:

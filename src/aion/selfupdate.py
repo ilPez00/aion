@@ -74,8 +74,15 @@ class FleetDrift:
 
     local: Revision = field(default_factory=Revision)
     upstream: str = ""                       # sha at origin, "" if unknown
-    peers: dict = field(default_factory=dict)   # peer id -> sha
+    peers: dict = field(default_factory=dict)   # peer id -> Revision
     behind_origin: bool = False
+    # Peers whose working tree has uncommitted changes. Reported separately
+    # from `differing` because it is a different problem with a different fix:
+    # a differing peer needs a pull, a dirty one will REFUSE the pull until
+    # someone looks at what is in its tree. pansa sat dirty for weeks with
+    # real uncommitted work on it, reporting only "behind origin", and the
+    # reason it could never act on that was visible nowhere a person looked.
+    dirty_peers: list = field(default_factory=list)
     # Peers whose revision differs from ours. Not "ahead": without a shared
     # history walk this cannot tell ahead from behind, and claiming to know
     # would be worse than saying they differ.
@@ -135,14 +142,22 @@ def compare(local: Revision, upstream: str = "",
     An unknown revision on either side is never treated as agreement: it goes
     in `unknown`, so "I could not tell" reads differently from "they match".
     """
-    drift = FleetDrift(local=local, upstream=upstream, peers=dict(peers or {}))
+    # One internal shape. A bare sha is coerced rather than handled alongside
+    # Revision: two accepted shapes for one argument is how the halves of a
+    # contract drift apart, and every defect in this subsystem so far has been
+    # that shape.
+    revs = {pid: (r if isinstance(r, Revision) else Revision(sha=str(r or "")))
+            for pid, r in (peers or {}).items()}
+    drift = FleetDrift(local=local, upstream=upstream, peers=revs)
     if upstream and local.sha:
         drift.behind_origin = not local.same_as(upstream)
-    for pid, sha in sorted(drift.peers.items()):
-        if not sha:
+    for pid, rev in sorted(revs.items()):
+        if not rev.sha:
             drift.unknown.append(pid)
-        elif not local.same_as(sha):
+        elif not local.same_as(rev):
             drift.differing.append(pid)
+        if rev.dirty:
+            drift.dirty_peers.append(pid)
     return drift
 
 
@@ -165,6 +180,14 @@ def describe(drift: FleetDrift) -> str:
         bits.append(f"differs from {names}{more}")
     if drift.unknown:
         bits.append(f"{len(drift.unknown)} peer(s) did not report a revision")
+    if drift.dirty_peers:
+        # Named, not counted. "1 peer is dirty" sends someone to check three
+        # machines; a dirty peer is also the one peer that cannot fix itself,
+        # so the name is the whole actionable content of the line.
+        names = ", ".join(drift.dirty_peers[:3])
+        more = (f" +{len(drift.dirty_peers) - 3}"
+                if len(drift.dirty_peers) > 3 else "")
+        bits.append(f"uncommitted changes on {names}{more} — cannot update")
     if drift.local.dirty:
         # Last, and always said: a dirty tree explains a peer that matches on
         # sha and still behaves differently.

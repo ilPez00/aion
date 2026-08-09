@@ -346,3 +346,52 @@ def test_a_node_restarts_onto_what_it_pulled():
     unit = (ROOT / "scripts" / "aion-node.service").read_text(encoding="utf-8")
     assert "Restart=always" in unit, \
         "on-failure will not restart the clean exit an update makes"
+
+
+# ── a peer that cannot update ────────────────────────────────────────────────
+# `/status` has always carried `dirty`; the fleet reporter threw it away, so a
+# peer with uncommitted work reported "differs" and never the reason it could
+# not act on that. pansa sat in exactly that state for weeks, holding real
+# work nobody knew about.
+
+def test_a_dirty_peer_is_named():
+    drift = compare(Revision(sha="a" * 40), "a" * 40,
+                    {"pansa": Revision(sha="a" * 40, dirty=True)})
+    assert drift.dirty_peers == ["pansa"]
+    assert "pansa" in describe(drift)
+    assert "cannot update" in describe(drift)
+
+
+def test_a_dirty_peer_on_the_same_revision_is_still_reported():
+    """The case that hid it: matching sha, so nothing else flags the peer, and
+    it behaves differently from everything else in the fleet anyway."""
+    drift = compare(Revision(sha="a" * 40), "a" * 40,
+                    {"pansa": Revision(sha="a" * 40, dirty=True)})
+    assert drift.differing == []          # nothing else would mention it
+    assert drift.dirty_peers == ["pansa"]
+
+
+def test_dirty_and_differing_are_separate_problems():
+    """Different fixes: a differing peer needs a pull, a dirty one needs a
+    person. Collapsing them would send the operator to do the wrong thing."""
+    drift = compare(
+        Revision(sha="a" * 40), "a" * 40,
+        {"pansa": Revision(sha="b" * 40, dirty=True),
+         "air": Revision(sha="b" * 40)})
+    assert drift.differing == ["air", "pansa"]
+    assert drift.dirty_peers == ["pansa"]
+
+
+def test_a_bare_sha_is_still_accepted():
+    """One internal shape, coerced at the door. Two accepted shapes for one
+    argument is how the halves of a contract drift apart."""
+    drift = compare(Revision(sha="a" * 40), "a" * 40, {"air": "b" * 40})
+    assert drift.differing == ["air"]
+    assert drift.dirty_peers == []
+    assert drift.peers["air"].sha == "b" * 40
+
+
+def test_many_dirty_peers_are_named_then_counted():
+    peers = {f"p{i}": Revision(sha="a" * 40, dirty=True) for i in range(5)}
+    line = describe(compare(Revision(sha="a" * 40), "a" * 40, peers))
+    assert "p0, p1, p2 +2" in line
