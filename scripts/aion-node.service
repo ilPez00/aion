@@ -31,11 +31,16 @@ Environment=AION_NODE_PORT=8765
 WorkingDirectory=%h/aion
 ExecStart=%h/aion/.venv/bin/python %h/aion/scripts/aion_node.py --port ${AION_NODE_PORT}
 
-# The node holds real work and answers a socket. Restarting it is right; doing
-# so in a tight loop when the port is already taken is not — that is the one
-# failure that will not fix itself, and a 5s loop turns it into log spam that
-# buries the reason.
-Restart=on-failure
+# `always`, not `on-failure`: a node that applied an update stops itself
+# cleanly to restart onto the code it just pulled, and a clean exit is exactly
+# what `on-failure` refuses to restart. A node should be running whenever the
+# machine is, so any exit is a reason to come back.
+#
+# `systemctl stop` still stops it — systemd does not restart a unit it was
+# told to stop. The burst limit below is what stops a genuinely broken node
+# (a port already taken, say — the one failure that will not fix itself) from
+# becoming a 5s log-spam loop that buries the reason.
+Restart=always
 RestartSec=5
 StartLimitIntervalSec=120
 StartLimitBurst=5

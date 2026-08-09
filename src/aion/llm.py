@@ -1,10 +1,9 @@
 """
 llm.py — inline LLM chat client for aion's Agent workspace.
 
-Backend chain: OmniRoute (local router, agy → Claude Code Pro → free stack) →
-FCM local proxy → Groq → OpenRouter. OmniRoute is tried first when
-OMNIROUTE_API_KEY is set (freerouting env contract); otherwise it's skipped and
-the original FCM-first chain is used unchanged.
+Backend chain: FCM local proxy -> Groq -> OpenRouter.
+OmniRoute is available for explicit invocation via `compare` or direct call;
+it is no longer part of the automatic fallback chain.
 """
 
 from __future__ import annotations
@@ -102,6 +101,8 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     """Send a message to the LLM, get a reply. Blocks (runs in thread).
 
     Backend fallback chain: FCM local proxy -> Groq -> OpenRouter.
+    OmniRoute is excluded from the automatic chain; use `compare` with
+    provider 'omniroute' for explicit side-by-side invocation.
     The first backend that returns a real reply wins; if all fail, returns a
     '⚠️' diagnostic string naming which providers were tried.
     """
@@ -110,7 +111,7 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     try:
         api_msgs = session.as_api_messages()
         tried: list[str] = []
-        for name, fn in (("OmniRoute", _omniroute_chat), ("FCM", _fcm_chat),
+        for name, fn in (("FCM", _fcm_chat),
                          ("Groq", _groq_chat), ("OpenRouter", _openrouter_chat)):
             reply = fn(api_msgs, timeout=timeout)
             if _is_ok(reply):
@@ -334,7 +335,9 @@ def chat_send_multi(prompt: str, providers: list[str], timeout: int = 30) -> dic
     ]
     out: dict[str, str] = {}
     for prov in providers:
-        if prov == "groq":
+        if prov == "omniroute":
+            reply = _omniroute_chat(api_msgs, timeout=timeout)
+        elif prov == "groq":
             reply = _groq_chat(api_msgs, timeout=timeout)
         elif prov == "openrouter":
             reply = _openrouter_chat(api_msgs, timeout=timeout)

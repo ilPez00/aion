@@ -125,10 +125,10 @@ def test_unparseable_config_is_off():
         assert policy_from_config({"updates": bad}).enabled is False
 
 
-def test_pull_refuses_when_auto_pull_is_off():
+def test_pull_refuses_when_no_switch_is_on():
     """The default. Nothing about checking should move a working tree."""
     moved, why = pull(ROOT, UpdatePolicy(check_every=60))
-    assert not moved and "auto_pull is off" in why
+    assert not moved and "report-only" in why
 
 
 # ── peers are never an update source ────────────────────────────────────────
@@ -247,16 +247,102 @@ def test_neither_surface_pulls_on_drift_alone():
     pull on `auto_pull` as well as on being behind — and `pull()` refuses
     independently anyway, so this is a second lock on the same door rather
     than the only one."""
-    for path, flag in ((ROOT / "src" / "aion" / "ui" / "app.py",
-                        "self._updates.auto_pull"),
-                       (ROOT / "scripts" / "aion_node.py", "policy.auto_pull")):
-        src = path.read_text(encoding="utf-8")
-        assert f"drift.behind_origin and {flag}" in src, path.name
+    node = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "drift.behind_origin and policy.auto_pull" in node
+    app = (ROOT / "src" / "aion" / "ui" / "app.py").read_text(encoding="utf-8")
+    # The cockpit returns early unless a switch is set, then asks if `ask`.
+    assert "if not (self._updates.auto_pull or self._updates.ask):" in app
 
 
-def test_applying_an_update_says_a_restart_is_needed():
-    """Swapping the source under a running process gets a node that is
-    neither version."""
-    for path in (ROOT / "src" / "aion" / "ui" / "app.py",
-                 ROOT / "scripts" / "aion_node.py"):
-        assert "restart to run the new code" in path.read_text(encoding="utf-8")
+def test_applying_an_update_does_not_leave_stale_code_running():
+    """Swapping the source under a running process gets something that is
+    neither version. The cockpit cannot restart itself mid-session so it says
+    so; the node can, and does."""
+    app = (ROOT / "src" / "aion" / "ui" / "app.py").read_text(encoding="utf-8")
+    assert "restart to run the new code" in app
+    node = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "restarting onto the new revision" in node
+
+
+# ── asking before applying ──────────────────────────────────────────────────
+
+def test_ask_is_a_third_setting_between_telling_and_doing():
+    p = policy_from_config({"updates": {"check_every": 60, "ask": True}})
+    assert p.ask and not p.auto_pull and p.enabled
+
+
+def test_auto_pull_wins_over_ask():
+    """Asking about something already applied without asking is a prompt that
+    means nothing."""
+    p = policy_from_config({"updates": {"check_every": 60, "ask": True,
+                                        "auto_pull": True}})
+    assert p.auto_pull and not p.ask
+
+
+def test_ask_cannot_be_on_without_checking():
+    assert policy_from_config({"updates": {"ask": True}}).ask is False
+
+
+def test_pull_still_refuses_when_both_switches_are_off():
+    moved, why = pull(ROOT, UpdatePolicy(check_every=60))
+    assert not moved and "report-only" in why
+
+
+def test_the_question_names_both_revisions_and_the_branch():
+    """"update aion?" is not a question anybody can answer. An unexpected
+    branch has to be visible before the yes, not after it."""
+    from aion.selfupdate import gate_action
+
+    q = gate_action(compare(Revision(sha="aaaaaaa", branch="main"),
+                            upstream="bbbbbbbccc"))
+    assert "aaaaaaa" in q and "bbbbbbb" in q and "main" in q
+
+
+def test_a_dirty_tree_is_refused_before_anyone_is_asked():
+    """An approval that then refuses itself is worse than no prompt: it
+    teaches you the prompt is decorative."""
+    from aion.selfupdate import can_apply
+
+    ok, why = can_apply(compare(Revision(sha="aaaaaaa", dirty=True),
+                                upstream="bbbbbbb"))
+    assert not ok and "uncommitted" in why
+
+
+def test_nothing_to_do_is_not_asked_about():
+    from aion.selfupdate import can_apply
+
+    ok, why = can_apply(compare(Revision(sha="aaaaaaa"), upstream="aaaaaaa"))
+    assert not ok and "up to date" in why
+
+
+def test_an_unreachable_origin_is_not_asked_about():
+    from aion.selfupdate import can_apply
+
+    assert can_apply(compare(Revision(sha="aaaaaaa"), upstream=""))[0] is False
+
+
+def test_the_cockpit_asks_through_the_normal_gate():
+    """Same mechanism as every other dangerous action: recorded with who
+    approved it, and unanswered means no."""
+    src = (ROOT / "src" / "aion" / "ui" / "app.py").read_text(encoding="utf-8")
+    block = src.split("def _check_updates")[1].split("\n    def ")[0]
+    assert "gates.request(" in block and "RISK_HIGH" in block
+    assert "gates.wait(" in block
+    assert "self._update_asked == drift.upstream" in block, \
+        "a gate that reappears every interval is one people dismiss"
+
+
+def test_a_node_says_it_cannot_ask_rather_than_doing_nothing():
+    """`ask` on a machine with nobody at it would otherwise be a setting whose
+    name promises a prompt and silently does nothing."""
+    src = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "`ask` needs a cockpit" in src
+
+
+def test_a_node_restarts_onto_what_it_pulled():
+    """A node running code it no longer has on disk is the worst of both."""
+    src = (ROOT / "scripts" / "aion_node.py").read_text(encoding="utf-8")
+    assert "signal.raise_signal(signal.SIGTERM)" in src
+    unit = (ROOT / "scripts" / "aion-node.service").read_text(encoding="utf-8")
+    assert "Restart=always" in unit, \
+        "on-failure will not restart the clean exit an update makes"

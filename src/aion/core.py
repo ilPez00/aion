@@ -289,7 +289,10 @@ DEFAULT_LAYOUT = {
     # 1800s: a fleet that drifts by half an hour is fine; one that drifts for
     # three weeks (as air did) is not, and a tighter interval only adds
     # `git ls-remote` calls nobody reads the result of.
-    "updates": {"check_every": 1800, "auto_pull": False},
+    # `ask` puts the decision through the normal approval gate: the machine
+    # notices, you decide, the answer is recorded with who gave it, and an
+    # unanswered prompt is a no. `auto_pull` (off) skips the asking.
+    "updates": {"check_every": 1800, "ask": True, "auto_pull": False},
     # palette lives in ui/theme.py, which also carries the WCAG audit that
     # tests/test_theme.py enforces. Imported lazily-ish (module-level is fine,
     # ui.theme has no dependencies) so there is exactly one source of truth.

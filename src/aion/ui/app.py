@@ -264,7 +264,7 @@ class AiOSApp(App):
         self._remote_server.on_gate = lambda gid, approved: (
             self.store.resolve_gate_by_id(gid, approved)
         )
-        asyncio.create_task(self._start_remote_server())
+        # asyncio.create_task(self._start_remote_server()) # Disable auto-start
         # advertise this instance to same-host peers + keep the beat going
         beat_s = _fleet.settings().heartbeat_s
         self._beat()
@@ -281,6 +281,7 @@ class AiOSApp(App):
         from ..selfupdate import policy_from_config as _update_policy
         self._updates = _update_policy(self.cfg)
         self._update_line = ""
+        self._update_asked = ""   # revision we already prompted about
         if self._updates.enabled:
             self.set_interval(self._updates.check_every, self._check_updates)
         for rn in self.cfg.get("remote_nodes", []):
@@ -1250,12 +1251,35 @@ class AiOSApp(App):
                 if not drift.in_sync:
                     self.store.state.logs.append(f"aion: {line}")
                     self.store.state.logs = self.store.state.logs[-50:]
-            if drift.behind_origin and self._updates.auto_pull:
-                moved, msg = await asyncio.to_thread(pull, root, self._updates)
-                self.store.state.logs.append(f"aion update: {msg}")
-                if moved:
-                    self.store.state.logs.append(
-                        "aion: restart to run the new code")
+            if not (self._updates.auto_pull or self._updates.ask):
+                return
+            from ..hitl import RISK_HIGH
+            from ..selfupdate import can_apply, gate_action
+
+            ok, why = can_apply(drift)
+            if not ok:
+                if drift.behind_origin:
+                    self.store.state.logs.append(f"aion update: {why}")
+                return
+            if self._updates.ask:
+                # Through the same gate everything else dangerous uses, so the
+                # decision is recorded with WHO made it and an unanswered
+                # prompt is a no. Asked once per target revision: a gate that
+                # reappears every interval is one people learn to dismiss.
+                if self._update_asked == drift.upstream:
+                    return
+                self._update_asked = drift.upstream
+                gate = self.store.gates.request(
+                    "aion-update", gate_action(drift), risk=RISK_HIGH)
+                self.store._publish_gates()
+                if not await self.store.gates.wait(gate, timeout=3600):
+                    self.store.state.logs.append("aion update: declined")
+                    return
+            moved, msg = await asyncio.to_thread(pull, root, self._updates)
+            self.store.state.logs.append(f"aion update: {msg}")
+            if moved:
+                self.store.state.logs.append(
+                    "aion: restart to run the new code")
 
         asyncio.create_task(run())
 

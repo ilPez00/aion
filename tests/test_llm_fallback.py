@@ -1,15 +1,11 @@
-"""Tests for the OmniRoute -> FCM -> Groq -> OpenRouter fallback chain.
+"""Tests for the FCM -> Groq -> OpenRouter fallback chain.
 
 Mocks the backend senders so routing and warning handling are verified with
 no live credentials and no network.
 
-The chain has FOUR backends and this file used to mock three. OmniRoute is
-tried FIRST, so on any machine where it answers, these tests took its reply
-instead of the mocked fallbacks -- and made a real LLM call while doing it.
-They passed here only because OmniRoute happens to be down on this host, and
-failed the moment the suite ran on another machine in the fleet:
-
-    assert '<tool state></tool>'.startswith('⚠️ LLM unavailable ...')
+The chain has THREE backends and this file stubs all three. OmniRoute is
+no longer part of the automatic fallback chain; it is available for explicit
+invocation via `compare` or direct call.
 
 A test whose result depends on whether a network service is up is not testing
 what it says it tests. `_no_network` is autouse so a test added later cannot
@@ -59,7 +55,7 @@ def test_fallback_reports_all_down(monkeypatch):
     monkeypatch.setattr(llm, "_groq_chat", lambda m, timeout=30: "⚠️ Groq 403")
     monkeypatch.setattr(llm, "_openrouter_chat", lambda m, timeout=30: "⚠️ HTTP 401")
     out = llm.chat_send(ChatSession(), "hi")
-    assert out.startswith("⚠️ LLM unavailable (tried OmniRoute, FCM, Groq, OpenRouter)")
+    assert out.startswith("⚠️ LLM unavailable (tried FCM, Groq, OpenRouter)")
 
 
 def test_chat_send_multi_supports_openrouter(monkeypatch):

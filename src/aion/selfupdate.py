@@ -178,11 +178,17 @@ class UpdatePolicy:
 
     # Seconds between checks. 0 = never look.
     check_every: float = 0.0
-    # Run `git pull --ff-only` when behind origin. Off, and separate from
-    # checking: an orchestrator that restarts itself onto new code in the
-    # middle of a DAG is not a feature. Fast-forward only, so a local commit
-    # is never silently discarded.
+    # Run `git pull --ff-only` when behind origin WITHOUT asking. Off, and
+    # separate from checking: an orchestrator that restarts itself onto new
+    # code in the middle of a DAG is not a feature. Fast-forward only, so a
+    # local commit is never silently discarded.
     auto_pull: bool = False
+    # Ask a human, through the same approval gate everything else dangerous
+    # goes through, and apply on yes. This is the middle setting between
+    # "tell me" and "just do it", and it is the one most people want: the
+    # machine notices, the person decides, and the decision is recorded with
+    # who made it. Unanswered is a no — gates fail closed.
+    ask: bool = False
     remote: str = "origin"
     branch: str = "main"
 
@@ -202,13 +208,46 @@ def policy_from_config(cfg: dict | None) -> UpdatePolicy:
         return UpdatePolicy()
     try:
         every = max(0.0, float(raw.get("check_every", 0) or 0))
+        auto = bool(raw.get("auto_pull", False)) and every > 0
         return UpdatePolicy(
             check_every=every,
-            auto_pull=bool(raw.get("auto_pull", False)) and every > 0,
+            auto_pull=auto,
+            # `auto_pull` wins: asking about something already applied without
+            # asking is a prompt that means nothing.
+            ask=bool(raw.get("ask", False)) and every > 0 and not auto,
             remote=str(raw.get("remote") or "origin"),
             branch=str(raw.get("branch") or "main"))
     except (TypeError, ValueError):
         return UpdatePolicy()
+
+
+def gate_action(drift: FleetDrift) -> str:
+    """The sentence a human is asked to approve.
+
+    Names both revisions and the branch, because "update aion?" is not a
+    question anybody can answer — the useful version says what it is moving
+    from, to, and on which branch, so an unexpected branch is visible before
+    the yes rather than after it.
+    """
+    return (f"update aion {drift.local.short} → {drift.upstream[:7]} "
+            f"on {drift.local.branch or '?'} (git pull --ff-only)")
+
+
+def can_apply(drift: FleetDrift) -> tuple[bool, str]:
+    """Is this machine in a state where applying an update is safe?
+
+    Checked BEFORE asking, so a human is never asked to approve something
+    that will then refuse itself — an approval that does nothing is worse
+    than no prompt, because it teaches you the prompt is decorative.
+    """
+    if not drift.behind_origin:
+        return False, "already up to date"
+    if not drift.upstream:
+        return False, "cannot reach origin"
+    if drift.local.dirty:
+        # `--ff-only` would refuse anyway; saying so up front names the fix.
+        return False, "local tree has uncommitted changes — commit or stash first"
+    return True, ""
 
 
 def pull(root: Path | str, policy: UpdatePolicy) -> tuple[bool, str]:
@@ -219,8 +258,8 @@ def pull(root: Path | str, policy: UpdatePolicy) -> tuple[bool, str]:
     rewrite it. Refusing is the correct outcome for a divergent peer — it is
     a person's problem, and it says so.
     """
-    if not policy.auto_pull:
-        return False, "auto_pull is off"
+    if not (policy.auto_pull or policy.ask):
+        return False, "updates are report-only (set auto_pull or ask)"
     before = local_revision(root).sha
     out = _git(root, "pull", "--ff-only", policy.remote, policy.branch)
     after = local_revision(root).sha

@@ -128,8 +128,24 @@ async def _update_watch(cfg: dict, quiet: bool) -> None:
             if drift.behind_origin and policy.auto_pull:
                 moved, msg = await asyncio.to_thread(pull, root, policy)
                 print(f"[node] update: {msg}", flush=True)
-                if moved and not quiet:
-                    print("[node] restart to run the new code", flush=True)
+                if moved:
+                    # Leaving a node running code it no longer has on disk is
+                    # the worst of both, so it restarts onto what it pulled.
+                    #
+                    # Via our own SIGTERM rather than SystemExit: raising
+                    # inside a task only ends the task, and the point is to go
+                    # through the same shutdown path a `systemctl stop` takes
+                    # so the socket closes cleanly instead of being dropped
+                    # mid-request. systemd (`Restart=always`) brings it back.
+                    print("[node] restarting onto the new revision", flush=True)
+                    signal.raise_signal(signal.SIGTERM)
+                    return
+            elif drift.behind_origin and policy.ask:
+                # A node has nobody to ask. Saying so beats silently doing
+                # nothing under a setting whose name promises a prompt.
+                print("[node] behind origin; `ask` needs a cockpit — set "
+                      "auto_pull, or update this node from the controller",
+                      flush=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:                       # noqa: BLE001
