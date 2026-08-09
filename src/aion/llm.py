@@ -101,7 +101,10 @@ def _load_env() -> None:
 def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     """Send a message to the LLM, get a reply. Blocks (runs in thread).
 
-    Backend fallback chain: FCM local proxy -> Groq -> OpenRouter.
+    Backend fallback chain: Groq -> OpenRouter -> OmniRoute (local) -> FCM
+    (local). Local AI execution is LAST in the chain and is never triggered by
+    a slow/too-long model timeout — a timeout simply surfaces a '⏱️' note
+    instead of spending tokens on a local fallback the user did not ask for.
     The first backend that returns a real reply wins; if all fail, returns a
     '⚠️' diagnostic string naming which providers were tried.
     """
@@ -110,18 +113,49 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     try:
         api_msgs = session.as_api_messages()
         tried: list[str] = []
-        for name, fn in (("OmniRoute", _omniroute_chat), ("FCM", _fcm_chat),
-                         ("Groq", _groq_chat), ("OpenRouter", _openrouter_chat)):
+        # Cloud backends first; local AI (OmniRoute/FCM) is always last.
+        for name, fn in (("Groq", _groq_chat), ("OpenRouter", _openrouter_chat),
+                         ("OmniRoute", _omniroute_chat), ("FCM", _fcm_chat)):
             reply = fn(api_msgs, timeout=timeout)
             if _is_ok(reply):
                 session.add("assistant", reply)  # type: ignore[arg-type]
                 return reply
+            # A slow/too-long model should never trigger a fallback to local
+            # AI (or to anything else). Surface the timeout instead.
+            if isinstance(reply, str) and reply.startswith("⏱️"):
+                tryd = ", ".join(tried) if tried else name
+                note = f"⏱️ model too slow ({name}) — not switching AI."
+                session.add("assistant", note)  # type: ignore[arg-type]
+                return note
             tried.append(name)
         session.add("assistant",
                     f"⚠️ LLM unavailable (tried {', '.join(tried)}).")
         return f"⚠️ LLM unavailable (tried {', '.join(tried)})."
     finally:
         session.pending = False
+
+
+def _is_timeout_error(e: Exception) -> bool:
+    """True when an exception denotes a read/connection timeout."""
+    import socket
+    if isinstance(e, socket.timeout):  # noqa: SIM102
+        return True
+    reason = getattr(e, "reason", None)
+    if reason is not None:
+        if isinstance(reason, socket.timeout):  # noqa: SIM102
+            return True
+        import errno
+        if getattr(reason, "errno", None) in (errno.ETIMEDOUT,):
+            return True
+    return isinstance(e, TimeoutError)
+
+
+def _timeout_or_warning(provider: str, e: Exception) -> str:
+    """Return a '⏱️ timeout' sentinel for slow models, else a '⚠️' warning."""
+    if _is_timeout_error(e):
+        return f"⏱️ {provider} timed out (model too slow)"
+    reason = getattr(e, "reason", None) or e
+    return f"⚠️ {provider} unreachable: {reason}"
 
 
 def _omniroute_chat(messages: list[dict], timeout: int = 30) -> str | None:
@@ -165,8 +199,8 @@ def _omniroute_chat(messages: list[dict], timeout: int = 30) -> str | None:
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ OmniRoute HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ OmniRoute unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _timeout_or_warning("OmniRoute", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ OmniRoute bad response: {e}"
 
@@ -196,8 +230,8 @@ def _fcm_chat(messages: list[dict], timeout: int = 30) -> str | None:
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ FCM HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ FCM unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _timeout_or_warning("FCM", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ FCM bad response: {e}"
 
@@ -236,8 +270,8 @@ def _groq_chat(messages: list[dict], timeout: int = 30) -> str | None:
     except urllib.error.HTTPError as e:
         # surface the real status so a blocked/expired key is visible
         return f"⚠️ Groq HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ Groq unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _timeout_or_warning("Groq", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ Groq bad response: {e}"
 
@@ -265,8 +299,8 @@ def _oa_compatible(messages: list[dict], *, url: str, key: str, model: str,
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _timeout_or_warning("provider", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ bad response: {e}"
 
@@ -287,8 +321,13 @@ def _openrouter_chat(messages: list[dict], timeout: int = 30) -> str | None:
 
 
 def _is_ok(reply: str | None) -> bool:
-    """A reply counts as success only if it's non-empty and not a '⚠️' warning."""
-    return bool(reply) and not (isinstance(reply, str) and reply.startswith("⚠️"))
+    """A reply counts as success only if it's non-empty and not a '⚠️' warning
+    or a '⏱️' slow-model timeout sentinel."""
+    if not reply:
+        return False
+    if isinstance(reply, str):
+        return not (reply.startswith("⚠️") or reply.startswith("⏱️"))
+    return False
 
 
 def format_conversation(session: ChatSession) -> list[dict]:
