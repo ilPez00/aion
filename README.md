@@ -29,6 +29,30 @@ push live task progress + stats through an async bus.
 └─ BOTTOM: command palette (Ctrl-K) + history ticker ───────────┘
 ```
 
+## Install
+
+Two ways in, and they are not equivalent.
+
+```bash
+pip install git+https://github.com/ilPez00/aion
+aion --where          # which layout was detected, and where config/data live
+aion                  # the cockpit
+```
+
+That gets you the TUI. Config lands in `~/.config/aion/layout.json` and data
+in `~/.local/share/aion` (both follow `XDG_*`; override with `AION_CONFIG` and
+`AION_DATA`). The web HUD, the headless node daemon and the fleet scripts live
+in `scripts/` and are **not** packaged — they need a clone.
+
+```bash
+git clone https://github.com/ilPez00/aion && cd aion
+./aion.sh up
+```
+
+A clone reads `config/layout.json` from the checkout rather than from
+`~/.config`, so the two installs do not share settings. Every machine in the
+fleet runs from a clone.
+
 ## Quick start
 
 `aion.sh` bootstraps the venv and deps on first run, so there is nothing to
@@ -679,3 +703,7 @@ bus, register it in `HARNESS_TYPES` + `config/layout.json`.
 - real `CyclopsHarness` streaming from `cyclops/agent`
 - per-harness VRAM/throughput sparklines in the right rail
 - workspace layouts saved to config (spatial memory)
+
+## License
+
+Apache-2.0. See `LICENSE` for the terms and `NOTICE` for the copyright.

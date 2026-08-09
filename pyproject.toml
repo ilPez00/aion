@@ -4,10 +4,8 @@ version = "0.1.0"
 description = "Customizable multi-harness AI cockpit & stats visualizer (TUI)"
 readme = "README.md"
 requires-python = ">=3.11"
-# No `license` field yet — deliberately. An unlicensed project is "all rights
-# reserved" by default, which is a coherent state; a wrong license is not, and
-# is hard to walk back once anyone has relied on it. Decide before publishing
-# anywhere public.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
@@ -16,7 +14,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Utilities",
-    "Private :: Do Not Upload",   # removed when a license is chosen
 ]
 dependencies = [
     "textual>=0.80",
@@ -47,7 +44,10 @@ aion = "aion.ui.app:main"
 Source = "https://github.com/ilPez00/aion"
 
 [build-system]
-requires = ["setuptools>=61"]
+# >=77 for PEP 639: `license = "Apache-2.0"` as an SPDX string plus
+# `license-files`. The older `license = {file = ...}` form still builds but is
+# deprecated, and emits a warning on every install.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -685,13 +685,13 @@ local completes with the cross-machine dependency resolving.
 
 ### Needs a human
 
-1. **Pick a license.** This is the one thing standing between aion and being
-   publishable, and it cannot be defaulted: an unlicensed repository is "all
-   rights reserved", which is a coherent state, while a wrong license is
-   effectively irreversible once anyone has relied on it. `pyproject.toml`
-   carries `Private :: Do Not Upload` and no `license` field until this is
-   decided — deliberately, so a stray `twine upload` fails rather than
-   publishes.
+1. **Copyright holder in `NOTICE`.** It reads "the aion authors", which is a
+   valid and common formulation, not a placeholder — but if a legal name
+   should be on it, that is a one-line edit only the owner can make.
+
+The license itself is settled: **Apache-2.0**, chosen over MIT for the
+explicit patent grant. `LICENSE` is the verbatim upstream text and `NOTICE`
+carries the copyright, per Apache's own guidance.
 
 Both earlier items here are closed:
 
@@ -775,7 +775,6 @@ Done:
 - Verified end to end: clean venv, `pip install .`, cockpit boots.
 
 Left:
-- The license (above), which gates everything below it.
 - README has no install section; it assumes `./aion.sh` in a clone.
 - `scripts/` and `static/` are not packaged, so the web HUD and the node
   daemon are checkout-only. Fine while the fleet runs from clones; not fine

@@ -23,6 +23,7 @@ import re
 # matters, because the reason `add -A` is banned is that nobody looked.
 ALLOWED_TOP = {
     "AGENTS.md", "README.md", "plan.md", "pyproject.toml", "aion.sh",
+    "LICENSE", "NOTICE",
     "twa-manifest.json", ".gitignore", ".githooks", ".github",
     "src", "tests", "docs", "config", "scripts", "static",
 }

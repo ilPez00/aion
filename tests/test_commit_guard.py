@@ -24,7 +24,11 @@ from commit_guard import (  # noqa: E402
 def test_project_paths_are_allowed():
     for p in ("src/aion/store.py", "tests/test_swarm_store.py", "plan.md",
               "docs/IDENTITY.md", "config/layout.json", "scripts/static/hud.js",
-              ".github/workflows/ci.yml", "static/index.html"):
+              ".github/workflows/ci.yml", "static/index.html",
+              # Extensionless top-level files, added when aion was licensed.
+              # The guard refused them the first time, correctly — a new
+              # top-level entry is unreviewed until someone says otherwise.
+              "LICENSE", "NOTICE"):
         assert path_problem(p) == "", p
 
 
