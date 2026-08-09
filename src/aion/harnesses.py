@@ -728,7 +728,8 @@ class VaultHarness(Harness):
         self.prompt_setup = bool(extra.get("prompt_setup", True))
         root = extra.get("root")
         if not root:
-            root = str(Path(__file__).resolve().parents[2] / "notes")
+            from .paths import notes_dir
+            root = str(notes_dir())
         self.root = root
         self._task: asyncio.Task | None = None
         self._reader = None

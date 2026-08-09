@@ -685,7 +685,15 @@ local completes with the cross-machine dependency resolving.
 
 ### Needs a human
 
-Nothing blocking. Both items that were here are closed:
+1. **Pick a license.** This is the one thing standing between aion and being
+   publishable, and it cannot be defaulted: an unlicensed repository is "all
+   rights reserved", which is a coherent state, while a wrong license is
+   effectively irreversible once anyone has relied on it. `pyproject.toml`
+   carries `Private :: Do Not Upload` and no `license` field until this is
+   decided — deliberately, so a stray `twine upload` fails rather than
+   publishes.
+
+Both earlier items here are closed:
 
 0. ~~Revoke the flagged Gemini keys~~ — **owner decided not to act.** 16 of 29
    stored keys return 403 "reported as leaked". Recorded, not open; do not
@@ -732,6 +740,50 @@ Nothing blocking. Both items that were here are closed:
   them, which is a real scope change against `docs/IDENTITY.md`. Must be
   driven by a real client, not written and unit-tested — it is exactly the
   two-halves-never-exercised-together shape that produced ten defects here.
+
+### Distribution
+
+An installed aion now boots. It did not before, and the reason is worth
+keeping written down.
+
+`pip install aion` produced a package whose entry point raised
+`ModuleNotFoundError: No module named 'pyte'` — `term.py` imports it at module
+scope and `ui/app.py` imports `term.py` at module scope, but `pyte` was
+declared only in the `web` extra. Past that, five modules resolved their paths
+with `Path(__file__).resolve().parents[2]`, which is not a path but an
+assumption: *"I live at `<root>/src/aion/`"*. Installed, that expression
+evaluates to `lib/python3.13` — an existing directory, owned by the
+interpreter, that will never hold a `config/`. Nothing raised; the config was
+simply never found and `save_config_section` aimed its writes at the standard
+library tree.
+
+1889 tests could not see either one, for the same reason they could not see
+the ten defects before them: every test ran from the checkout, where the wrong
+expression is accidentally right. `tests/test_paths.py` fixes that by
+relocating the resolver into a site-packages-shaped tree and re-asking, so
+both layouts are exercised.
+
+Done:
+- `paths.py` — one resolver. `$AION_CONFIG`/`$AION_DATA`, then the checkout,
+  then XDG. The checkout deliberately outranks XDG: every node in the fleet
+  reads `<root>/config/layout.json` today, and quietly relocating that would
+  hand each of them factory defaults on the next restart.
+- `checkout_root()` returns `None` rather than a guess, so `/status` can say
+  "not a git install" instead of reporting a revision it invented.
+- `aion --help` / `--version` / `--where`. `--help` used to launch the
+  cockpit, which is a poor first impression of anything.
+- Verified end to end: clean venv, `pip install .`, cockpit boots.
+
+Left:
+- The license (above), which gates everything below it.
+- README has no install section; it assumes `./aion.sh` in a clone.
+- `scripts/` and `static/` are not packaged, so the web HUD and the node
+  daemon are checkout-only. Fine while the fleet runs from clones; not fine
+  for someone who only ran `pip install`.
+- `tests/test_term.py::test_term_harness_send_writes_pty` flakes in the full
+  suite and passes alone — `forkpty()` from a multi-threaded process, which
+  Python warns about explicitly. Rare, but a flaky test in CI is a distributed
+  cost once other people run it.
 
 ### Software
 

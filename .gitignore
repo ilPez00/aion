@@ -10,3 +10,8 @@ notes/
 uv.lock
 server.py
 .pytest_cache/
+
+# setuptools build artifacts (`pip install .` from the repo root)
+/build/
+/dist/
+*.egg-info/

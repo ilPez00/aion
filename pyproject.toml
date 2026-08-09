@@ -2,11 +2,31 @@
 name = "aion"
 version = "0.1.0"
 description = "Customizable multi-harness AI cockpit & stats visualizer (TUI)"
+readme = "README.md"
 requires-python = ">=3.11"
+# No `license` field yet — deliberately. An unlicensed project is "all rights
+# reserved" by default, which is a coherent state; a wrong license is not, and
+# is hard to walk back once anyone has relied on it. Decide before publishing
+# anywhere public.
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+    "Private :: Do Not Upload",   # removed when a license is chosen
+]
 dependencies = [
     "textual>=0.80",
     "evdev>=1.7",   # optional: real joystick/gamepad input (graceful if absent)
     "psutil>=6",    # Iron Man HUD: live computer statistics
+    # Not optional despite living in the `web` extra until now: term.py imports
+    # it at module scope and ui/app.py imports term.py at module scope, so a
+    # base install could not reach its own entry point — `import aion.ui.app`
+    # raised ModuleNotFoundError. Terminal panes are the cockpit, not an add-on.
+    "pyte>=0.8",
 ]
 
 [project.optional-dependencies]
@@ -18,10 +38,13 @@ ring = ["bleak"]                                     # optional: Colmi R02 smart
 # every job installs the tools it runs. Skipping that test when the import is
 # missing would recreate the failure it exists to catch.
 dev = ["pytest", "pytest-asyncio", "ruff", "pyyaml"]
-web = ["websockets", "pyte", "requests", "python-dotenv"]  # optional: web HUD server
+web = ["websockets", "requests", "python-dotenv"]  # optional: web HUD server
 
 [project.scripts]
 aion = "aion.ui.app:main"
+
+[project.urls]
+Source = "https://github.com/ilPez00/aion"
 
 [build-system]
 requires = ["setuptools>=61"]

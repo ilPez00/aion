@@ -1229,7 +1229,13 @@ class AiOSApp(App):
             from ..selfupdate import compare, describe, local_revision, pull
             from ..selfupdate import upstream_revision
 
-            root = Path(__file__).resolve().parents[3]
+            from ..paths import checkout_root
+
+            root = checkout_root()
+            if root is None:
+                # Installed, not cloned. There is nothing to pull and no tree
+                # to pull it into; `pip install -U` is the update path here.
+                return
             try:
                 local = await asyncio.to_thread(local_revision, root)
                 upstream = await asyncio.to_thread(
@@ -1949,7 +1955,67 @@ class AiOSApp(App):
         )
 
 
-def main() -> None:
+USAGE = """\
+aion — multi-harness AI cockpit (TUI)
+
+usage: aion [--help] [--version] [--where]
+
+  -h, --help     this text
+  -V, --version  installed version
+  -w, --where    resolved config and data paths, and which layout was detected
+
+With no arguments, launches the cockpit.
+
+environment:
+  AION_CONFIG    path to layout.json, overriding the default
+  AION_DATA      directory for notes and other mutable data
+"""
+
+
+def _version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("aion")
+    except PackageNotFoundError:
+        # Running from a checkout that was never pip-installed.
+        return "0.0.0+source"
+
+
+def _where() -> str:
+    from ..paths import checkout_root, config_file, data_dir
+    root = checkout_root()
+    cfg = config_file()
+    return "\n".join([
+        f"layout   {'checkout ' + str(root) if root else 'installed'}",
+        f"config   {cfg}{'' if cfg.exists() else '  (not created yet)'}",
+        f"data     {data_dir()}",
+    ])
+
+
+def main(argv: list[str] | None = None) -> None:
+    import sys as _sys
+    args = _sys.argv[1:] if argv is None else argv
+    # Argument handling is deliberately hand-rolled and tiny: the point is that
+    # `aion --help` prints help. Before this it fell through to `.run()`, so the
+    # first thing anyone typed after installing took over their terminal with a
+    # full-screen app and no obvious way back. An unknown flag exits non-zero
+    # for the same reason — swallowing a typo into a TUI launch is not a
+    # kindness.
+    if args:
+        flag = args[0]
+        if flag in ("-h", "--help"):
+            print(USAGE, end="")
+            return
+        if flag in ("-V", "--version"):
+            print(_version())
+            return
+        if flag in ("-w", "--where"):
+            print(_where())
+            return
+        print(f"aion: unknown option {flag!r}\n", file=_sys.stderr)
+        print(USAGE, end="", file=_sys.stderr)
+        raise SystemExit(2)
+
     from .. import fleet as _fleet
     moved = _fleet.migrate_legacy()
     if moved:

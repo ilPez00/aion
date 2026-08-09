@@ -160,8 +160,8 @@ def read_tasks(instance_id: str, root: Path | None = None) -> list[ProcTask]:
 def read_harnesses(config_path: Path | None = None) -> list[dict]:
     """Harness registry from config/layout.json."""
     if config_path is None:
-        here = Path(__file__).resolve().parents[2]
-        config_path = here / "config" / "layout.json"
+        from .paths import config_file
+        config_path = config_file()
     cfg = _read_json(Path(config_path), {})
     out = []
     for h in cfg.get("harnesses", []) or []:

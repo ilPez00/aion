@@ -351,8 +351,14 @@ def _self_revision() -> dict:
     """
     global _REVISION_CACHE
     if _REVISION_CACHE is None:
-        from .selfupdate import local_revision
-        rev = local_revision(Path(__file__).resolve().parents[2])
+        from .paths import checkout_root
+        from .selfupdate import Revision, local_revision
+        root = checkout_root()
+        # An installed aion has no checkout and therefore no revision. Report
+        # the empty one rather than probing whatever directory happens to sit
+        # above site-packages: a peer reading `/status` must be able to tell
+        # "not a git install" from "a git install I failed to read".
+        rev = local_revision(root) if root is not None else Revision()
         _REVISION_CACHE = {"sha": rev.short, "branch": rev.branch,
                            "dirty": rev.dirty}
     return _REVISION_CACHE

@@ -320,8 +320,8 @@ DEFAULT_LAYOUT = {
 def config_path(path: str | Path | None = None) -> Path:
     if path is not None:
         return Path(path)
-    # repo layout: .../aion/src/aion/core.py  ->  config at repo root /config
-    return Path(__file__).resolve().parents[2] / "config" / "layout.json"
+    from .paths import config_file
+    return config_file()
 
 
 def save_config_section(section: str, values: dict,
@@ -347,8 +347,7 @@ def save_config_section(section: str, values: dict,
 
 def load_config(path: str | Path | None = None) -> dict:
     if path is None:
-        # repo layout: .../aion/src/aion/core.py  ->  config at repo root /config
-        path = Path(__file__).resolve().parents[2] / "config" / "layout.json"
+        path = config_path()
     p = Path(path)
     if p.exists():
         try:
