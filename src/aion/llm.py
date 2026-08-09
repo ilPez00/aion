@@ -4,12 +4,18 @@ llm.py — inline LLM chat client for aion's Agent workspace.
 Backend chain: FCM local proxy -> Groq -> OpenRouter.
 OmniRoute is available for explicit invocation via `compare` or direct call;
 it is no longer part of the automatic fallback chain.
+
+A backend that is DOWN advances the chain. A backend that TIMED OUT ends it —
+see `chat_send`. The two are told apart by `_is_timeout`, in one place, so no
+backend can disagree with the others about which it just hit.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -97,6 +103,37 @@ def _load_env() -> None:
                         os.environ.setdefault(k, v)
 
 
+# Distinct from '⚠️' on purpose: '⚠️' means the backend answered that it could
+# not help, '⏱️' means it never answered at all. The chain advances past the
+# first and stops on the second.
+TIMEOUT_MARK = "⏱️"
+
+
+def _is_timeout(e: BaseException) -> bool:
+    """True when this exception means "no answer yet", not "no".
+
+    urllib wraps a socket timeout inside URLError.reason rather than raising
+    it, so the nested case has to be unwrapped by hand — checking only the
+    outer type classifies every timeout as a plain outage, which is the bug
+    this exists to avoid.
+    """
+    if isinstance(e, (socket.timeout, TimeoutError)):
+        return True
+    reason = getattr(e, "reason", None)
+    if reason is None:
+        return False
+    return (isinstance(reason, (socket.timeout, TimeoutError))
+            or getattr(reason, "errno", None) == errno.ETIMEDOUT)
+
+
+def _unreachable(provider: str, e: BaseException) -> str:
+    """The one place a transport failure becomes a string, so no backend can
+    disagree with the others about what a timeout looks like."""
+    if _is_timeout(e):
+        return f"{TIMEOUT_MARK} {provider} timed out (model too slow)"
+    return f"⚠️ {provider} unreachable: {getattr(e, 'reason', None) or e}"
+
+
 def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     """Send a message to the LLM, get a reply. Blocks (runs in thread).
 
@@ -105,6 +142,13 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
     provider 'omniroute' for explicit side-by-side invocation.
     The first backend that returns a real reply wins; if all fail, returns a
     '⚠️' diagnostic string naming which providers were tried.
+
+    A TIMEOUT ends the chain instead of advancing it. "Down" and "slow" are
+    different states and only one of them is a reason to ask someone else: a
+    backend that timed out may still be working on the request, so moving on
+    duplicates it, and four backends at 30s each is two minutes of a frozen
+    chat before the user learns anything. The '⏱️' note names which backend
+    was slow, which is what they need to retry or disable it.
     """
     session.add("user", message)
     session.pending = True
@@ -117,6 +161,10 @@ def chat_send(session: ChatSession, message: str, timeout: int = 30) -> str:
             if _is_ok(reply):
                 session.add("assistant", reply)  # type: ignore[arg-type]
                 return reply
+            if isinstance(reply, str) and reply.startswith(TIMEOUT_MARK):
+                note = f"{TIMEOUT_MARK} {name} timed out — not switching backend."
+                session.add("assistant", note)
+                return note
             tried.append(name)
         session.add("assistant",
                     f"⚠️ LLM unavailable (tried {', '.join(tried)}).")
@@ -166,8 +214,8 @@ def _omniroute_chat(messages: list[dict], timeout: int = 30) -> str | None:
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ OmniRoute HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ OmniRoute unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _unreachable("OmniRoute", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ OmniRoute bad response: {e}"
 
@@ -197,8 +245,8 @@ def _fcm_chat(messages: list[dict], timeout: int = 30) -> str | None:
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ FCM HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ FCM unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _unreachable("FCM", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ FCM bad response: {e}"
 
@@ -237,8 +285,8 @@ def _groq_chat(messages: list[dict], timeout: int = 30) -> str | None:
     except urllib.error.HTTPError as e:
         # surface the real status so a blocked/expired key is visible
         return f"⚠️ Groq HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ Groq unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _unreachable("Groq", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ Groq bad response: {e}"
 
@@ -266,8 +314,8 @@ def _oa_compatible(messages: list[dict], *, url: str, key: str, model: str,
             return body["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         return f"⚠️ HTTP {e.code}"
-    except (urllib.error.URLError, OSError) as e:
-        return f"⚠️ unreachable: {e.reason if hasattr(e, 'reason') else e}"
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        return _unreachable(model or "provider", e)
     except (ValueError, KeyError, IndexError) as e:
         return f"⚠️ bad response: {e}"
 
@@ -288,8 +336,11 @@ def _openrouter_chat(messages: list[dict], timeout: int = 30) -> str | None:
 
 
 def _is_ok(reply: str | None) -> bool:
-    """A reply counts as success only if it's non-empty and not a '⚠️' warning."""
-    return bool(reply) and not (isinstance(reply, str) and reply.startswith("⚠️"))
+    """A reply counts as success only if it is non-empty and neither a '⚠️'
+    warning nor a '⏱️' timeout."""
+    if not isinstance(reply, str) or not reply:
+        return False
+    return not reply.startswith(("⚠️", TIMEOUT_MARK))
 
 
 def format_conversation(session: ChatSession) -> list[dict]:

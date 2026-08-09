@@ -73,3 +73,75 @@ def test_is_ok_rejects_warnings():
     assert llm._is_ok("⚠️ down") is False
     assert llm._is_ok(None) is False
     assert llm._is_ok("") is False
+
+
+# ── timeouts are not outages ─────────────────────────────────────────────────
+# Ported from work found uncommitted on pansa. "Down" and "slow" are different
+# states and only one is a reason to ask a different backend: a backend that
+# timed out may still be working on the request, so advancing duplicates it,
+# and three backends at 30s each is a minute and a half of frozen chat before
+# the user learns anything at all.
+
+def test_a_timeout_stops_the_chain(monkeypatch):
+    monkeypatch.setattr(llm, "_fcm_chat", lambda m, timeout=30: "⏱️ FCM timed out")
+    monkeypatch.setattr(llm, "_groq_chat",
+                        lambda m, timeout=30: pytest.fail("chain advanced past a timeout"))
+    out = llm.chat_send(ChatSession(), "hi")
+    assert out.startswith("⏱️")
+    assert "FCM" in out
+
+
+def test_a_timeout_names_the_backend_that_was_slow():
+    """The whole actionable content: which one to retry or turn off."""
+    s = ChatSession()
+    llm.chat_send(s, "hi")   # every backend stubbed '⚠️' by the autouse fixture
+    assert "tried FCM, Groq, OpenRouter" in s.messages[-1].content
+
+
+def test_an_outage_still_advances(monkeypatch):
+    """The other direction, so "stop on timeout" cannot quietly become
+    "stop on anything"."""
+    monkeypatch.setattr(llm, "_fcm_chat", lambda m, timeout=30: "⚠️ FCM down")
+    monkeypatch.setattr(llm, "_groq_chat", lambda m, timeout=30: "groq reply")
+    assert llm.chat_send(ChatSession(), "hi") == "groq reply"
+
+
+def test_a_timeout_is_not_a_successful_reply():
+    assert llm._is_ok("⏱️ Groq timed out") is False
+    assert llm._is_ok("⚠️ Groq down") is False
+    assert llm._is_ok("a real answer") is True
+
+
+# ── classifying the exception ────────────────────────────────────────────────
+
+def test_a_bare_socket_timeout_is_a_timeout():
+    import socket
+    assert llm._is_timeout(socket.timeout("timed out")) is True
+    assert llm._is_timeout(TimeoutError()) is True
+
+
+def test_a_timeout_wrapped_in_urlerror_is_still_a_timeout():
+    """urllib does not raise the socket timeout, it puts it in `.reason`.
+    Checking only the outer type calls every timeout an outage — which is the
+    bug this function exists to avoid, so it is the test that matters most."""
+    import socket
+    import urllib.error
+    e = urllib.error.URLError(socket.timeout("timed out"))
+    assert llm._is_timeout(e) is True
+    assert llm._unreachable("Groq", e).startswith("⏱️")
+
+
+def test_a_refused_connection_is_not_a_timeout():
+    import urllib.error
+    e = urllib.error.URLError(ConnectionRefusedError("refused"))
+    assert llm._is_timeout(e) is False
+    assert llm._unreachable("Groq", e).startswith("⚠️")
+
+
+def test_etimedout_by_errno_counts():
+    """Some stacks surface it as an OSError carrying the errno rather than as
+    a socket.timeout instance."""
+    import errno
+    import urllib.error
+    e = urllib.error.URLError(OSError(errno.ETIMEDOUT, "timed out"))
+    assert llm._is_timeout(e) is True
