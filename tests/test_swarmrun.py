@@ -125,6 +125,79 @@ def test_each_dependency_keeps_its_order():
     assert out.index("first") < out.index("second")
 
 
+# ── compression, where it earns its place ────────────────────────────────────
+# The comparison that matters is never "compressed vs. the whole output" — at
+# `share` characters the whole output was not on offer. It is "compressed vs.
+# the end cut off", and these pin the cases where that changes the answer.
+
+def _report(conclusion: str) -> str:
+    """A step's report in the shape they actually arrive in: paragraphs of
+    reasoning, conclusion last. The shape blind truncation is worst at."""
+    filler = ("The scout is basically just working through all of the "
+              "endpoints in order to establish a baseline, and the runner is "
+              "really quite sure that the token is the same one. ")
+    return filler * 6 + conclusion
+
+
+CONCLUSION = ("FINAL: the api base is https://api.example.com and 3 of the 4 "
+              "checks did not pass.")
+
+
+def test_the_conclusion_survives_a_budget_that_would_have_cut_it():
+    """A step that reasons for four paragraphs and states its finding last
+    lost exactly the finding to `text[:share]`."""
+    text = _report(CONCLUSION)
+    out = prompt_for("write it up", [("scout", text)], budget=900)
+    assert "https://api.example.com" in out
+    assert "did not pass" in out
+    assert "truncated" not in out       # it fit, rather than being clipped
+
+
+def test_compression_never_keeps_less_than_truncation_would():
+    """The honest claim, stated as a comparison rather than as a win.
+
+    Compression is not magic and does not always rescue the conclusion — at a
+    tight enough budget the tail still goes. What must hold at EVERY budget is
+    that it is never the worse of the two options, which a single hand-picked
+    example cannot show.
+    """
+    text = _report(CONCLUSION)
+    for budget in (300, 500, 700, 900, 1200, 2000):
+        out = prompt_for("go", [("scout", text)], budget=budget)
+        truncated_only = text[:max(200, budget)]
+        kept = sum(1 for frag in ("https://api.example.com", "did not pass",
+                                  "FINAL") if frag in out)
+        baseline = sum(1 for frag in ("https://api.example.com", "did not pass",
+                                      "FINAL") if frag in truncated_only)
+        assert kept >= baseline, f"budget {budget}: {kept} < {baseline}"
+
+
+def test_compression_is_announced_when_it_replaced_truncation():
+    """A downstream agent quoting the upstream's "exact words" back would be
+    wrong, so the prompt says the wording was shortened."""
+    out = prompt_for("go", [("scout", _report("done."))], budget=700)
+    assert "compressed" in out
+    assert "values verbatim" in out
+
+
+def test_output_that_already_fits_is_passed_through_untouched():
+    """Compression is lossy. Spending it where nothing would have been cut is
+    a cost with no benefit, so short output must arrive byte-for-byte."""
+    text = "The scout basically just found the answer."
+    out = prompt_for("go", [("scout", text)], budget=2000)
+    assert text in out
+    assert "compressed" not in out
+
+
+def test_still_truncated_when_compression_is_not_enough():
+    """Compression is not a substitute for the budget. 50kB is 50kB."""
+    out = prompt_for("go", [("loud", "the noise " * 5000),
+                            ("quiet", "the key fact")], budget=2000)
+    assert "key fact" in out
+    assert "truncated" in out
+    assert len(out) < 6000
+
+
 # ── the runner ───────────────────────────────────────────────────────────────
 class FakeSpawn:
     """Stands in for the cockpit: hands back a task id and records the prompt."""

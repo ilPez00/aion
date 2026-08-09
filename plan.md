@@ -723,11 +723,21 @@ Both earlier items here are closed:
   instances on a loopback socket in CI, and separately a live DAG across omo,
   pansa and air. The second one found the task-id collision that the first
   could not.
-- **Caveman compression** — the missing layer named earlier: compress a step's
-  output before it enters the next step's prompt, so a long result costs less
-  context without losing what is load-bearing. `swarmfacts` already exempts
-  stated values from the budget; this is the other half, for the prose. Not
-  started.
+- ~~**Caveman compression**~~ — done. `compress.py`, wired into `prompt_for`.
+  A step's output is compressed **only when it would otherwise be truncated**,
+  because the comparison at that point is not "compressed vs. whole" — at
+  `share` characters the whole output was never on offer — it is "compressed
+  vs. the end cut off", and a step that reasons for four paragraphs and states
+  its finding last loses exactly the finding to the second one. Deterministic,
+  no model, no network: a compressor that calls an LLM is a second agent in
+  the handoff path with its own failure modes, inserted where the swarm is
+  already short of context.
+
+  Two decisions worth keeping: **hedges are not dropped** (between agents,
+  uncertainty is content — "the api base might be X" compressed to "api base
+  X" is a guess promoted to a finding, the exact failure `swarmfacts` exists
+  to prevent), and **negations can never be dropped**, asserted by
+  `preserved_tokens` as a set comparison rather than trusted to the word list.
 - **Skill / MCP surface for spawned harnesses** — a child process gets one
   string in and one string out, which is why `FACT key=value`, prompt-spliced
   upstream output and `artifact_note` exist at all. An MCP server over the

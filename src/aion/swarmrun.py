@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .compress import fit
 from .swarmfacts import instruction as facts_instruction
 from .swarmfacts import note as facts_note
 from .swarmfacts import parse as parse_facts
@@ -157,9 +158,22 @@ def prompt_for(goal: str, upstream: list[tuple[str, str]],
         if not text:
             blocks.append(f"### {name}\n(finished, produced no output)")
             continue
+        # Compress before clipping, and only when clipping is what would
+        # otherwise happen. The choice at this point is not "compressed or
+        # whole" — at `share` characters the whole text was never on offer. It
+        # is "shorter sentences, or the end cut off", and a step that reasons
+        # for four paragraphs and states its conclusion last loses exactly the
+        # conclusion to the second one. Text that already fits is untouched:
+        # compression is lossy, and paying for it when nothing would be cut is
+        # a cost with no benefit.
+        text, squeezed = fit(text, share)
         clipped = text[:share]
         if len(text) > share:
             clipped += f"\n… [{len(text) - share} more characters truncated]"
+        elif squeezed:
+            # Said out loud, because a downstream agent quoting this back
+            # verbatim as the upstream's exact words would be wrong.
+            clipped += "\n… [compressed; wording shortened, values verbatim]"
         blocks.append(f"### {name}\n{clipped}")
     joined = "\n\n".join(blocks)
     return (f"{goal}\n\n"
