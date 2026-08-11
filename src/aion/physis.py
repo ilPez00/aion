@@ -4,15 +4,24 @@ physis_pro is Gio's Rust engine (dev/physis_pro), running as an HTTP
 server (default http://127.0.0.1:19876, env PHYSIS_PORT). It exposes
 the coherence/classify brain that aion's swarm needs:
 
-    POST /api/v1/classify        text -> semiotic-grid cell scores
-    POST /api/v1/coherence/register  node + coherence_score (+1/0/-1)
-    POST /api/v1/holarchy/ingest       node/edge -> shared vector graph
-    GET  /api/v1/reconstruct        browse wiki by content
-    GET  /api/v1/embedder          health (bge-base self-test)
+    POST /api/v1/classify            text -> semiotic-grid cell scores
+    POST /api/v1/coherence/register  {input} -> node id (text is embedded)
+    POST /api/v1/holarchy/edge       {source, target} -> relation between ids
+    POST /api/v1/holarchy/ingest     {data} -> sensory ring (ThoughtCapture)
+    POST /api/v1/reconstruct         {input} -> nearest nodes by content
+    GET  /api/v1/embedder            health (bge-base self-test)
 
-aion uses this as its BRAIN: every task is classied (what domain of
-work) and coherence-scored (flowing / idle / blocked) so physis's
-"dream" loop can propose corrective actions across the agent fleet.
+aion uses this as its BRAIN: every task is classified (what domain of
+work) and recorded as a node so physis's "dream" loop can propose
+corrective actions across the agent fleet.
+
+Coherence is DERIVED, not asserted. The engine scores a node by its mean
+cosine to its 5 nearest neighbours (`core.rs update_coherence`), clamped
+at >= 0 -- there is no wire field for "this failed" and negative scores
+are unrepresentable. So an outcome survives only as *words in the text we
+embed*: `record_outcome` writes "blocked" / "idle" / "flowing" into the
+label, which lands failed runs near each other in vector space. That is
+weaker than a signed ledger but it is what the engine actually stores.
 
 Mirrors the style of llm.py (urllib, no extra deps).
 """
@@ -101,21 +110,55 @@ class PhysisClient:
             ))
         return res
 
+    def register_text(self, text: str) -> str | None:
+        """Embed `text` as a coherence node, return its id (None on failure).
+
+        The engine dedupes on the exact label, so re-registering the same text
+        returns the id it already has -- which is what makes a label usable as
+        a stable key for `edge`.
+        """
+        raw = self._req("POST", "/api/v1/coherence/register", {"input": text}) or {}
+        return raw.get("node_id")
+
+    def edge(self, source_id: str, target_id: str, weight: float = 1.0) -> dict | None:
+        """Relate two coherence nodes by *id* (404s on an unknown id)."""
+        return self._req("POST", "/api/v1/holarchy/edge",
+                         {"source": source_id, "target": target_id, "weight": weight})
+
     def register(self, node: str, score: float, edge_to: str | None = None) -> dict | None:
-        """Persist a coherence fact: +1 flowing / 0 idle / -1 blocked."""
-        payload: dict[str, Any] = {"node": node, "coherence_score": score}
+        """Record an outcome as a node, optionally edged to its domain.
+
+        `score` is not sent -- the wire has no field for it (see module docstring).
+        It is rendered into the embedded text instead, so the sign is not lost,
+        only moved from a number into the vector's neighbourhood.
+        """
+        state = "flowing" if score > 0.2 else "blocked" if score < -0.2 else "idle"
+        label = f"{state} — {edge_to} — {node}" if edge_to else f"{state} — {node}"
+        node_id = self.register_text(label)
+        if not node_id:
+            return {"error": "register failed"}
+        result: dict[str, Any] = {"node_id": node_id, "label": label}
         if edge_to:
-            payload["edge_to"] = edge_to
-        return self._req("POST", "/api/v1/coherence/register", payload)
+            # The domain label is a node in its own right; dedupe makes this
+            # idempotent, so every task in a domain edges to the same node.
+            domain_id = self.register_text(edge_to)
+            if domain_id:
+                result["edge"] = self.edge(node_id, domain_id)
+        return result
 
     def ingest(self, node: str, edges: list[str] | None = None) -> dict | None:
-        payload: dict[str, Any] = {"node": node}
-        if edges:
-            payload["edges"] = edges
-        return self._req("POST", "/api/v1/holarchy/ingest", payload)
+        """Push a line into the sensory ring as a ThoughtCapture.
 
-    def reconstruct(self) -> dict | None:
-        return self._req("GET", "/api/v1/reconstruct")
+        Despite the route name this is *not* a graph write -- the handler pushes
+        raw bytes into the ingest ring. Edges are folded into the text; use
+        `edge()` for real graph relations.
+        """
+        data = f"{node} <- {', '.join(edges)}" if edges else node
+        return self._req("POST", "/api/v1/holarchy/ingest", {"data": data})
+
+    def reconstruct(self, text: str) -> dict | None:
+        """Nearest nodes to `text` + an LLM interpretation. POST, not GET."""
+        return self._req("POST", "/api/v1/reconstruct", {"input": text})
 
 
 # Module-level singleton so Store/harnesses share one client + tenant.
@@ -148,7 +191,7 @@ def score_text(text: str) -> float:
 
 
 def record_outcome(node: str, coherence: float, domain: str | None = None) -> None:
-    """Persist a loop's result as a coherence fact (+1 flowing / -1 blocked)."""
+    """Persist a loop's result as a node labelled flowing / idle / blocked."""
     try:
         get_client().register(node, coherence, edge_to=domain)
     except Exception:  # noqa: BLE001  (the brain is optional, never fatal)
