@@ -47,6 +47,20 @@ class CellScore:
 
 
 @dataclass
+class Recalled:
+    """A prior node the wiki already holds, ranked by meaning."""
+    label: str
+    similarity: float
+    coherence: float
+
+    @property
+    def outcome(self) -> str:
+        """flowing / blocked / idle if this node came from `record_outcome`."""
+        head = self.label.split(" — ", 1)[0]
+        return head if head in ("flowing", "blocked", "idle") else ""
+
+
+@dataclass
 class PhysisResult:
     degraded: bool = False
     kind: str = "unknown"
@@ -160,6 +174,27 @@ class PhysisClient:
         """Nearest nodes to `text` + an LLM interpretation. POST, not GET."""
         return self._req("POST", "/api/v1/reconstruct", {"input": text})
 
+    def recall(self, text: str, k: int = 5) -> list[Recalled]:
+        """What the wiki already holds near `text`, most similar first.
+
+        This is the read half of the loop: aion has been writing outcomes for
+        a while, so a new task can be shown the prior work it resembles --
+        including whether that work flowed or blocked. Drops the neighbours'
+        raw embeddings (768 floats each) since only the labels are useful here.
+        """
+        raw = self.reconstruct(text) or {}
+        out: list[Recalled] = []
+        for n in raw.get("neighbors", [])[:k]:
+            label = n.get("label")
+            if not label:  # unlabeled nodes have no readable handle
+                continue
+            out.append(Recalled(
+                label=str(label),
+                similarity=float(n.get("cosine_similarity", 0.0)),
+                coherence=float(n.get("coherence_score", 0.0)),
+            ))
+        return out
+
 
 # Module-level singleton so Store/harnesses share one client + tenant.
 _client: PhysisClient | None = None
@@ -188,6 +223,16 @@ def score_text(text: str) -> float:
     if res.degraded or res.top is None:
         return 0.0
     return max(-1.0, min(1.0, res.top.score))
+
+
+def recall_prior(text: str, k: int = 3) -> list[Recalled]:
+    """Prior work resembling `text` (empty list if physis is down)."""
+    if not text.strip():
+        return []
+    try:
+        return get_client().recall(text[:4000], k)
+    except Exception:  # noqa: BLE001  (the brain is optional, never fatal)
+        return []
 
 
 def record_outcome(node: str, coherence: float, domain: str | None = None) -> None:

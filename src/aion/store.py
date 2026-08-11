@@ -31,7 +31,10 @@ from .llm import ChatSession, format_conversation, chat_send
 from .swarm import SwarmOrchestrator
 from .modes import get_mode, list_modes, mode_command, MODES, ModeConfig
 from .dashboard import collect_dashboard
-from .physis import get_client as _get_physis  # coherence brain (soft-fails if down)
+from .physis import (  # coherence brain (soft-fails if down)
+    get_client as _get_physis,
+    recall_prior as _recall_prior,
+)
 from .context import ContextRouter
 from .agents import AgentStore
 from .board import BoardStore
@@ -772,24 +775,60 @@ class Store(SwarmCommands):
         asyncio.create_task(self._gated_run(h, task, prompt))
         return task.id
 
+    @staticmethod
+    def _physis_spawn_probe(prompt: str):
+        """Classify + record + recall, all in one worker-thread hop.
+
+        Returns `(PhysisResult, list[Recalled])`. Every call soft-fails on its
+        own, so a physis that is down yields an empty classification and no
+        priors rather than raising into the spawn path.
+        """
+        client = _get_physis()
+        res = client.classify(prompt)
+        if res.top:
+            # Register the PROMPT, not a synthetic id: the wiki is browsed by
+            # meaning, so the text is the only part worth embedding. Registering
+            # the task as coherence 1.0 here used to assert "this flowed" before
+            # it had run — and record_outcome would then write a contradicting
+            # node for the same task when it failed.
+            node_id = client.register_text(prompt)
+            domain_id = client.register_text(res.label())
+            if node_id and domain_id:
+                client.edge(node_id, domain_id)
+        return res, _recall_prior(prompt, 3)
+
     async def _spawn(self, harness_id: str, prompt: str) -> None:
         h = self.harnesses.get(harness_id, self.harnesses.get(self.state.active_harness))
         if h is None:
             return
         task = self.registry.create(f"{h.name}: {prompt[:30]}", h.id)
         self._task_prompts[task.id] = prompt
-        # physis brain: classily the goal so it gets a semiotic cell
-        # (what DOMAIN of work it is). Soft-fail: if physis is down
-        # we just lose the tag, the task still runs.
-        client = _get_physis()
-        res = client.classify(prompt)
+        # Start the work FIRST. The physis probe is optional telemetry, so it
+        # runs alongside the task rather than delaying it — classify used to sit
+        # on this path as a blocking call, which put a remote round-trip between
+        # the user's command and the task actually starting.
+        asyncio.create_task(self._gated_run(h, task, prompt))
+        asyncio.create_task(self._physis_annotate(task, prompt))
+
+    async def _physis_annotate(self, task: Task, prompt: str) -> None:
+        """Tag `task` with its semiotic domain and log the prior work it echoes.
+
+        Runs concurrently with the task itself. Every physis call soft-fails, so
+        a brain that is down leaves the task untagged and otherwise untouched.
+        """
+        res, priors = await asyncio.to_thread(self._physis_spawn_probe, prompt)
         if res.top:
             task.domain = res.label()  # e.g. "CONSTRUCT/REST"
             await self.bus.publish("physis",
                 {"action": "classify", "task": task.id,
                  "label": res.label(), "cells": [c.__dict__ for c in res.cells]})
-            _ = client.register(f"task:{task.id}", 1.0, edge_to=res.label())
-        asyncio.create_task(self._gated_run(h, task, prompt))
+        # Read half of the loop: show the operator what prior work this
+        # resembles and how it ended. Telemetry only — recall never blocks or
+        # alters a spawn, so a wrong neighbour costs a log line, nothing more.
+        for prior in priors:
+            if prior.outcome:
+                self.registry.log(task, f"[physis] prior {prior.outcome} "
+                                        f"({prior.similarity:.2f}): {prior.label[:70]}")
 
     async def _gated_run(self, h, task: Task, prompt: str) -> None:
         """Await a HITL gate for a privileged spawn, then run — or cancel."""
