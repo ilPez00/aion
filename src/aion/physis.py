@@ -15,13 +15,18 @@ aion uses this as its BRAIN: every task is classified (what domain of
 work) and recorded as a node so physis's "dream" loop can propose
 corrective actions across the agent fleet.
 
-Coherence is DERIVED, not asserted. The engine scores a node by its mean
-cosine to its 5 nearest neighbours (`core.rs update_coherence`), clamped
-at >= 0 -- there is no wire field for "this failed" and negative scores
-are unrepresentable. So an outcome survives only as *words in the text we
-embed*: `record_outcome` writes "blocked" / "idle" / "flowing" into the
-label, which lands failed runs near each other in vector space. That is
-weaker than a signed ledger but it is what the engine actually stores.
+Coherence has TWO axes and they answer different questions:
+
+  derived  -- mean cosine to the node's nearest neighbours, clamped >= 0.
+              "How typical is this?" The engine computes it; it cannot
+              express failure.
+  asserted -- a verdict in [-1, 1] that WE report. "Did it work?" `None`
+              until someone says. This is the axis the dream loop replays.
+
+`record_outcome` sends the verdict on the wire AND renders it into the
+embedded text ("blocked - DOMAIN - node"). Both matter: the verdict is
+authoritative, while the words put failures near each other in vector
+space so `recall()` surfaces them by meaning alone.
 
 Mirrors the style of llm.py (urllib, no extra deps).
 """
@@ -51,11 +56,19 @@ class Recalled:
     """A prior node the wiki already holds, ranked by meaning."""
     label: str
     similarity: float
-    coherence: float
+    coherence: float          # derived density (>= 0)
+    asserted: float | None = None   # reported verdict in [-1, 1], None = unjudged
 
     @property
     def outcome(self) -> str:
-        """flowing / blocked / idle if this node came from `record_outcome`."""
+        """flowing / blocked / idle — from the verdict, else from the label.
+
+        The asserted axis is authoritative when present; the label prefix is the
+        fallback for nodes written before the engine could store a verdict.
+        """
+        if self.asserted is not None:
+            return ("flowing" if self.asserted > 0.2
+                    else "blocked" if self.asserted < -0.2 else "idle")
         head = self.label.split(" — ", 1)[0]
         return head if head in ("flowing", "blocked", "idle") else ""
 
@@ -124,14 +137,22 @@ class PhysisClient:
             ))
         return res
 
-    def register_text(self, text: str) -> str | None:
+    def register_text(self, text: str, score: float | None = None) -> str | None:
         """Embed `text` as a coherence node, return its id (None on failure).
 
         The engine dedupes on the exact label, so re-registering the same text
         returns the id it already has -- which is what makes a label usable as
-        a stable key for `edge`.
+        a stable key for `edge`, and what lets `score` correct an earlier
+        verdict on the same node.
+
+        `score` is the ASSERTED outcome in [-1, 1]: did this actually work?
+        Distinct from the node's derived density, which the engine computes
+        from the neighbourhood and cannot make negative.
         """
-        raw = self._req("POST", "/api/v1/coherence/register", {"input": text}) or {}
+        payload: dict[str, Any] = {"input": text}
+        if score is not None:
+            payload["coherence_score"] = max(-1.0, min(1.0, score))
+        raw = self._req("POST", "/api/v1/coherence/register", payload) or {}
         return raw.get("node_id")
 
     def edge(self, source_id: str, target_id: str, weight: float = 1.0) -> dict | None:
@@ -142,13 +163,15 @@ class PhysisClient:
     def register(self, node: str, score: float, edge_to: str | None = None) -> dict | None:
         """Record an outcome as a node, optionally edged to its domain.
 
-        `score` is not sent -- the wire has no field for it (see module docstring).
-        It is rendered into the embedded text instead, so the sign is not lost,
-        only moved from a number into the vector's neighbourhood.
+        `score` now travels BOTH ways: as the asserted verdict on the wire (the
+        engine stores it on its own axis), and rendered into the embedded text.
+        The text copy is not redundant -- recall ranks by meaning, so a label
+        that says "blocked" puts failures near each other in vector space, which
+        is what makes `recall()` able to surface them without a second query.
         """
         state = "flowing" if score > 0.2 else "blocked" if score < -0.2 else "idle"
         label = f"{state} — {edge_to} — {node}" if edge_to else f"{state} — {node}"
-        node_id = self.register_text(label)
+        node_id = self.register_text(label, score=score)
         if not node_id:
             return {"error": "register failed"}
         result: dict[str, Any] = {"node_id": node_id, "label": label}
@@ -188,10 +211,12 @@ class PhysisClient:
             label = n.get("label")
             if not label:  # unlabeled nodes have no readable handle
                 continue
+            asserted = n.get("asserted")
             out.append(Recalled(
                 label=str(label),
                 similarity=float(n.get("cosine_similarity", 0.0)),
                 coherence=float(n.get("coherence_score", 0.0)),
+                asserted=None if asserted is None else float(asserted),
             ))
         return out
 
