@@ -301,6 +301,12 @@ class AiOSApp(App):
         self.bus.subscribe(TOPIC_HERMES, self._on_hermes_event)
         self.bus.subscribe(TOPIC_SKILL, self._on_skill_event)
         asyncio.create_task(self.store._load_hermes_data())
+        # first run (and each slide update): the onboarding walkthrough auto-
+        # launches once, gated by a version marker the tour records on close.
+        # Bump wizard.ONBOARDING_VERSION when the slides change to re-show it.
+        from .wizard import should_show_onboarding
+        if should_show_onboarding():
+            self.action_tour()
     def _tick(self) -> None:
         self._viz_tick += 1
         # track task count history for wave visualizer
@@ -1559,12 +1565,12 @@ class AiOSApp(App):
             f"  [{di}]Ctrl-K[/]")
 
     WALKTHROUGH = [
-        ("Welcome to aion", "This is your AI cockpit. Navigate with ↑↓ (or j/k), switch panels with ←→ (or h/l)."),
-        ("Workspaces", "The left rail lists workspaces: Models, Tasks, Agent, Memory, Vault, System, Hermes, Skills, Projects, Term, Swarm. Press 1-9 or ←→ to move."),
+        ("Welcome to aion", "This is your HUD + application desktop — a control surface for work that runs without you. Navigate with ↑↓ (or j/k), switch panels with ←→ (or h/l)."),
+        ("Workspaces", "The left rail lists ten workspaces: Desktop, Subsystems, Tasks, Runs, Agent, Vault, System, Term, Settings, Fleet. Press 1-9/0 or ←→ to move."),
         ("Run a harness", "Press Ctrl-K and type 'run demo hello' — a harness executes and shows live progress in the right rail."),
-        ("Agent chat", "Go to the Agent workspace (✦) and type a message in Ctrl-K to talk to the inline LLM. 'compare <q>' shows two models side-by-side."),
+        ("Agent & swarm", "The Agent workspace (✦) hosts agents and swarm plans. 'swarm plan <goal>' proposes a DAG; 'compare <q>' shows two models side-by-side."),
         ("Voice & deck", "Press 'v' for offline voice (faster-whisper). If you have the CyclUno deck, it drives the cockpit one-handed."),
-        ("Proactive Jarvis", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
+        ("Suggestions", "aion watches state and surfaces suggestions (⚠ in the header, ⚡ in the activity panel). You're ready — press Enter to start."),
     ]
 
     WIZARD_STEPS = [
@@ -1580,17 +1586,18 @@ class AiOSApp(App):
                  "The rest of this wizard covers what you need to get started.\n\n"
                  "Press Enter to continue."},
         {"title": "Workspaces", "type": "info",
-         "body": "Nine workspaces, each for a different task:\n\n"
+         "body": "Ten workspaces, each for a different task:\n\n"
                  " 1 ⬡ Desktop    — Home hub + status overview\n"
                  " 2 ◈ Subsystems — Active AI harnesses\n"
                  " 3 ▤ Tasks      — Task list + kanban boards\n"
-                 " 4 ✦ Agent      — AI chat + model comparison\n"
-                 " 5 📓 Vault     — Notes & memory facts\n"
-                 " 6 🖥 System    — Detailed health gauges\n"
-                 " 7 ▣ Term       — Embedded terminal (btop)\n"
-                 " 8 ⚙ Settings   — Provider keys & configuration\n"
-                 " 9 🌐 Net       — Remote aion node control\n\n"
-                 "Press 1-9 or ←→ to switch. Press Enter to continue."},
+                 " 4 ⟳ Runs      — Running processes + finished results\n"
+                 " 5 ✦ Agent      — Agents, swarm plans + model compare\n"
+                 " 6 ◫ Vault      — Notes & memory facts\n"
+                 " 7 ◍ System     — Detailed health gauges\n"
+                 " 8 ▣ Term       — Embedded terminal (btop)\n"
+                 " 9 ⚙ Settings   — Provider keys & configuration\n"
+                 "10 ⬢ Fleet      — Remote aion node control\n\n"
+                 "Press 1-9/0 or ←→ to switch. Press Enter to continue."},
         {"title": "Dependencies", "type": "info",
          "body": "aion uses several external tools for AI inference.\n\n"
                  "The next steps will detect what's installed and offer to\n"
@@ -1643,7 +1650,7 @@ class AiOSApp(App):
                  "  • ? or /         — help reference\n"
                  "  • w              — interactive tour\n"
                  "  • setup set <K> <V> — write any env key\n\n"
-                 "Keys 1-9 switch workspaces. ↑↓/jk select items. Enter activates.\n\n"
+                 "Keys 1-9/0 switch workspaces. ↑↓/jk select items. Enter activates.\n\n"
                  "You can rerun this wizard anytime: Ctrl-K → 'setup wizard'\n\n"
                  "Press Enter to finish."},
     ]
@@ -1698,6 +1705,8 @@ class AiOSApp(App):
         self._tour_active = False
         self._tour_step = 0
         self.query_one("#help").display = False
+        from .wizard import record_onboarding
+        record_onboarding()
 
     # ---- setup wizard ---------------------------------------------------
 

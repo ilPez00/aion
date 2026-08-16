@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from aion.ui.wizard import (  # noqa: E402
-    FAILED, FOUND, install_advice, install_result, key_preview, merge_env,
-    next_action, parse_env, write_env,
+    FAILED, FOUND, ONBOARDING_VERSION, install_advice, install_result, key_preview,
+    merge_env, next_action, parse_env, record_onboarding, seen_onboarding,
+    should_show_onboarding, write_env,
 )
 
 
@@ -177,3 +178,30 @@ def test_a_step_with_its_own_installer_gets_that_command():
 
 def test_everything_else_falls_back_to_npm():
     assert install_advice({"pkg": "opencode"}) == "npm install -g opencode"
+
+
+# ── onboarding version gate ──────────────────────────────────────────────────
+def test_a_fresh_install_has_not_seen_onboarding(tmp_path):
+    p = tmp_path / "onboarding.json"
+    assert seen_onboarding(p) == 0
+    assert should_show_onboarding(p)
+
+
+def test_recording_marks_the_version_seen(tmp_path):
+    p = tmp_path / "onboarding.json"
+    record_onboarding(p)
+    assert seen_onboarding(p) == ONBOARDING_VERSION
+    assert not should_show_onboarding(p)
+
+
+def test_an_old_version_still_needs_onboarding(tmp_path):
+    """A version recorded before this bump must be re-shown once."""
+    p = tmp_path / "onboarding.json"
+    record_onboarding(p, version=ONBOARDING_VERSION - 1)
+    assert should_show_onboarding(p)
+
+
+def test_a_future_version_is_not_replayed(tmp_path):
+    p = tmp_path / "onboarding.json"
+    record_onboarding(p, version=ONBOARDING_VERSION + 1)
+    assert not should_show_onboarding(p)

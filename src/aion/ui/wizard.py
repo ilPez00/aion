@@ -13,6 +13,7 @@ original survives anything that goes wrong.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -24,6 +25,40 @@ FOUND, MISSING, INSTALLING, FAILED, SKIPPED = (
 # Statuses from which Enter simply moves on. INSTALLING is deliberately absent:
 # a keypress during an install must not advance past work still running.
 DONE_STATES = (FOUND, SKIPPED, FAILED)
+
+# Version of the onboarding slides. Bump this whenever the walkthrough or the
+# setup-wizard content changes, and the "seen" marker below makes the tour
+# re-appear once per bump without nagging on every boot.
+ONBOARDING_VERSION = 1
+
+
+def onboarding_marker() -> Path:
+    """~/.aion/onboarding.json — remembers which slide version was shown."""
+    from ..fleet import AION_HOME
+    return AION_HOME / "onboarding.json"
+
+
+def seen_onboarding(path: Path | None = None) -> int:
+    """The onboarding version already shown; 0 if never. Pure."""
+    p = Path(path) if path else onboarding_marker()
+    try:
+        return int(json.loads(p.read_text()).get("version", 0))
+    except Exception:
+        return 0
+
+
+def record_onboarding(path: Path | None = None,
+                      version: int = ONBOARDING_VERSION) -> None:
+    """Persist the version of the slides just shown."""
+    p = Path(path) if path else onboarding_marker()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"version": version}))
+
+
+def should_show_onboarding(path: Path | None = None,
+                           version: int = ONBOARDING_VERSION) -> bool:
+    """True exactly when this version has not been shown yet. Pure."""
+    return seen_onboarding(path) < version
 
 
 def parse_env(text: str) -> dict[str, str]:
