@@ -61,6 +61,26 @@ def suggest(state: ViewState, cfg: dict | None = None) -> list[Suggestion]:
             out.append(Suggestion(
                 f"📚 {n} vault notes — try 'mem <query>' to recall", "mem"))
 
+    # 4b. Life HUD: surface dead domains + money momentum (peripheral signal)
+    life = state.stats.get("life", {})
+    snap = life.get("snapshot", life) if isinstance(life, dict) else {}
+    domains = snap.get("domains", {}) if isinstance(snap, dict) else {}
+    if domains:
+        from .life import domain_score
+        scores = dict(domain_score({"domains": domains}))
+        dead = [d for d, v in scores.items() if v <= 0.0]
+        if len(dead) >= 2:
+            out.append(Suggestion(
+                f"☯ {len(dead)} life domains dark ({', '.join(dead)}) — "
+                "press L for the life flow"))
+        m = domains.get("money", {})
+        if isinstance(m, dict) and m.get("ok"):
+            open_t = float(m.get("open_total") or 0)
+            if open_t > 0:
+                out.append(Suggestion(
+                    f"€ {open_t:,.0f} invoiced and unpaid — chase it"
+                    .replace(",", ".")))
+
     # 5. Idle -> suggest starting something
     running = [t for t in state.tasks if t.state.value in ("running", "pending")]
     if not running and not failed:

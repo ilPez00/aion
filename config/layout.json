@@ -46,52 +46,57 @@
     {
       "id": "desktop",
       "title": "Desktop",
-      "icon": "⬡"
+      "icon": "\u2b21"
     },
     {
       "id": "models",
       "title": "Subsystems",
-      "icon": "◈"
+      "icon": "\u25c8"
     },
     {
       "id": "tasks",
       "title": "Tasks",
-      "icon": "▤"
+      "icon": "\u25a4"
     },
     {
       "id": "runs",
       "title": "Runs",
-      "icon": "⟳"
+      "icon": "\u27f3"
     },
     {
       "id": "agent",
       "title": "Agent",
-      "icon": "✦"
+      "icon": "\u2726"
     },
     {
       "id": "vault",
       "title": "Vault",
-      "icon": "◫"
+      "icon": "\u25eb"
     },
     {
       "id": "system",
       "title": "System",
-      "icon": "◍"
+      "icon": "\u25cd"
+    },
+    {
+      "id": "life",
+      "title": "Life",
+      "icon": "\u262f"
     },
     {
       "id": "term",
       "title": "Term",
-      "icon": "▣"
+      "icon": "\u25a3"
     },
     {
       "id": "settings",
       "title": "Settings",
-      "icon": "⚙"
+      "icon": "\u2699"
     },
     {
       "id": "net",
       "title": "Fleet",
-      "icon": "⬢"
+      "icon": "\u2b22"
     }
   ],
   "deck": {
@@ -423,6 +428,21 @@
       "vram_mb": 0,
       "tier": "standard",
       "interval": 5.0
+    },
+    {
+      "id": "life",
+      "type": "life",
+      "name": "Life HUD",
+      "context_tags": [
+        "system",
+        "agent"
+      ],
+      "enabled": true,
+      "vram_mb": 0,
+      "tier": "cheap",
+      "extra": {
+        "interval": 60.0
+      }
     }
   ],
   "remote_nodes": [

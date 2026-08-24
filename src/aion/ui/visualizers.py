@@ -372,7 +372,7 @@ def matrix_stream(columns: Sequence[dict], tick: int, *,
 def pick_viz(kind: str, data: dict, tick: int, **kw) -> str:
     """Dispatch to a visualizer by name with data from a dict.
 
-    Kind: spectrum | gauge | radar | graph | wave | matrix
+    Kind: spectrum | gauge | radar | graph | wave | matrix | flow
     """
     if kind == "spectrum":
         return spectrum_eq(data.get("values", []), tick, **kw)
@@ -386,4 +386,59 @@ def pick_viz(kind: str, data: dict, tick: int, **kw) -> str:
         return task_wave(data.get("history", []), tick, **kw)
     if kind == "matrix":
         return matrix_stream(data.get("columns", []), tick, **kw)
+    if kind == "flow":
+        return flow_pipeline(data.get("scores", []), tick, **kw)
     return f"[{_DIM}]unknown viz: {kind}[/]"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Life-Flow Pipeline — machine · body · people · money
+# ═══════════════════════════════════════════════════════════════════════════════
+def flow_pipeline(scores: Sequence[tuple[str, float]], tick: int, *,
+                  height: int = 6, width: int = 44) -> str:
+    """Vertical fill columns, one per life domain, labels on the base row.
+
+    `scores`: (name, 0..1) pairs in display order. A dead domain (0.0) draws
+    an explicit ○ gap marker instead of silence — a hole in the HUD is
+    information. The bright cell sweeps upward with `tick` so the pipeline
+    reads as flowing even when values hold steady.
+    """
+    n = len(scores)
+    if n == 0:
+        return f"[{_DIM}](no data)[/]"
+
+    # Last row of the height budget belongs to the labels.
+    bar_rows = max(1, height - 1)
+    col_w = max(4, (width - n - 1) // n)
+
+    grid: list[list[str]] = [[f"[{_DIM}]{'·' * col_w}[/]" for _ in range(n)]
+                             for _ in range(bar_rows)]
+
+    for ci, (name, v) in enumerate(scores):
+        v = max(0.0, min(1.0, float(v)))
+        fill = int(round(v * bar_rows))
+        if v > 0.0 and fill == 0:
+            fill = 1  # alive but barely — still show a sliver
+        for ri in range(bar_rows):
+            # ri counts UP from the top row; filled cells live in the bottom
+            # `fill` rows of the column.
+            row_from_bottom = bar_rows - 1 - ri
+            if v <= 0.001:
+                # dead domain: one explicit gap marker on the base row
+                if row_from_bottom == 0:
+                    grid[ri][ci] = f"[{_DIM}]{'○'.center(col_w)}[/]"
+                continue
+            if row_from_bottom >= fill:
+                continue
+            color = _gradient(v, cold=_CYAN, hot=_GREEN)
+            # sweep: one highlighted cell travels up the filled section
+            sweep_row = (bar_rows - 1) - ((tick + ci) % max(fill, 1))
+            ch = "█" if ri != sweep_row else "▓"
+            cell = ch * col_w if v >= 0.99 else ch * max(1, col_w - 2)
+            cell = cell[:col_w]
+            grid[ri][ci] = f"[{_shade(v, color, _WHITE)}]{cell}[/]" \
+                if ri == sweep_row else f"[{color}]{cell}[/]"
+
+    labels = " ".join(name.upper()[:col_w].center(col_w) for name, _ in scores)
+    lines = ["".join(row) for row in grid] + [f"[{_CYAN}]{labels}[/]"]
+    return "\n".join(lines)

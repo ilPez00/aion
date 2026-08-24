@@ -27,7 +27,7 @@ from textual import events
 from ..core import (
     Bus, Intent, IntentType, TOPIC_INTENT, TOPIC_VOICE, TOPIC_HERMES, TOPIC_SKILL, TOPIC_SETTINGS, load_config,
 )
-from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, AgentEntityHarness, BoardHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
+from ..harnesses import build_harnesses, TelemetryHarness, StatsHarness, ProjectsHarness, SystemHarness, HealthHarness, VaultHarness, PhysisHarness, AgentEntityHarness, BoardHarness, LifeHarness, TIER_CHEAP, TIER_STANDARD, TIER_PREMIUM, HarnessConfig
 from ..term import TermHarness
 from ..input import Router, KeyboardMap, JoystickInput, VoiceInput, DeckInput, RingInput
 from ..store import Store
@@ -220,7 +220,8 @@ class AiOSApp(App):
         for h in self.harnesses.values():
             if isinstance(h, (TelemetryHarness, StatsHarness, ProjectsHarness,
                               SystemHarness, HealthHarness, VaultHarness,
-                              PhysisHarness, AgentEntityHarness, BoardHarness)):
+                              PhysisHarness, AgentEntityHarness, BoardHarness,
+                              LifeHarness)):
                 asyncio.create_task(h.start())
         self._render_all()
         self.router.register(JoystickInput())
@@ -772,6 +773,8 @@ class AiOSApp(App):
             return self._net_panel(theme)
         if ws in ("system", "sys"):
             return self._sys_panel(theme)
+        if ws == "life":
+            return self._life_panel(theme)
         if ws == "desktop":
             return self._desktop_panel(theme)
         if ws == "agent":
@@ -806,6 +809,18 @@ class AiOSApp(App):
         tag_txt = f"  [{theme['warn']}]{tags}[/]" if tags else ""
         return (f"[{col}]{f}{title}[/]  [{theme['dim']}][{lk}→{bl}][/]\n"
                 f"  [{theme['accent']}]⛓ {degree} links[/]{tag_txt}{head_txt}{prev_txt}")
+
+    def _life_panel(self, theme: dict) -> str:
+        """Real-life HUD: money · fitness · social · machine as a flow.
+
+        Rendering lives in `life_panel.py` (pure). Only the life snapshot
+        from the stats dict and the animation tick are gathered here.
+        """
+        from .life_panel import life_panel
+        snap = self.store.state.stats.get("life", {})
+        if isinstance(snap, dict) and "snapshot" in snap:
+            snap = snap["snapshot"]
+        return life_panel(snap, theme, getattr(self, "_viz_tick", 0))
 
     def _sys_panel(self, theme: dict) -> str:
         """Iron Man HUD: computer + real-life stats, rendered as gauges.

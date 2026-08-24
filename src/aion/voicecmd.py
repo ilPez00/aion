@@ -40,6 +40,7 @@ MODULE_WORDS: dict[str, str] = {
     "repos": "repos repo repositories git worktrees",
     "vault": "vault notes obsidian wiki",
     "system": "system telemetry stats monitor cpu",
+    "life": "life money fitness health body social people flow",
     "board": "board boards kanban cards",
     "term": "term terminal shell console",
     "agent": "chat assistant llm",

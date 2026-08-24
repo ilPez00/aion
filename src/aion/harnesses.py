@@ -1132,6 +1132,53 @@ class PhysisHarness(Harness):
             await asyncio.sleep(float(self.cfg.extra.get("interval", 5.0)))
 
 
+class LifeHarness(Harness):
+    """Real-life HUD poller: money · fitness · social · computer.
+
+    Wraps aion.life.collect_life — the same pure collector the tests use —
+    and publishes its snapshot on TOPIC_STATS under harness id "life", so
+    `state.stats["life"]` is all the panel needs. The computer domain comes
+    from whatever SystemHarness already published (read out of store stats)
+    so both panels agree on machine truth. Soft-fails per domain by design;
+    .start() once at boot like the other pollers.
+
+    Config extras:
+      interval: seconds between polls (default 60.0 — life moves slower
+                than telemetry; praxis/money do not change by the second)
+    """
+
+    def __init__(self, cfg: HarnessConfig, bus: Bus, registry: TaskRegistry, store=None):
+        super().__init__(cfg, bus, registry, store)
+        self.interval = float((cfg.extra or {}).get("interval", 60.0))
+        self._task: asyncio.Task | None = None
+
+    async def run(self, task: Task, prompt: str = "") -> None:  # pragma: no cover
+        return
+
+    async def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._poll())
+
+    async def _poll(self) -> None:
+        from .life import LifeConfig, collect_life
+        cfg = LifeConfig.from_env(cfg=self.cfg.extra or {})
+        while True:
+            try:
+                sys_stats = {}
+                if self.store is not None:
+                    sys_stats = getattr(self.store.state, "stats", {}).get("system", {})
+                snap = await asyncio.to_thread(collect_life, cfg, None, sys_stats)
+                # publish through the standard stats channel
+                await self.bus.publish(TOPIC_STATS, {
+                    "harness": self.id,
+                    "metrics": {"snapshot": snap, "ok": True},
+                })
+            except Exception as e:  # noqa: BLE001
+                await self._stat(ok=False, error=str(e)[:80],
+                                 snapshot={"domains": {}})
+            await asyncio.sleep(self.interval)
+
+
 class AgentEntityHarness(Harness):
     """Persistent agent entity harness with peripheral health context.
 
@@ -1319,6 +1366,7 @@ HARNESS_TYPES = {
     "health": HealthHarness,
     "vault": VaultHarness,
     "physis": PhysisHarness,
+    "life": LifeHarness,
     "agent_entity": AgentEntityHarness,
     "board": BoardHarness,
 }
