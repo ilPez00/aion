@@ -92,6 +92,9 @@ class DashboardData:
     # — mesh NAS (RandoMesh storage node: pansa) —
     nas: dict = field(default_factory=dict)
 
+    # — RandoMesh node monitor (physical mesh: air/pi/feather/omo/pansa) —
+    mesh: dict = field(default_factory=dict)
+
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
@@ -246,6 +249,14 @@ def collect_dashboard(state, cfg: dict, todos=None, *,
         d.nas = _nas_snapshot()
     except Exception:
         d.nas = {"reachable": False, "shares": [], "note": "nas backend unavailable"}
+
+    # RandoMesh node monitor (physical mesh). Read-only visibility; one dead
+    # node must never blank the panel, so the whole block soft-fails.
+    try:
+        from .meshmon import snapshot as _mesh_snapshot
+        d.mesh = _mesh_snapshot()
+    except Exception:
+        d.mesh = {"nodes": [], "total": 0, "reachable": 0, "note": "mesh backend unavailable"}
 
     return d
 

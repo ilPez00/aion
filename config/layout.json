@@ -96,7 +96,12 @@
     {
       "id": "net",
       "title": "Fleet",
-      "icon": "\u2b22"
+      "icon": "⏢"
+    },
+    {
+      "id": "mesh",
+      "title": "Mesh",
+      "icon": "⏣"
     }
   ],
   "deck": {

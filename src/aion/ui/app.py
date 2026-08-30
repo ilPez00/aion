@@ -773,6 +773,8 @@ class AiOSApp(App):
             return self._net_panel(theme)
         if ws in ("system", "sys"):
             return self._sys_panel(theme)
+        if ws == "mesh":
+            return self._mesh_panel(theme)
         if ws == "life":
             return self._life_panel(theme)
         if ws == "desktop":
@@ -838,6 +840,25 @@ class AiOSApp(App):
             deck_available=bool(link is not None and link.available),
             running=sum(1 for t in self.store.registry.tasks.values()
                         if t.state.value in ("running", "pending")))
+
+    def _mesh_panel(self, theme: dict) -> str:
+        """RandoMesh node monitor (read-only, Phase 1).
+
+        The rendering lives in `mesh_panel.py`. This method only gathers the
+        already-collected mesh snapshot from dashboard state and delegates.
+        """
+        from .mesh_panel import render_mesh
+
+        mesh = getattr(self.store.state, "dashboard", None)
+        data = (mesh or {}).get("mesh", {}) if isinstance(mesh, dict) else {}
+        # Fallback: pull straight from the live dashboard data if needed.
+        if not data:
+            try:
+                from ..meshmon import snapshot as _snap
+                data = _snap()
+            except Exception:
+                data = {"nodes": [], "total": 0, "reachable": 0}
+        return render_mesh(data, theme)
 
     def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
         """Render the multi-agent swarm dashboard."""
