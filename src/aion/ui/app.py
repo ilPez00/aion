@@ -1438,6 +1438,14 @@ class AiOSApp(App):
                 history=self._fleet_history.get(node.id, []),
                 tasks=node.tasks,
             ))
+
+        # Detect pansa-omo symbiotic pair
+        instance_ids = {row.id for row in rows}
+        if "omo" in instance_ids and "pansa" in instance_ids:
+            for row in rows:
+                if row.id in ("omo", "pansa"):
+                    row.pair = "omo-pansa"
+
         return render_fleet(rows, theme, tick=self._viz_tick,
                             listen_port=self._remote_server.port,
                             listen_host=self._remote_server.host)

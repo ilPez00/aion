@@ -56,6 +56,7 @@ class FleetRow:
     age_s: float = 0.0
     history: list[float] = field(default_factory=list)
     tasks: list[dict] = field(default_factory=list)
+    pair: str = ""
 
 
 def _age_label(seconds: float) -> str:
@@ -143,8 +144,16 @@ def render_fleet(rows: list[FleetRow], theme: dict, tick: int = 0,
         return "\n".join(out)
 
     group = None
+    pair_group = None
     for row in rows:
         label = "THIS NODE" if row.is_self else ("LOCAL" if row.local else "REMOTE")
+        pair_label = f"PAIRED: {row.pair}" if row.pair else ""
+        if pair_label != pair_group:
+            if pair_group is not None:
+                out.append(f"[{di}]{'·' * WIDTH}[/]")
+            if pair_label:
+                out.append(f"[{di}]{pair_label}[/]")
+            pair_group = pair_label
         if label != group:
             if group is not None:
                 out.append(f"[{di}]{'·' * WIDTH}[/]")
