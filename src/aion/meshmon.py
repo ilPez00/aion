@@ -28,7 +28,7 @@ NODES: dict[str, str] = {
 
 # What each node is primarily for (from CONFIG.md / SOVEREIGN_PLAN).
 ROLE = {
-    "air": "primary-compute",
+    "air": "cpu-inference",  # CPU-only laptop (4-core, 7.7GB, no GPU); slow, conditional
     "pi": "edge-inference",
     "feather": "client-hud",
     "omo": "source-storage",

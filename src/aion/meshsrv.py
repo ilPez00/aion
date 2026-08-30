@@ -39,11 +39,29 @@ SERVICES: dict[str, dict] = {
         "start": "cd /home/gio/praxis_webapp && npm run start 2>&1 | tail -3",
         "stop": "pkill -f 'npm run start'",
     },
-    "llama-server": {
-        "host": "pansa-ts",
-        "probe": ("tcp", 8080),
-        "start": "cd /home/gio/models && nohup ./llama-server -m /home/gio/models/gemma4-e4b-heretic-Q4_K_M.gguf -ngl 99 -c 8192 --host 127.0.0.1 --port 8080 --alias e4b >/tmp/llama.log 2>&1 &",
-        "stop": "pkill -f llama-server",
+    # RandoMesh model-serving stack (llama.cpp Vulkan/ROCm, Caddy LB on omo:8088).
+    # Each node serves gemma4-e2b on :8081; the LB is the unified OpenAI endpoint.
+    # Host check = ssh to that host and probe its localhost port.
+    "mesh-lm-orch": {   # Caddy orchestrator on omo — unified /v1 endpoint
+        "host": "omo-ts",
+        "probe": ("tcp", 8088),
+        "start": "cd /home/gio/scripts/freetoken-cluster && caddy run --config Caddyfile.llama --adapter caddyfile 2>&1 | tail -3",
+        "stop": "pkill -f 'caddy run'",
+    },
+    "omo-llm": {        # llama-server node on RX 6650 XT (8GB, Vulkan/ROCm)
+        "host": "omo-ts", "probe": ("tcp", 8081),
+        "start": "nohup /home/gio/dev/scripts/llama-b8831/llama-server -m /home/gio/models/gemma4-e2b-heretic-Q4_K_M.gguf -ngl 99 --host 0.0.0.0 --port 8081 --alias e2b --jinja -c 4096 >/tmp/omo-llama.log 2>&1 &",
+        "stop": "pkill -f 'llama-server.*8081'",
+    },
+    "pansa-llm": {      # llama-server node on RX 550 (2GB, partial + CPU)
+        "host": "pansa-ts", "probe": ("tcp", 8081),
+        "start": "bash /home/gio/models/pansa_node.sh",
+        "stop": "pkill -f 'llama-server.*8081'",
+    },
+    "air-llm": {        # llama-server CPU node (4-core, slow/conditional)
+        "host": "air-ts", "probe": ("tcp", 8081),
+        "start": "bash /home/gio/air_node.sh",
+        "stop": "pkill -f 'llama-server.*8081'",
     },
     "colibri": {
         "host": "omo-ts",

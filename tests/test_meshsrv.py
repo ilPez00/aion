@@ -11,14 +11,14 @@ def _fake(rc=0, out="", raise_timeout=False):
 
 
 def test_probe_tcp_open():
-    st = probe_service("llama-server", _fake(out="OPEN"))
+    st = probe_service("omo-llm", _fake(out="OPEN"))
     assert st.running is True
     assert st.reachable is True
     assert st.detail == "open"
 
 
 def test_probe_tcp_closed():
-    st = probe_service("llama-server", _fake(out="CLOSED"))
+    st = probe_service("omo-llm", _fake(out="CLOSED"))
     assert st.running is False
 
 
@@ -38,7 +38,7 @@ def test_snapshot_counts():
 
 
 def test_control_start():
-    res = control_service("llama-server", "start", _fake(rc=0, out="started"))
+    res = control_service("omo-llm", "start", _fake(rc=0, out="started"))
     assert res["ok"] is True
     assert res["action"] == "start"
 
