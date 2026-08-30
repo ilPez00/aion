@@ -43,6 +43,7 @@ class IntentType(Enum):
     ACT = auto()             # act on the top Jarvis suggestion (no payload)
     HITL_APPROVE = auto()    # approve the pending human-in-the-loop gate
     HITL_REJECT = auto()     # reject the pending human-in-the-loop gate
+    MOUNT_NAS = auto()       # payload: {"share": "bigstore"|"data-hgst"} — mount a Mesh NAS share locally
 
 
 @dataclass

@@ -89,6 +89,9 @@ class DashboardData:
     version: str = "1.0.0"
     timestamp: float = field(default_factory=time.time)
 
+    # — mesh NAS (RandoMesh storage node: pansa) —
+    nas: dict = field(default_factory=dict)
+
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
@@ -234,6 +237,15 @@ def collect_dashboard(state, cfg: dict, todos=None, *,
         1 for w in d.workflows
         if w.get("stage") in ("act", "wait", "blocked", "plan", "failed", "verify")
     )
+
+    # Mesh NAS (RandoMesh storage node: pansa). HUD-only — never let a
+    # storage blip crash the desktop. aion shows status; MountNas Intent
+    # triggers the actual sshfs mount (OS owns the filesystem).
+    try:
+        from .nas import snapshot as _nas_snapshot
+        d.nas = _nas_snapshot()
+    except Exception:
+        d.nas = {"reachable": False, "shares": [], "note": "nas backend unavailable"}
 
     return d
 
