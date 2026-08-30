@@ -74,4 +74,22 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
             used = sh.get("used_pct", 0)
             out.append(f"  {sh.get('name', '?')} {_bar(used, theme)} {sh.get('used_gb', 0)}/{sh.get('total_gb', 0)}G ({used}%)")
 
+    # Phase 2: mesh service lifecycle (Physis/Praxis/llama-server/colibri)
+    services = data.get("services") or {}
+    svc_list = services.get("services", []) if isinstance(services, dict) else []
+    if svc_list:
+        out.append("")
+        up = services.get("up", sum(1 for s in svc_list if s.get("running")))
+        out.append(f"[{theme.get('dim', '#9aabbb')}]services {up}/{len(svc_list)}[/]")
+        for s in svc_list:
+            name = s.get("name", "?")
+            host = s.get("host", "")
+            if s.get("running"):
+                out.append(f"  [{theme.get('ok', '#7CFFB2')}]●[/] [{theme.get('fg', '#dbe6f0')}]{name}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')}[/]")
+            else:
+                out.append(f"  [{theme.get('faint', '#6b7d8d')}]○[/] [{theme.get('fg', '#dbe6f0')}]{name}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')} "
+                           f"{s.get('detail', 'down')}[/]")
+
     return "\n".join(out)

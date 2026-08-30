@@ -44,6 +44,7 @@ class IntentType(Enum):
     HITL_APPROVE = auto()    # approve the pending human-in-the-loop gate
     HITL_REJECT = auto()     # reject the pending human-in-the-loop gate
     MOUNT_NAS = auto()       # payload: {"share": "bigstore"|"data-hgst"} — mount a Mesh NAS share locally
+    MESH_SERVICE = auto()    # payload: {"name": str, "action": "start"|"stop"|"restart"} — drive a mesh service
 
 
 @dataclass

@@ -95,6 +95,9 @@ class DashboardData:
     # — RandoMesh node monitor (physical mesh: air/pi/feather/omo/pansa) —
     mesh: dict = field(default_factory=dict)
 
+    # — RandoMesh service lifecycle (Physis/Praxis/llama-server/colibri) —
+    services: dict = field(default_factory=dict)
+
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
@@ -257,6 +260,14 @@ def collect_dashboard(state, cfg: dict, todos=None, *,
         d.mesh = _mesh_snapshot()
     except Exception:
         d.mesh = {"nodes": [], "total": 0, "reachable": 0, "note": "mesh backend unavailable"}
+
+    # RandoMesh service lifecycle (Physis/Praxis/llama-server/colibri). HUD-only
+    # visibility + control surface; soft-fail so a dead host never crashes.
+    try:
+        from .meshsrv import snapshot as _srv_snapshot
+        d.services = _srv_snapshot()
+    except Exception:
+        d.services = {"services": [], "total": 0, "up": 0, "note": "service backend unavailable"}
 
     return d
 

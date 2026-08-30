@@ -842,22 +842,30 @@ class AiOSApp(App):
                         if t.state.value in ("running", "pending")))
 
     def _mesh_panel(self, theme: dict) -> str:
-        """RandoMesh node monitor (read-only, Phase 1).
+        """RandoMesh monitor + service lifecycle (Phase 1 + Phase 2).
 
-        The rendering lives in `mesh_panel.py`. This method only gathers the
-        already-collected mesh snapshot from dashboard state and delegates.
+        The rendering lives in `mesh_panel.py`. This method gathers the
+        already-collected dashboard (mesh nodes, storage, services) and delegates.
         """
         from .mesh_panel import render_mesh
 
-        mesh = getattr(self.store.state, "dashboard", None)
-        data = (mesh or {}).get("mesh", {}) if isinstance(mesh, dict) else {}
-        # Fallback: pull straight from the live dashboard data if needed.
-        if not data:
+        dash = getattr(self.store.state, "dashboard", None)
+        data = dash if isinstance(dash, dict) else {}
+        # Fallback: pull straight from the live backends if dashboard is empty.
+        if not data.get("mesh"):
             try:
                 from ..meshmon import snapshot as _snap
-                data = _snap()
+                data = dict(data)
+                data["mesh"] = _snap()
             except Exception:
-                data = {"nodes": [], "total": 0, "reachable": 0}
+                data = data or {"mesh": {"nodes": [], "total": 0, "reachable": 0}}
+        if not data.get("services"):
+            try:
+                from ..meshsrv import snapshot as _srv
+                data = dict(data)
+                data["services"] = _srv()
+            except Exception:
+                pass
         return render_mesh(data, theme)
 
     def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
