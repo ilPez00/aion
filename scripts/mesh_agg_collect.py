@@ -171,6 +171,80 @@ def collect_docs() -> list[dict]:
     return out
 
 
+# ── models (disk walk) ──────────────────────────────────────────────────────
+# Known model roots on this fleet. Order: biggest/fastest first so the first
+# hit on a filename wins (avoids double-listing the same file on NFS mounts).
+# Env override: AION_MODEL_ROOTS=/path1:/path2
+_MODEL_ROOTS_DEFAULT = [
+    "/mnt/29F19CF06CA44E9F/models/gguf",   # omo store
+    "/mnt/29F19CF06CA44E9F/models",       # catch-all omo
+    "/home/gio/nas/models",               # feather NAS mount
+    "/srv/models",                        # shared fleet model NFS
+    "/home/gio/.cache/huggingface",       # HF download cache
+    "/home/gio/.ollama/models",           # ollama blobs
+    "/home/gio/.local/share/ollama/models",
+]
+# GLOB patterns for model weights / tensors.
+_MODEL_GLOBS = ("*.gguf", "*.bin", "*.safetensors", "*.pt", "*.ggml.*",
+                "*.onnx", "*.q4_*", "*.q8_*")
+
+
+def collect_models() -> list[dict]:
+    """Walk known model roots and emit {path,kind,size_bytes,vram_hint_gb}.
+
+    vram_hint_gb is an estimate: gguf/q4/q8 are VRAM-served; bin/safetensors
+    are usually CPU-offload. Best-effort, never raises."""
+    out: list[dict] = []
+    roots = (
+        os.environ.get("AION_MODEL_ROOTS", "").split(":")
+        if os.environ.get("AION_MODEL_ROOTS")
+        else _MODEL_ROOTS_DEFAULT
+    )
+    seen: set[str] = set()
+    for root in roots:
+        rp = Path(root)
+        if not rp.is_dir():
+            continue
+        try:
+            for p in rp.rglob("*"):
+                if not p.is_file():
+                    continue
+                name = p.name
+                if not name.endswith(
+                        (".gguf", ".bin", ".safetensors", ".pt", ".onnx")) \
+                        and not name.startswith(("q4_", "q8_")):
+                    continue
+                key = str(p)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                size = st.st_size
+                vram = size / (1024 ** 3)  # naive GiB estimate
+                # heuristic VRAM hint: quantized gguf fits GPU more readily.
+                hint = "gpu" if name.endswith(".gguf") else "cpu"
+                kind = "gguf" if name.endswith(".gguf") else (
+                    "safetensors" if name.endswith(".safetensors")
+                    else "pytorch" if name.endswith((".bin", ".pt"))
+                    else "onnx")
+                out.append({
+                    "kind": kind,
+                    "path": str(p),
+                    "size_bytes": size,
+                    "vram_hint_gb": round(vram, 2),
+                    "hint": hint,
+                    "mtime": st.st_mtime,
+                })
+                if len(out) >= 400:
+                    return out  # cap to keep the JSON payload small
+        except (OSError, PermissionError):
+            continue
+    return out
+
+
 # ── kanban (tasks as documents of record) ─────────────────────────────────
 def collect_kanban() -> list[dict]:
     out: list[dict] = []
@@ -201,14 +275,16 @@ def main() -> int:
     sessions = (collect_hermes_sessions() + collect_opencode_sessions()
                 + collect_kanban())
     docs = collect_docs()
+    models = collect_models()
     print(json.dumps({
         "host": os.uname().nodename,
         "generated_at": time.time(),
         "memory": memory,
         "sessions": sessions,
         "docs": docs,
+        "models": models,
         "counts": {"memory": len(memory), "sessions": len(sessions),
-                   "docs": len(docs)},
+                   "docs": len(docs), "models": len(models)},
     }, ensure_ascii=False))
     return 0
 

@@ -112,4 +112,23 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
             out.append(f"  [{theme.get('warn', '#FFD479')}]not collected[/]  "
                        f"[{theme.get('faint', '#6b7d8d')}]run: aion mesh agg collect[/]")
 
+    # Phase 4: model serving inventory (what's where, size, vram fit)
+    st = data.get("agg") or {}
+    if st.get("exists") and st.get("model_total"):
+        gb = st.get("model_gb", 0.0)
+        out.append("")
+        out.append(f"[{theme.get('accent', '#5ad1ff')}]▧ model serving[/] "
+                   f"[{theme.get('fg', '#dbe6f0')}]{st['model_total']} files "
+                   f"{gb:.1f}GB[/]")
+        for entry in (st.get("model_by_host") or [])[:6]:
+            out.append(
+                f"[{theme.get('dim', '#9aabbb')}]{entry.get('node','?'):8}[/] "
+                f"[{theme.get('fg', '#dbe6f0')}]{entry.get('name','')[:24]:24}[/] "
+                f"[{theme.get('ok' if entry.get('gpu') else 'dim', '#7CFFB2')}]{entry.get('gb',0):5.1f}GB"
+                f"[{theme.get('dim', '#9aabbb')}] "
+                f"{entry.get('hint','?')} → {entry.get('path','')}[/]")
+        if st.get("model_total", 0) > 6:
+            out.append(f"[{theme.get('faint', '#6b7d8d')}]  ↳ "
+                       f"{st['model_total']-6} more (aion mesh agg search <term>)[/]")
+
     return "\n".join(out)

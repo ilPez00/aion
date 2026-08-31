@@ -153,6 +153,21 @@ def ingest_node_payload(db_path: str | Path, payload: dict) -> dict:
                          d.get("preview", "") or d.get("title", ""), 0.0)
             docs_rows += 1
 
+        model_rows = 0
+        for m in payload.get("models", []):
+            path = m.get("path", "")
+            size = m.get("size_bytes", 0) or 0
+            # body holds searchable text: kind + size + vram hint + path tail
+            body = (
+                f"{m.get('kind', 'model')} {size / (1024**3):.2f}GB "
+                f"vram_hint {m.get('vram_hint_gb', '?')}GB hint {m.get('hint', '')} "
+                f"{path}"
+            )
+            _upsert_item(con, "model", node, m.get("kind", "gguf"), path,
+                         Path(path).name[:120] if path else "model",
+                         body, float(m.get("mtime", 0) or 0))
+            model_rows += 1
+
         _sync_fts(con)
         con.commit()
         counts = payload.get("counts", {})
@@ -160,8 +175,8 @@ def ingest_node_payload(db_path: str | Path, payload: dict) -> dict:
             "node": node,
             "ingested": {
                 "memory": memory_rows, "sessions": sessions_rows,
-                "docs": docs_rows,
-                "total": memory_rows + sessions_rows + docs_rows,
+                "docs": docs_rows, "models": model_rows,
+                "total": memory_rows + sessions_rows + docs_rows + model_rows,
             },
             "reported": counts,
         }
@@ -244,8 +259,31 @@ def status(db_path: str | Path | None = None) -> dict:
         by_node = dict(con.execute(
             "SELECT node, COUNT(*) FROM items GROUP BY node").fetchall())
         last = con.execute("SELECT MAX(ts) FROM items WHERE kind='session'").fetchone()[0]
+        # model inventory summary (the "what's where, VRAM fit" picture)
+        m_total = m_gb = 0
+        m_by_host = []
+        for row in con.execute(
+                "SELECT node, title, body, ref FROM items WHERE kind='model' "
+                "ORDER BY ts DESC"):
+            node, title, body, ref = row
+            size_gb, gpu = 0.0, False
+            try:
+                parts = body.split()
+                if len(parts) > 1 and parts[1].endswith("GB"):
+                    size_gb = float(parts[1][:-2])
+                gpu = "vram_hint" in body
+            except (ValueError, IndexError):
+                pass
+            m_total += 1
+            m_gb += size_gb
+            if len(m_by_host) < 20:
+                m_by_host.append({"node": node or "?", "name": title or "model",
+                                  "gb": round(size_gb, 1), "gpu": gpu,
+                                  "hint": "gpu" if gpu else "cpu", "path": ref or ""})
         return {"db": str(db_path), "exists": True, "items": items,
-                "by_kind": by_kind, "by_node": by_node, "last_collect": last}
+                "by_kind": by_kind, "by_node": by_node, "last_collect": last,
+                "model_total": m_total, "model_gb": round(m_gb, 1),
+                "model_by_host": m_by_host}
     finally:
         con.close()
 
