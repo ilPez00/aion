@@ -35,6 +35,36 @@ ROLE = {
     "pansa": "storage-node",
 }
 
+# ── Fleet config (single source of truth = randomesh CONFIG.md → fleet.json) ──
+# aion should NOT hardcode the node map here (that drifted — air was "primary-compute"
+# while reality is CPU-only). Load nodes/roles from randomesh's exported fleet.json
+# when present; these built-ins are only the fallback. Set AION_FLEET_CONFIG to point
+# elsewhere, e.g. a copy deployed to the HUD host.
+def _load_fleet_config() -> tuple[dict[str, str], dict[str, str]]:
+    import json
+    import os
+
+    path = os.environ.get("AION_FLEET_CONFIG", "")
+    if not path:
+        path = os.path.expanduser("~/dev/randomesh/fleet.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        nodes, roles = dict(NODES), dict(ROLE)
+        for n in data.get("nodes", []):
+            name = n.get("name")
+            if not name:
+                continue
+            nodes[name] = n.get("tailscale") or (name + "-ts")
+            if n.get("role"):
+                roles[name] = n["role"]
+        return nodes, roles
+    except Exception:
+        return dict(NODES), dict(ROLE)  # fleet.json absent/unreadable — use built-ins
+
+_NODES_FROM_CONFIG, _ROLE_FROM_CONFIG = _load_fleet_config()
+NODES, ROLE = _NODES_FROM_CONFIG, _ROLE_FROM_CONFIG
+
 
 @dataclass
 class NodeStat:
