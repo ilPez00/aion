@@ -45,7 +45,6 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
 
     if not nodes:
         out.append(f"[{theme.get('faint', '#6b7d8d')}]no mesh data[/]")
-        return "\n".join(out)
 
     # Sort: reachable first, then by load descending (hot nodes to the top).
     order = sorted(nodes, key=lambda n: (not n.get("reachable", False), -n.get("load1", 0.0)))
@@ -91,5 +90,26 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
                 out.append(f"  [{theme.get('faint', '#6b7d8d')}]○[/] [{theme.get('fg', '#dbe6f0')}]{name}[/] "
                            f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')} "
                            f"{s.get('detail', 'down')}[/]")
+
+    # Phase 3: aggregated agent sessions / memories / docs (mesh agg collection)
+    agg = data.get("agg") or {}
+    if agg:
+        out.append("")
+        out.append(f"[{theme.get('accent', '#5ad1ff')}]▤ agent aggregate (mesh agg)[/]")
+        if agg.get("exists"):
+            items = agg.get("items", 0)
+            by_node = agg.get("by_node") or {}
+            by_kind = agg.get("by_kind") or {}
+            node_line = "  ".join(f"{n}:{c}" for n, c in by_node.items()) or "—"
+            out.append(f"  [{theme.get('fg', '#dbe6f0')}]{items} items[/]  "
+                       f"[{theme.get('dim', '#9aabbb')}]{node_line}[/]")
+            kind_line = "  ".join(f"{k}:{c}" for k, c in by_kind.items()) or ""
+            if kind_line:
+                out.append(f"  [{theme.get('dim', '#9aabbb')}]{kind_line}[/]")
+            if agg.get("recent"):
+                out.append(f"[{theme.get('faint', '#6b7d8d')}]  ↳ filter by `mesh agg status|search`[/]")
+        else:
+            out.append(f"  [{theme.get('warn', '#FFD479')}]not collected[/]  "
+                       f"[{theme.get('faint', '#6b7d8d')}]run: aion mesh agg collect[/]")
 
     return "\n".join(out)

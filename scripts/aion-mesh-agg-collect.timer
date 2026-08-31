@@ -1,0 +1,20 @@
+# aion mesh-agg collector timer — periodic fleet aggregation.
+# Pairs with aion-mesh-agg-collect.service (oneshot). See that unit + the
+# mesh workspace in aion for the control-panel view this feeds.
+#
+# Default: every 15 minutes. Override live (no edit) with:
+#   systemctl --user edit aion-mesh-agg-collect.timer
+#       [Timer]
+#       OnCalendar=*:0/5    # every 5 min
+#
+[Unit]
+Description=aion mesh aggregation collector — 15min cadence
+Documentation=file:%h/aion/src/aion/agg.py
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=aion-mesh-agg-collect.service
+
+[Install]
+WantedBy=timers.target

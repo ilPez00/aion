@@ -1,0 +1,39 @@
+# aion mesh-agg collector — periodic fleet aggregation.
+#
+# Runs `aion mesh agg collect` as YOU (it SSHes to each node and runs the
+# stdlib collector), keeping ~/.aion/shared/agg/agg.db fresh so the HUD
+# control panel always shows the latest cross-machine sessions/memory/docs.
+# Oneshot: no daemon stays up; the timer decides cadence.
+#
+# Install (USER units only — needs your SSH keys, HOME, ~/.aion):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/aion-mesh-agg-collect.service scripts/aion-mesh-agg-collect.timer \
+#      ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aion-mesh-agg-collect.timer
+#   # verify:  journalctl --user -u aion-mesh-agg-collect.service -n 5 --no-pager
+#
+# Pick your cadence (default below is 15 min). `OnCalendar` uses the same syntax
+# as cron: "*-*-* *:0/15:*" = every 15 min past the hour.
+#   systemctl --user edit aion-mesh-agg-collect.timer   # override OnCalendar
+#
+# Needs the fleet to be reachable. A dead/unreachable node is a soft-fail
+# (logged), not a crash, so collection of the others always completes.
+#
+[Unit]
+Description=aion mesh aggregation collector (fleet-wide)
+Wants=time-sync.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/aion
+ExecStart=%h/aion/.venv/bin/python %h/aion/.venv/bin/aion mesh agg collect
+# Let a slow collector finish; 120s is generous for 5-6 small nodes.
+TimeoutStartSec=120
+# Keep last run's stdout/stderr in the user journal.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

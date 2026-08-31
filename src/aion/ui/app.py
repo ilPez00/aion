@@ -866,6 +866,20 @@ class AiOSApp(App):
                 data["services"] = _srv()
             except Exception:
                 pass
+        # Phase 3: aggregated agent sessions/memories/docs (read-only DB query —
+        # cheap local SQLite, no network in the render path).
+        try:
+            from .. import agg as _agg
+            st = _agg.status()
+            if st.get("exists"):
+                data = dict(data)
+                st["recent"] = bool(_agg.recent(limit=1))
+                data["agg"] = st
+            else:
+                data = dict(data)
+                data["agg"] = {"exists": False, "items": 0}
+        except Exception:
+            pass
         return render_mesh(data, theme)
 
     def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
@@ -2019,7 +2033,7 @@ class AiOSApp(App):
 USAGE = """\
 aion — multi-harness AI cockpit (TUI)
 
-usage: aion [--help] [--version] [--where]
+usage: aion [--help] [--version] [--where] [mesh agg ...]
 
   -h, --help     this text
   -V, --version  installed version
@@ -2027,9 +2041,16 @@ usage: aion [--help] [--version] [--where]
 
 With no arguments, launches the cockpit.
 
+  mesh agg <subcommand>   headless fleet aggregation (no TUI)
+    collect               pull sessions/memory/docs from every mesh node
+    status                show the aggregation DB totals (nodes / kinds)
+    sessions              list recent agent sessions across all nodes
+    memory                list recent memory entries across all nodes
+    docs                  list recent gathered documents/skills across nodes
+    search <query> [--kind memory|session|doc]  full-text search the aggregate
+
 environment:
-  AION_CONFIG    path to layout.json, overriding the default
-  AION_DATA      directory for notes and other mutable data
+  AION_AGG_DB    override the aggregation DB path (default ~/.aion/shared/agg/agg.db)
 """
 
 
@@ -2053,9 +2074,95 @@ def _where() -> str:
     ])
 
 
+def _mesh_agg_cli(args: list[str]) -> int:
+    """Headless `aion mesh agg <collect|status|sessions|memory|docs|search>`.
+
+    Cross-machine aggregation of agent sessions/memories/documents. No TUI —
+    prints plain text so it composes with scripts and the randomesh `bin/mesh`
+    dispatcher. Never raises on an unreachable node (per-node soft-fail).
+    """
+    import sys as _sys
+    from .. import agg
+
+    sub = args[0] if args else "status"
+    try:
+        if sub == "collect":
+            res = agg.collect_all()
+            print(f"db: {res['db']}")
+            for name, r in res["results"].items():
+                if r.get("ok"):
+                    ing = r.get("ingested", {})
+                    print(f"  {name:9} {ing.get('total', 0):4d} items "
+                          f"(mem {ing.get('memory', 0)} / sess "
+                          f"{ing.get('sessions', 0)} / docs {ing.get('docs', 0)})")
+                else:
+                    print(f"  {name:9} FAILED — {r.get('error', '')}")
+            s = res["summary"]
+            print(f"DB total: {s.get('items', 0)} items")
+            return 0
+
+        if sub == "status":
+            s = agg.status()
+            print(f"db: {s.get('db')}")
+            if not s.get("exists"):
+                print("  empty (run: aion mesh agg collect)")
+                return 0
+            print(f"  {s.get('items', 0)} items")
+            for kind, n in (s.get("by_kind") or {}).items():
+                print(f"  {kind:8} {n}")
+            print("  by node:")
+            for node, n in (s.get("by_node") or {}).items():
+                print(f"    {node:9} {n}")
+            return 0
+
+        if sub in ("sessions", "memory", "docs"):
+            kind = {"sessions": "session", "memory": "memory", "docs": "doc"}[sub]
+            rows = agg.recent(limit=30, kind=kind)
+            print(f"{len(rows)} {kind} entries:")
+            for r in rows:
+                ts = ""
+                if r.get("ts"):
+                    from datetime import datetime
+                    ts = datetime.fromtimestamp(r["ts"]).strftime("%m-%d %H:%M")
+                print(f"  [{r.get('node','?'):6}] {r.get('source','?'):9} "
+                      f"{ts:>12}  {r.get('title','')}")
+            return 0
+
+        if sub == "search":
+            q = args[1] if len(args) > 1 else ""
+            if not q:
+                print("usage: aion mesh agg search <query> [--kind memory|session|doc]")
+                return 2
+            kind = None
+            if "--kind" in args:
+                ki = args.index("--kind")
+                if ki + 1 < len(args):
+                    kind = args[ki + 1]
+            hits = agg.search(q, limit=30, kind=kind)
+            print(f"{len(hits)} match(es) for {q!r} ({kind or 'all'}):")
+            for h in hits:
+                hl = h.get("hl") or (h.get("body") or "")[:120]
+                print(f"  [{h.get('node','?'):6}] {h.get('kind','?'):8} "
+                      f"{h.get('source','?'):9}  {h.get('title','')}")
+                print(f"     {hl}")
+            return 0
+
+        print(f"aion: unknown mesh-agg subcommand {sub!r}\n", file=_sys.stderr)
+        print("usage: aion mesh agg "
+              "{collect|status|sessions|memory|docs|search <q> [--kind K]}",
+              file=_sys.stderr)
+        return 2
+    except Exception as e:  # headless CLI must not dump a traceback to users
+        print(f"aion: mesh agg {sub} failed: {e}", file=_sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> None:
     import sys as _sys
     args = _sys.argv[1:] if argv is None else argv
+    # Headless fleet aggregation subcommand: `aion mesh agg ...`
+    if len(args) >= 3 and args[0] == "mesh" and args[1] == "agg":
+        raise SystemExit(_mesh_agg_cli(args[2:]))
     # Argument handling is deliberately hand-rolled and tiny: the point is that
     # `aion --help` prints help. Before this it fell through to `.run()`, so the
     # first thing anyone typed after installing took over their terminal with a
