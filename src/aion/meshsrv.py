@@ -72,6 +72,87 @@ SERVICES: dict[str, dict] = {
 }
 
 
+
+
+# ── Fleet config source of truth ──
+# aion should NOT hardcode the node map (see meshmon comment).
+# This loader reads fleet.json from randomesh CONFIG.md → fleet.json so that
+# SERVICES stays in sync when a node is added/removed/changed in CONFIG.md.
+# The hardcoded SERVICES dict below is the base; fleet.json overrides/add per-node
+# llama-server configs. Base takes priority so existing services aren't clobbered.
+# Call _ensure_fleet_services() once at entrypoint (app.py main, mesh status CLI).
+_FLEET_SERVICES_LOADED = False
+
+
+def _load_fleet_services() -> dict[str, dict]:
+    """Read per-node llama-server configs from randomesh fleet.json's serving section.
+
+    fleet.json comes from CONFIG.md SERVING_ORCHESTRATION + SERVING sections.
+    Returns per-node {host, probe=(tcp,8081), start, stop} dict, merged into
+    the global SERVICES dict (hardcoded base takes priority).
+    """
+    global _FLEET_SERVICES_LOADED
+    if _FLEET_SERVICES_LOADED:
+        return
+    import json, os
+    path = os.environ.get("AION_FLEET_CONFIG", "")
+    if not path:
+        path = os.path.expanduser("~/dev/randomesh/fleet.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        _FLEET_SERVICES_LOADED = True
+        return
+
+    # fleet.json has flat {nodes: [...], serving: {orchestrator, unified_endpoint, default_model, nodes: {name: {...}}}} 
+    # We only need the per-node info from the NODES section to build host/port.
+    # The serving.nodes maps node-name -> {ip, port, gpu, tps} (export-config.sh format).
+    fleet_nodes_map: dict[str, dict] = {}
+    for n in data.get("nodes", []):
+        name = n.get("name", "")
+        if not name:
+            continue
+        # Use tailscale alias as host
+        tailscale = n.get("tailscale", name + "-ts")
+        # serving port from node entry or default 8081
+        port = n.get("serving_port", "8081")
+        fleet_nodes_map[name] = {
+            "host": tailscale,
+            "probe": ("tcp", int(port)),
+            # start/stop reuse the base hardcoded defaults per node
+        }
+
+    # Now enrich fleet.json's serving.nodes entries if present (these already have
+    # ip/port/gpu/tps from CONFIG.md export-config). We add them to SERVICES if
+    # the node name isn't already in the hardcoded base.
+    serving_nodes = data.get("serving", {}).get("nodes", {})
+    for node_name, info in serving_nodes.items():
+        # Use the node's own ip/port from fleet.json if available
+        host = info.get("ip", "")
+        port = info.get("port", "8081")
+        if not host:
+            # Fall back to tailscale alias
+            host = fleet_nodes_map.get(node_name, {}).get("host", node_name + "-ts")
+        if not port:
+            port = "8081"
+        # Only add if not already in SERVICES (base takes priority)
+        if node_name not in SERVICES:
+            SERVICES[node_name] = {
+                "host": host,
+                "probe": ("tcp", int(port)),
+                "start": f"bash /home/gio/scripts/fleet/serve-start.sh {node_name}",
+                "stop": "pkill -f 'llama-server.*8081'",
+            }
+
+    _FLEET_SERVICES_LOADED = True
+
+
+def _ensure_fleet_services():
+    """Call once at module import time (via meshsrv entrypoint)."""
+    _load_fleet_services()
+
+
 @dataclass
 class ServiceState:
     name: str
