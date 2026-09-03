@@ -19,6 +19,12 @@ When in doubt:
 - Tests: `tests/` via `.venv/bin/python -m pytest`
 - Deck firmware: separate repo `/home/gio/dev/CyclUno` (shared v2 frame protocol; old path `/home/gio/CyclUno` is a symlink)
 
+## Development Workflow
+All development happens via randomesh ssh connection on machine pansa (192.168.1.15).
+Use `ssh pansa-ts` to connect. All code changes, builds, and tests are performed
+on the pansa machine through the randomesh framework. See `today_pansa.log` for
+details on the omo vs pansa distinction.
+
 ## Architecture map
 
 | Layer | Files | Rule |
