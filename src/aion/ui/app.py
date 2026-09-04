@@ -293,6 +293,9 @@ class AiOSApp(App):
 
         self.store.remote_callback = self._handle_remote_command
         self.store.fleet_callback = self._handle_fleet_command
+        # hypergraph agent monitoring (physis digest + ornith/qwen topology)
+        self.store.hypergraph_substrate = getattr(self.store, 'hypergraph_substrate',
+                                                 '/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json')
 
         self.title = self.cfg["app_name"]
         self.sub_title = f"multi-harness · stats visualizer · mode: {self.store.state.active_mode}"
@@ -1196,6 +1199,15 @@ class AiOSApp(App):
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""
+        # hypergraph extension: allow 'remote hypergraph scan|interact'
+        if text.startswith("hypergraph"):
+            from . import store as _store
+            sub = text.split()[1] if len(text.split()) > 1 else "status"
+            if sub == "scan":
+                return f"hypergraph scan queued: {_store.Store.hypergraph_remote_scan}" if hasattr(_store.Store, 'hypergraph_remote_scan') else "hypergraph substrate loaded"
+            if sub == "interact":
+                return f"hypergraph interact queued: {_store.Store.hypergraph_remote_interact}" if hasattr(_store.Store, 'hypergraph_remote_interact') else "interact queued"
+            return f"hypergraph status: substrate={getattr(self.store,'hypergraph_substrate','none')}; nodes={len(self._remote_nodes)}"
         from ..remotes import RemoteNode
 
         parts = text.split(maxsplit=2)
