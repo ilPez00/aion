@@ -96,6 +96,10 @@ class Store(SwarmCommands):
         self._loop = None  # captured event loop (set in _chat for agent tools)
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.fleet_callback = None   # set by app: async fn(text) -> str
+        # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
+        self.hypergraph_substrate = "/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json"
+        self.hypergraph_remote_scan = "ssh -o ConnectTimeout=5 pansa-ts 'bash /home/gio/dev/physis-pro/deploy-pansa/hypergraph-pansa-digest.sh {dir}'"
+        self.hypergraph_remote_interact = "ssh -o ConnectTimeout=5 omo-ts 'curl -s --max-time 10 -X POST http://localhost:11434/v1/chat/completions -H \"Content-Type: application/json\" -d \"{\\\"model\\\":\\\"ornith-1.5-9b-agent\\\"}\"'"
         self.memory = BrainStore()        # gbrain MCP with MemoryStore fallback
         self.credentials = CredentialStore()  # structured provider profiles
         from .todos import TodoStore
