@@ -50,6 +50,7 @@
         </select>
         <button id="fit" type="button" title="Fit graph to screen (0)">Fit</button>
         <button id="refresh" type="button" title="Rescan (r)">Refresh</button>
+        <button id="mesh-btn" type="button" title="Randomesh AI fabric status">MESH</button>
         <label class="sr-only" for="search">Filter nodes</label>
         <input id="search" type="search" placeholder="filter… (/)" style="max-width:180px">
       </div>
@@ -202,7 +203,131 @@ Hello
   </div>
 </div>
 
+<div id="randomesh-panel" hidden role="dialog" aria-label="Randomesh AI fabric"
+     style="position:fixed;right:12px;bottom:12px;width:min(480px,94vw);max-height:80vh;overflow:auto;background:var(--bg,#111);border:1px solid var(--border,#333);border-radius:12px;padding:12px;z-index:50;box-shadow:0 8px 30px rgba(0,0,0,.55)">
+  <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+    <strong>Randomesh · AI fabric</strong>
+    <button id="mesh-close" type="button" aria-label="Close">✕</button>
+  </div>
+  <div class="mesh-body mono-sm"></div>
+</div>
+<style>
+  #randomesh-panel table.mesh {border-collapse:collapse;width:100%;margin:4px 0 10px}
+  #randomesh-panel table.mesh th, #randomesh-panel table.mesh td
+    {text-align:left;padding:2px 6px;border-bottom:1px solid var(--border,#333);font-size:12px;vertical-align:top}
+  #randomesh-panel h4 {margin:10px 0 2px}
+  #randomesh-panel .ok {color:#5ad1ff;font-weight:700}
+  #randomesh-panel .down {color:#ff6b6b}
+</style>
 <script src="/static/organic.js"></script>
 <script src="/static/hud.js"></script>
+<script>
+(function () {
+  const btn = document.getElementById('mesh-btn');
+  const panel = document.getElementById('randomesh-panel');
+  const close = document.getElementById('mesh-close');
+  if (!btn || !panel) return;
+  const body = () => panel.querySelector('.mesh-body');
+  const SECTIONS = ['machines', 'services', 'programs', 'configs', 'network', 'agents'];
+  const LABELS = { machines: 'Machines', services: 'Services', programs: 'Programs',
+                   configs: 'Configs', network: 'Network', agents: 'Agents' };
+  let section = 'machines';
+  let data = null;
+
+  btn.addEventListener('click', () => { panel.hidden = !panel.hidden; if (!panel.hidden) refresh(); });
+  close.addEventListener('click', () => { panel.hidden = true; });
+  document.addEventListener('keydown', (e) => {
+    if (!panel.hidden && e.key === 'Escape') panel.hidden = true;
+  });
+
+  function post(payload) {
+    return { method: 'POST', headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify(payload) };
+  }
+  async function refresh() {
+    try {
+      data = await (await fetch('/api/mesh/snapshot')).json();
+      render();
+    } catch (e) { body().innerHTML = '<p class="muted">mesh feed offline</p>'; }
+  }
+  async function act(name, action) {
+    const pv = await (await fetch('/api/mesh/action', post({ service: name, action, confirm: false }))).json();
+    if (!pv.ok) { flash(pv.error || 'preview failed'); return; }
+    if (pv.refused_reason) { flash(`${action} ${name}: ${pv.refused_reason}`); return; }
+    if (!window.confirm(`${action.toUpperCase()} ${name} @ ${pv.host}\n\n${pv.command}`)) return;
+    const r = await (await fetch('/api/mesh/action', post({ service: name, action, confirm: true }))).json();
+    flash(r.ok ? `${action} ${name}: ok${r.out ? ' — ' + r.out : ''}`
+               : `${action} ${name}: ${r.error || ('rc=' + r.rc)}`);
+    setTimeout(refresh, 1500);
+  }
+  function flash(msg) {
+    let bar = panel.querySelector('#mesh-flash');
+    if (!bar) { bar = document.createElement('div'); bar.id = 'mesh-flash';
+      bar.style.cssText = 'margin:6px 0;padding:4px 8px;border:1px solid var(--border,#333);border-radius:6px;font-size:12px';
+      body().prepend(bar); }
+    bar.textContent = msg;
+  }
+
+  const esc = (v) => v === undefined || v === null ? '–' :
+    String(v).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const ago = (s) => s ? Math.round(s / 3600) + 'h' : '–';
+
+  function render() {
+    if (!data) return;
+    let h = '<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+      SECTIONS.map((s) => `<button class="mesh-tab" data-s="${s}" style="${s === section ? 'font-weight:700' : ''}">${LABELS[s]}</button>`).join('') +
+      `<span class="grow"></span><span class="muted mono-sm">${data.source} · ${data.generated ? new Date(data.generated * 1000).toLocaleTimeString() : ''}</span></div>`;
+    h += '<div class="mesh-view">' + VIEWS[section](data) + '</div>';
+    body().innerHTML = h;
+    body().querySelectorAll('.mesh-tab').forEach((t) =>
+      t.addEventListener('click', () => { section = t.dataset.s; render(); }));
+    body().querySelectorAll('button[data-act]').forEach((b) =>
+      b.addEventListener('click', () => act(b.dataset.svc, b.dataset.act)));
+    const rb = body().querySelector('#mesh-resweep');
+    if (rb) rb.addEventListener('click', async () => {
+      rb.textContent = 'sweeping…';
+      try { await fetch('/api/mesh/snapshot'); } catch (e) {}
+      refresh();
+    });
+  }
+
+  const up = (b) => b ? '<span class="ok">UP</span>' : '<span class="down">DOWN</span>';
+  const VIEWS = {
+    machines: (d) => '<table class="mesh"><tr><th>node</th><th>hw</th><th>state</th></tr>' +
+      d.machines.map((m) => `<tr><td>${esc(m.name)}<br><span class="muted mono-sm">${esc(m.role)}</span></td>` +
+        `<td class="mono-sm">${esc((m.cpu || '').split(' with')[0])} · ${esc(m.cores)}c · ${esc(Math.round((m.ram_avail_mb || 0) / 1024))}/${esc(Math.round((m.ram_total_mb || 0) / 1024))}G free${m.gpus && m.gpus.length ? '<br>' + esc(m.gpus[0]).split('[')[0] : ''}` +
+        (m.disks || []).map((dk) => `<br>${esc(dk.mount)} ${esc(dk.pct)}%`).join('') + '</td>' +
+        `<td>${up(m.online)}${m.error ? '<br><span class="muted mono-sm">' + esc(m.error) + '</span>' : ''}</td></tr>`).join('') +
+      '</table>',
+    services: (d) => '<table class="mesh"><tr><th>service</th><th>host</th><th>state</th><th>control</th></tr>' +
+      d.services.map((s) => `<tr><td>${esc(s.name)}${s.critical ? ' <span class="ok">*</span>' : ''}<br><span class="muted mono-sm">${esc(s.note)}</span></td>` +
+        `<td class="mono-sm">${esc(s.host)}</td><td><span class="${s.state === 'active' ? 'ok' : (s.state === 'down' || s.state === 'failed' ? 'down' : 'muted')}">${esc(s.state)}</span>${s.sub ? ' <span class="muted mono-sm">' + esc(s.sub) + '</span>' : ''}</td>` +
+        `<td>${['start', 'stop', 'restart', 'enable', 'disable'].map((a) => `<button data-act="${a}" data-svc="${esc(s.name)}" style="margin:1px;padding:1px 5px;font-size:11px">${a}</button>`).join('')}</td></tr>`).join('') +
+      '</table><p class="muted mono-sm">* critical — degrading it degrades other nodes. Buttons ask for confirmation and show the exact command first.</p>',
+    programs: (d) => d.programs.map((p) => {
+      const keys = ['opencode', 'hermes', 'cline', 'node', 'python3', 'cargo', 'ollama', 'caddy'];
+      return '<h4 style="margin:8px 0 2px">' + esc(p.name) + '</h4><table class="mesh">' +
+        '<tr><th>packages</th><th>ai models</th><th>toolchain</th></tr><tr>' +
+        `<td class="mono-sm">${esc((p.packages || {}).manager || '–')}: ${esc((p.packages || {}).explicit || '–')}<br>llama: ${esc((p.llama_builds || []).join(', ') || '–')}</td>` +
+        `<td class="mono-sm">${esc((p.ollama_models || []).join('<br>') || '–')}</td>` +
+        `<td class="mono-sm">${keys.map((k) => ((p.programs || {})[k]) ? `${k} ${esc(String((p.programs || {})[k]).split(' ')[0])}` : null).filter(Boolean).join('<br>')}</td></tr></table>`;
+    }).join(''),
+    configs: (d) => '<table class="mesh"><tr><th>node</th><th>clones</th><th>randomesh drift</th></tr>' +
+      d.configs.map((c) => `<tr><td>${esc(c.name)}</td><td class="mono-sm">randomesh ${c.randomesh_clone ? '✓' : '✗'} · aion ${c.aion_clone ? '✓' : '✗'} · FLEET.md ${c.fleet_md ? '✓' : '✗'}</td>` +
+        `<td>${c.randomesh_dirty > 0 ? `<span class="down">${esc(c.randomesh_dirty)} uncommitted</span>` : '<span class="ok">clean</span>'}</td></tr>`).join('') + '</table>',
+    network: (d) => '<table class="mesh"><tr><th>node</th><th>tailscale</th><th>peers</th><th>ports</th></tr>' +
+      d.network.map((n) => `<tr><td>${esc(n.name)}</td><td>${n.ts_up ? '<span class="ok">up</span>' : '<span class="down">down</span>'} <span class="mono-sm">${esc(n.self_ip)}</span></td>` +
+        `<td class="mono-sm">${esc((n.peers_online || []).join(', ') || '–')} / ${esc(n.peers_total)}</td>` +
+        `<td class="mono-sm">${esc((n.listening_ports || []).slice(0, 10).join(', '))}${(n.listening_ports || []).length > 10 ? '…' : ''}</td></tr>`).join('') + '</table>',
+    agents: (d) => d.agents.length
+      ? '<pre class="mono-sm" style="white-space:pre-wrap;margin:4px 0">' + esc(d.agents.join('\n')) + '</pre>'
+      : '<p class="muted">no agent task records</p>',
+  };
+
+  render();
+  let loadInterval = setInterval(() => { if (!panel.hidden) refresh(); }, 15000);
+  refresh();
+})();
+</script>
 </body>
 </html>

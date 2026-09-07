@@ -14,6 +14,10 @@ a later phase — Phase 1 is read-only visibility, nothing mutates a node.
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable
 
@@ -175,3 +179,198 @@ def snapshot(transport: Callable = _default_transport) -> dict[str, Any]:
         "reachable": reachable,
         "storage": storage,
     }
+
+
+# ── Fleet manager snapshot (services / machines / programs / configs /
+#    network / agents) ──────────────────────────────────────────────────────
+# Source of truth is randomesh `mesh facts` (scripts/fleet/facts.sh), which
+# sweeps every node and caches JSON at a path both sides treat as a contract.
+# aion reads that cache when fresh (60s); when stale it triggers exactly one
+# on-demand resweep; when the whole facts layer is unavailable it degrades to
+# the legacy per-node SSH probes above (machines only). All parsers are pure
+# and unit-test with fixture dicts — no I/O in logic.
+
+FACTS_CACHE = os.environ.get(
+    "AION_FACTS_CACHE", os.path.expanduser("~/.cache/randomesh/facts.json"))
+FACTS_MAX_AGE_S = 60.0
+FACTS_CMD = ["bash", os.path.expanduser(
+    "~/dev/randomesh/scripts/fleet/facts.sh"), "--json"]
+
+
+def _local_runner(cmd: list[str]) -> tuple[int, str]:
+    """Default facts runner: exec `mesh facts --json` and return (rc, stdout)."""
+    import subprocess
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        return r.returncode, r.stdout
+    except Exception as e:  # noqa: BLE001 — a failed sweep must soft-fail
+        return 1, str(e)
+
+
+def _load_facts(max_age_s: float = FACTS_MAX_AGE_S,
+                runner: Callable | None = None) -> dict[str, Any] | None:
+    """Fresh cache -> dict; stale/missing -> one resweep then re-read;
+    unavailable -> None (callers fall back to legacy probes)."""
+    try:
+        if time.time() - os.stat(FACTS_CACHE).st_mtime <= max_age_s:
+            with open(FACTS_CACHE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and "nodes" in data:
+                return data
+    except (OSError, ValueError):
+        pass
+    rc, out = (runner or _local_runner)(FACTS_CMD)
+    if rc != 0:
+        return None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    if isinstance(data, dict) and "nodes" in data:
+        return data
+    return None
+
+
+def _host_matches(host_alias: str, hostname: str) -> bool:
+    """fleet.json hosts are tailscale aliases (omo-ts, feather-1, air); facts
+    are keyed by node with hostname inside. Loose either-way prefix match."""
+    if not host_alias or not hostname:
+        return False
+    return (host_alias.startswith(hostname)
+            or hostname.startswith(host_alias.split("-")[0]))
+
+
+def _machine_rows(facts: dict) -> list[dict]:
+    rows = []
+    for name, node in (facts.get("nodes") or {}).items():
+        f = node.get("facts") or {}
+        hw = f.get("hw") or {}
+        rows.append({
+            "name": name, "role": ROLE.get(name, ""),
+            "online": bool(node.get("online")),
+            "cpu": hw.get("cpu_model") or "", "cores": hw.get("cores"),
+            "load1": hw.get("load1"),
+            "ram_total_mb": hw.get("ram_total_mb"),
+            "ram_avail_mb": hw.get("ram_avail_mb"),
+            "gpus": hw.get("gpus") or [],
+            "uptime_s": (f.get("host") or {}).get("uptime_s"),
+            "disks": f.get("disks") or [],
+            "error": node.get("error", "") if not node.get("online") else "",
+        })
+    return rows
+
+
+def _service_rows(facts: dict) -> list[dict]:
+    """fleet.json service catalog x each node's live systemd state. A service
+    with a unit gets its active/sub; a tcp-probe service is active when the
+    node's listening-port list contains the port."""
+    catalog: dict = {}
+    try:
+        path = os.environ.get("AION_FLEET_CONFIG") or os.path.expanduser(
+            "~/dev/randomesh/fleet.json")
+        with open(path, encoding="utf-8") as fh:
+            catalog = (json.load(fh).get("services") or {})
+    except Exception:
+        pass
+    nodes = facts.get("nodes") or {}
+
+    def node_facts_for(host_alias: str) -> dict:
+        for node in nodes.values():
+            if not node.get("online"):
+                continue
+            f = node.get("facts") or {}
+            if _host_matches(host_alias, (f.get("host") or {}).get("hostname", "")):
+                return f
+        return {}
+
+    rows = []
+    for name, spec in catalog.items():
+        host = spec.get("host", "")
+        unit = spec.get("unit") or ""
+        f = node_facts_for(host)
+        state, sub = ("unknown", "")
+        if not f:
+            state = "down"  # host itself unreachable in this sweep
+        elif unit:
+            for u in (f.get("services") or {}).get("user_units") or []:
+                if u.get("unit") == unit:
+                    state, sub = u.get("active", "unknown"), u.get("sub", "")
+                    break
+        else:
+            m = re.match(r"(?:tcp|http):(\d+)", str(spec.get("probe") or ""))
+            if m:
+                # tcp and http probes both reduce to "is the port listening"
+                # in a facts snapshot; the actual HTTP check happens live in
+                # meshsrv.probe_service when the operator asks for detail.
+                state = ("active" if int(m.group(1)) in (f.get("ports") or [])
+                         else "inactive")
+        rows.append({"name": name, "host": host, "unit": unit,
+                     "critical": bool(spec.get("critical")),
+                     "state": state, "sub": sub, "note": spec.get("note", "")})
+    return rows
+
+
+def _program_rows(facts: dict) -> list[dict]:
+    rows = []
+    for name, node in (facts.get("nodes") or {}).items():
+        if not node.get("online"):
+            continue
+        f = node.get("facts") or {}
+        rows.append({
+            "name": name,
+            "programs": f.get("programs") or {},
+            "packages": f.get("packages") or {},
+            "ollama_models": [m.get("name") for m in (f.get("ollama") or {}).get("models") or []],
+            "llama_builds": f.get("llama_builds") or [],
+        })
+    return rows
+
+
+def _config_rows(facts: dict) -> list[dict]:
+    rows = []
+    for name, node in (facts.get("nodes") or {}).items():
+        if not node.get("online"):
+            continue
+        row = {"name": name}
+        row.update(node.get("facts", {}).get("configs") or {})
+        rows.append(row)
+    return rows
+
+
+def _network_rows(facts: dict) -> list[dict]:
+    rows = []
+    for name, node in (facts.get("nodes") or {}).items():
+        if not node.get("online"):
+            continue
+        f = node.get("facts") or {}
+        ts = (f.get("network") or {}).get("tailscale") or {}
+        peers = ts.get("peers") or []
+        rows.append({
+            "name": name, "ts_up": bool(ts.get("up")),
+            "self_ip": ts.get("self_ip"),
+            "peers_online": sorted(p["name"] for p in peers if p.get("online")),
+            "peers_total": len(peers),
+            "listening_ports": f.get("ports") or [],
+        })
+    return rows
+
+
+def snapshot_sections(transport: Callable | None = None,
+                      facts_runner: Callable | None = None) -> dict[str, Any]:
+    """Six-section fleet-manager snapshot. Never raises; degrades honestly."""
+    data = _load_facts(runner=facts_runner)
+    if data:
+        return {
+            "source": "facts",
+            "generated": data.get("generated"),
+            "machines": _machine_rows(data),
+            "services": _service_rows(data),
+            "programs": _program_rows(data),
+            "configs": _config_rows(data),
+            "network": _network_rows(data),
+            "agents": data.get("agents") or [],
+        }
+    snap = snapshot(transport or _default_transport)
+    return {"source": "legacy", "generated": None,
+            "machines": snap["nodes"], "services": [], "programs": [],
+            "configs": [], "network": [], "agents": []}

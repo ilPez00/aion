@@ -586,10 +586,13 @@ class AiOSApp(App):
                 self._mesh_pending = None
                 asyncio.create_task(self._mesh_key(
                     sel_name, {"s": "start", "x": "stop", "r": "restart"}[k]))
-            elif k in ("i", "d") and sel_name:
+            elif k in ("i", "d", "e") and sel_name:
                 from .. import meshsrv
-                act = "install" if k == "i" else "disable"
-                if (meshsrv.SERVICES.get(sel_name) or {}).get(act):
+                act = {"i": "install", "d": "disable", "e": "enable"}[k]
+                spec = meshsrv.SERVICES.get(sel_name) or {}
+                # enable/disable always work for a declared unit (systemctl
+                # synthesizes them); install needs an explicit install cmd.
+                if spec.get(act) or (spec.get("unit") and act in ("enable", "disable")):
                     self._mesh_pending = {"action": act, "name": sel_name}
                 else:
                     self.store.state.logs.append(
@@ -1275,8 +1278,16 @@ class AiOSApp(App):
                 from .. import meshmon, meshsrv
                 mesh = await asyncio.to_thread(meshmon.snapshot)
                 services = await asyncio.to_thread(meshsrv.snapshot)
-                self._mesh_cache = {"ts": _t.time(),
-                                    "data": {"mesh": mesh, "services": services}}
+                data = {"mesh": mesh, "services": services}
+                try:
+                    # facts-backed fleet-manager sections (machines/services/
+                    # programs/configs/network/agents). Optional: when the
+                    # facts layer is unavailable the panel still renders.
+                    data["sections"] = await asyncio.to_thread(
+                        meshmon.snapshot_sections)
+                except Exception:
+                    pass
+                self._mesh_cache = {"ts": _t.time(), "data": data}
             except Exception as e:
                 self.store.state.logs.append(
                     f"mesh: refresh failed: {type(e).__name__}: {str(e)[:80]}")
@@ -1291,13 +1302,11 @@ class AiOSApp(App):
                        host: str | None = None) -> str:
         """Run one lifecycle action off-thread (ssh) and report the outcome."""
         from .. import meshsrv
-        if action in ("start", "stop", "restart"):
+        if action in ("start", "stop", "restart", "enable", "disable"):
             res = await asyncio.to_thread(meshsrv.control_service,
                                           name, action, None, host)
-        elif action in ("install", "disable"):
-            fn = (meshsrv.install_package if action == "install"
-                  else meshsrv.disable_package)
-            res = await asyncio.to_thread(fn, name, None, host)
+        elif action == "install":
+            res = await asyncio.to_thread(meshsrv.install_package, name, None, host)
         else:
             return f"mesh: unknown action {action!r}"
         out = (res.get("out") or "").strip()

@@ -371,7 +371,7 @@ def control_service(name: str, action: str, transport: Optional[Transport] = Non
     if action == "restart":
         control_service(name, "stop", transport, host)
         action = "start"
-    if action not in ("start", "stop"):
+    if action not in ("start", "stop", "enable", "disable"):
         return {"ok": False, "name": name, "error": f"unknown action {action!r}"}
     h = host or spec["host"]
     cmd = spec.get(action)

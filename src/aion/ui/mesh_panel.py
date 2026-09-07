@@ -102,7 +102,7 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
                            f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')} "
                            f"{s.get('detail', 'down')}[/]{kind}")
         out.append(f"[{theme.get('faint', '#6b7d8d')}]j/k select · s start · "
-                   f"x stop · r restart · i install · d disable[/]")
+                   f"x stop · r restart · e enable · d disable · i install[/]")
         if pending:
             out.append(f"[{theme.get('warn', '#FFD479')}]  ⚠ armed: {pending}[/]")
 
@@ -145,5 +145,56 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
         if st.get("model_total", 0) > 6:
             out.append(f"[{theme.get('faint', '#6b7d8d')}]  ↳ "
                        f"{st['model_total']-6} more (aion mesh agg search <term>)[/]")
+
+    # Fleet-manager sections (meshmon.snapshot_sections — facts-backed).
+    # machines/services render above via the legacy views because the verb-key
+    # selection logic binds to them; these three are additive read-only views
+    # that appear only when the facts layer answered.
+    sec = data.get("sections") or {}
+    if sec.get("source") == "facts":
+        programs = sec.get("programs") or []
+        if programs:
+            out.append("")
+            out.append(f"[{theme.get('accent', '#5ad1ff')}]▧ programs[/]")
+            for p in programs:
+                pk = p.get("packages") or {}
+                models = p.get("ollama_models") or []
+                extra = ""
+                if models:
+                    tail = f" +{len(models) - 1}" if len(models) > 1 else ""
+                    extra = (f"  [{theme.get('faint', '#6b7d8d')}]"
+                             f"{models[0]}{tail}[/]")
+                out.append(f"  [{theme.get('fg', '#dbe6f0')}]{p.get('name', '?')}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]"
+                           f"{pk.get('manager', '?')}:{pk.get('explicit', '?')} pkgs · "
+                           f"ollama {len(models)} · llama {len(p.get('llama_builds') or [])}[/]"
+                           f"{extra}")
+        configs = sec.get("configs") or []
+        if configs:
+            out.append("")
+            out.append(f"[{theme.get('accent', '#5ad1ff')}]▧ configs[/]")
+            for c in configs:
+                dirty = c.get("randomesh_dirty")
+                if dirty:
+                    mark = (f"[{theme.get('warn', '#FFD479')}]"
+                            f"{dirty} dirty[/]")
+                else:
+                    mark = f"[{theme.get('ok', '#7CFFB2')}]clean[/]"
+                out.append(f"  [{theme.get('fg', '#dbe6f0')}]{c.get('name', '?')}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]randomesh[/] {mark} "
+                           f"[{theme.get('dim', '#9aabbb')}]· aion[/] "
+                           f"{'✓' if c.get('aion_clone') else '✗'} "
+                           f"[{theme.get('dim', '#9aabbb')}]· FLEET.md[/] "
+                           f"{'✓' if c.get('fleet_md') else '✗'}")
+        network = sec.get("network") or []
+        if network:
+            out.append("")
+            out.append(f"[{theme.get('accent', '#5ad1ff')}]▧ network[/]")
+            for n in network:
+                peers = ", ".join(n.get("peers_online") or []) or "—"
+                out.append(f"  [{theme.get('fg', '#dbe6f0')}]{n.get('name', '?')}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]ts {n.get('self_ip', '?')} · "
+                           f"peers up: {peers} · "
+                           f"ports {len(n.get('listening_ports') or [])}[/]")
 
     return "\n".join(out)

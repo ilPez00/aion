@@ -860,6 +860,56 @@ def _bridge(fn, *a, **kw):
 # it releases nothing. Only the cockpit's in-memory GateBook can do that, and
 # only via POST /gate on its token-guarded listener.
 # ---------------------------------------------------------------------------
+# --- Randomesh fleet manager (read + gated control) -------------------------
+# Snapshot comes from aion.meshmon.snapshot_sections(): the `mesh facts` cache
+# (60s window, one on-demand resweep) rendered as six sections — machines,
+# services, programs, configs, network, agents. Mutations go through
+# aion.meshsrv.control_service and are fail-closed: without confirm=true the
+# route returns a PREVIEW of the exact command and executes nothing, same
+# contract as /api/agents/spawn and /api/route.
+_MESH_ACTION_ALLOWED = ("start", "stop", "restart", "enable", "disable")
+
+
+def _aion_src_on_path() -> None:
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "src")
+    if os.path.isdir(src) and src not in sys.path:
+        sys.path.insert(0, src)
+
+
+def mesh_snapshot() -> dict:
+    _aion_src_on_path()
+    from aion import meshmon
+    return meshmon.snapshot_sections()
+
+
+def mesh_action(service: str, action: str, confirm: bool) -> dict:
+    if action not in _MESH_ACTION_ALLOWED:
+        return {"ok": False,
+                "error": f"action must be one of {list(_MESH_ACTION_ALLOWED)}"}
+    if not service:
+        return {"ok": False, "error": "service required"}
+    _aion_src_on_path()
+    from aion import meshsrv
+    meshsrv._ensure_fleet_services()
+    spec = meshsrv.SERVICES.get(service) or {}
+    unit, scope = spec.get("unit"), spec.get("scope", "user")
+    cmd = spec.get(action)
+    if not cmd and unit:
+        cmd = f"systemctl {'--user ' if scope == 'user' else ''}{action} {unit}"
+    if not confirm:
+        # Preview only — never touch the node. A missing command means the
+        # action would be refused, and the dialog says so up front.
+        return {"ok": True, "preview": True, "service": service,
+                "action": action, "host": spec.get("host", "?"),
+                "command": cmd, "refused_reason":
+                    None if cmd else f"service declares no {action!r} command"}
+    if not cmd:
+        return {"ok": False, "service": service, "action": action,
+                "error": f"service declares no {action!r} command"}
+    return meshsrv.control_service(service, action)
+
+
 def gates_pending():
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
@@ -1191,6 +1241,40 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             return self._sendj({"error": f"{type(e).__name__}: {e}"}, 500)
 
+    def randomesh_feed(self):
+        """Randomesh AI-fabric feed: capability + dispatch + live endpoint health.
+
+        Reads the handoff JSON the investigation wrote, then probes each node's
+        advertised endpoints over /health so the HUD can show degraded nodes
+        instead of a silently stale snapshot.
+        """
+        import urllib.request
+        base = os.path.expanduser("~/handoff")
+        try:
+            cap = json.loads(open(os.path.join(base, "randomesh-capability.json")).read())
+        except Exception:
+            cap = None
+        try:
+            disp = json.loads(open(os.path.join(base, "randomesh-dispatch.json")).read())
+        except Exception:
+            disp = None
+        health = {}
+        if isinstance(cap, dict):
+            for node, info in cap.get("nodes", {}).items():
+                eps = info.get("endpoints", {}) or {}
+                row = {}
+                for svc, port in eps.items():
+                    if not port:
+                        continue
+                    url = f"http://{info.get('ts')}:{port}/health"
+                    try:
+                        with urllib.request.urlopen(url, timeout=2) as r:
+                            row[svc] = r.status == 200
+                    except Exception:
+                        row[svc] = False
+                health[node] = row
+        return {"capability": cap, "dispatch": disp, "health": health}
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
@@ -1380,6 +1464,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._sendj({"error": str(e)[:200]}, 500)
         if p == "/api/health":
             return self._sendj(health_summary())
+        if p == "/api/randomesh":
+            return self._sendj(self.randomesh_feed())
+        if p == "/api/mesh/snapshot":
+            return self._sendj(mesh_snapshot())
         if p == "/api/system":
             return self._sendj(system_stats())
         if p == "/api/tts-capability":
@@ -1453,6 +1541,14 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("gate_id", "")),
                 body.get("approved") is True,
                 str(body.get("instance", "") or "")))
+        if p == "/api/mesh/action":
+            # Fail-closed: without confirm=true this is a preview of the exact
+            # command, nothing runs. Loopback or token-auth only (both handled
+            # by _authorized above).
+            return self._sendj(mesh_action(
+                str(body.get("service", "")),
+                str(body.get("action", "")),
+                body.get("confirm") is True))
         if p == "/api/settings":
             return self._sendj(settings_write(
                 str(body.get("section", "")), body.get("values") or {}))
