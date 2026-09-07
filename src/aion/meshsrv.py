@@ -145,6 +145,46 @@ def _load_fleet_services() -> dict[str, dict]:
                 "stop": "pkill -f 'llama-server.*8081'",
             }
 
+    # --- SERVICES section: every long-lived service on every computer -------
+    #
+    # Until CONFIG.md grew a SERVICES section, this cockpit could only see the
+    # model-serving pool. omniroute on air:20128 routes ~1000 models and is a
+    # declared provider in pansa's and feather's opencode configs, but nothing
+    # here knew it existed — so when it went down, two other machines just
+    # "got worse at models" with no visible cause.
+    #
+    # Unlike the serving block above, these entries do NOT yield to the
+    # hardcoded base. A service declared in CONFIG.md is the operator stating
+    # intent; a stale hardcoded dict silently winning over that is precisely the
+    # drift this loader was added to end. Base entries survive under their own
+    # names, so nothing is lost — they are just no longer authoritative.
+    for name, info in (data.get("services") or {}).items():
+        host = info.get("host") or (name + "-ts")
+        probe = None
+        raw = str(info.get("probe") or "")
+        if raw.startswith("tcp:"):
+            probe = ("tcp", int(raw.split(":", 1)[1]))
+        elif raw.startswith("http:"):
+            rest = raw.split(":", 1)[1]
+            port, _, path_ = rest.partition("/")
+            probe = ("http", int(port), "/" + path_)
+        elif info.get("port"):
+            probe = ("tcp", int(info["port"]))
+        entry = {"host": host}
+        if probe:
+            entry["probe"] = probe
+        # A unit name gives the cockpit something to report and restart. `scope`
+        # matters: these are almost all --user units, and `systemctl status X`
+        # without --user reports "not found" for a service that is running fine.
+        if info.get("unit"):
+            entry["unit"] = info["unit"]
+            entry["scope"] = info.get("scope", "user")
+        if info.get("critical"):
+            entry["critical"] = True
+        if info.get("note"):
+            entry["note"] = info["note"]
+        SERVICES[name] = entry
+
     _FLEET_SERVICES_LOADED = True
 
 
@@ -183,33 +223,79 @@ def _probe_tcp(host: str, port: int, transport: Transport) -> tuple[bool, str]:
     """Probe a TCP port on the target host. We ssh TO `host` and check its
     OWN localhost port (the service binds there), so use 127.0.0.1 — /dev/tcp
     needs an IP, not the ssh alias."""
-    cmd = f"timeout 4 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/{port}' && echo OPEN || echo CLOSED"
+    # 127.0.0.1 is NOT enough on this fleet. By policy the services bind the
+    # node's Tailscale address rather than loopback (they have no auth, so a
+    # 0.0.0.0 bind is a hole), and llama-server, memd and the model gateway all
+    # do exactly that. Probing only loopback reported memd "down" on three nodes
+    # where it was serving, and llama-server "down" on omo while it was running
+    # at 110 tok/s. Try loopback first, then the node's own Tailscale IP, and
+    # only then call it closed.
+    cmd = (
+        f"timeout 4 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/{port}' 2>/dev/null "
+        f"&& echo OPEN || {{ "
+        f"ip=$(tailscale ip -4 2>/dev/null | head -1); "
+        f"[ -n \"$ip\" ] && timeout 4 bash -c \"cat < /dev/null > /dev/tcp/$ip/{port}\" 2>/dev/null "
+        f"&& echo OPEN-TS || echo CLOSED; }}"
+    )
     rc, out = transport("ssh", host, cmd)
+    if "OPEN-TS" in out:
+        return True, "open (tailscale bind)"
     if "OPEN" in out:
         return True, "open"
     return False, (out.strip() or f"rc={rc}")
 
 
-def _probe_unit(host: str, unit: str, transport: Transport) -> tuple[bool, str]:
-    cmd = f"systemctl is-active {shlex.quote(unit)} 2>/dev/null || echo INACTIVE"
+def _probe_unit(host: str, unit: str, transport: Transport,
+                scope: str = "user") -> tuple[bool, str]:
+    """`scope` defaults to "user" because nearly every service on this fleet is a
+    --user unit (praxis-backend, omniroute, fcm-daemon, memd, aion-node ...).
+    `systemctl is-active X` without --user answers "inactive" for a user unit
+    that is running fine, which reads as an outage that is not happening."""
+    flag = "--user " if scope == "user" else ""
+    cmd = (f"systemctl {flag}is-active {shlex.quote(unit)} 2>/dev/null "
+           f"|| systemctl is-active {shlex.quote(unit)} 2>/dev/null || echo INACTIVE")
     rc, out = transport("ssh", host, cmd)
-    active = "active" in out.lower()
+    active = out.strip().lower().startswith("active")
     return active, out.strip() or f"rc={rc}"
 
 
+def _probe_http(host: str, port: int, path: str, transport: Transport) -> tuple[bool, str]:
+    """A listening socket is not the same as a working service. omniroute holds
+    :20128 open while its node runtime is broken, so the model list 200s and
+    every completion 500s. Ask for a real response code."""
+    url = f"http://127.0.0.1:{port}{path}"
+    cmd = (f"timeout 6 curl -sf -o /dev/null {shlex.quote(url)} && echo HTTPOK "
+           f"|| echo HTTPFAIL")
+    rc, out = transport("ssh", host, cmd)
+    if "HTTPOK" in out:
+        return True, "http ok"
+    return False, "http no/bad response"
+
+
 def probe_service(name: str, transport: Optional[Transport] = None) -> ServiceState:
+    _ensure_fleet_services()
     if transport is None:
         transport = _ssh_transport
     spec = SERVICES.get(name)
     if not spec:
         return ServiceState(name=name, host="?", probe_kind="?", probe_value="?",
                              detail="unknown service")
-    kind, val = spec["probe"]
+    # A service may declare a port probe, an http probe, or neither — CONFIG.md
+    # lists units like aion-node and hermes-gateway that expose no port at all.
+    # Falling back to the unit keeps them visible instead of raising KeyError and
+    # dropping the whole cockpit snapshot.
+    probe = spec.get("probe")
+    if not probe:
+        probe = ("unit", spec["unit"]) if spec.get("unit") else ("tcp", 22)
+    kind, val, extra = (tuple(probe) + (None,))[:3]
     try:
         if kind == "tcp":
             running, detail = _probe_tcp(spec["host"], int(val), transport)
+        elif kind == "http":
+            running, detail = _probe_http(spec["host"], int(val), extra or "/", transport)
         else:
-            running, detail = _probe_unit(spec["host"], val, transport)
+            running, detail = _probe_unit(spec["host"], val, transport,
+                                          spec.get("scope", "user"))
     except Exception as e:  # dead host / timeout -> soft-fail, never crash the HUD
         return ServiceState(name=name, host=spec["host"], probe_kind=kind,
                              probe_value=str(val), running=False, reachable=False,
@@ -227,6 +313,14 @@ def probe_service(name: str, transport: Optional[Transport] = None) -> ServiceSt
 def snapshot(transport: Optional[Transport] = None) -> dict:
     """Probe all known mesh services. transport defaults to real SSH.
     Never raises — a dead host yields running=False, not a crash."""
+    # Load CONFIG.md's nodes and services before probing. This used to be left
+    # to "the entrypoint", and grepping the tree shows NOTHING ever called it:
+    # `_ensure_fleet_services` had no callers, so every fleet.json-declared node
+    # and service was invisible to the cockpit and only the seven hardcoded
+    # entries were ever probed. Adding a node to CONFIG.md appeared to do
+    # nothing. It is idempotent and cheap, so it belongs at the point of use
+    # rather than in a convention nobody follows.
+    _ensure_fleet_services()
     if transport is None:
         transport = _ssh_transport
     states = [probe_service(n, transport).as_dict() for n in SERVICES]
