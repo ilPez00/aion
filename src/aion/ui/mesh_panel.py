@@ -1,11 +1,12 @@
-"""mesh_panel.py — render the RandoMesh workspace (read-only monitor).
+"""mesh_panel.py — render the RandoMesh workspace (monitor + package control).
 
-Pure rendering: takes the already-collected `mesh` snapshot (from meshmon)
-and returns Rich markup. No network, no filesystem — called every render
-tick, so it must never block.
+Pure rendering: takes the already-collected snapshot (meshmon + meshsrv, via
+the app's background collector) and returns Rich markup. No network, no
+filesystem — called on render ticks, so it must never block.
 
-Phase 1 = visibility only: node vital signs + pansa storage. Control
-(restart/deploy) arrives in a later phase as Intents; this panel shows state.
+`focus` is the service name the app has selected; the row gets a ▌ marker and
+the verb keys act on it. `pending` is the armed install/disable sentence.
+Control itself lives in app._handle_mesh_command / meshsrv; this is render-only.
 """
 
 from __future__ import annotations
@@ -32,14 +33,19 @@ def _bar(pct: int, theme: dict) -> str:
     return f"[{color}]{'█' * filled}{'░' * (10 - filled)}[{theme.get('faint', '#6b7d8d')}][/]"
 
 
-def render_mesh(data: dict[str, Any], theme: dict) -> str:
-    nodes = data.get("nodes", [])
-    total = data.get("total", len(nodes))
-    reachable = data.get("reachable", 0)
+def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
+                pending: str = "", age: str = "") -> str:
+    # the collector nests the node snapshot under "mesh"; tolerate being handed
+    # either shape so callers from the dashboard path keep rendering too.
+    m = data.get("mesh") if isinstance(data.get("mesh"), dict) else data
+    nodes = m.get("nodes", [])
+    total = m.get("total", len(nodes))
+    reachable = m.get("reachable", 0)
     out: list[str] = []
 
+    ts = f"  [{theme.get('faint', '#6b7d8d')}]{age}[/]" if age else ""
     title = f"[b {theme.get('accent', '#5ad1ff')}]⏣ RandoMesh[/]  " \
-            f"[{theme.get('dim', '#9aabbb')}]{reachable}/{total} nodes up[/]"
+            f"[{theme.get('dim', '#9aabbb')}]{reachable}/{total} nodes up[/]{ts}"
     out.append(title)
     out.append("")
 
@@ -65,7 +71,7 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
         out.append(line)
 
     # pansa storage block (folded in from nas backend)
-    storage = data.get("storage") or {}
+    storage = (m.get("storage") or data.get("storage")) or {}
     if storage.get("reachable"):
         out.append("")
         out.append(f"[{theme.get('dim', '#9aabbb')}]storage (pansa):[/]")
@@ -73,7 +79,7 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
             used = sh.get("used_pct", 0)
             out.append(f"  {sh.get('name', '?')} {_bar(used, theme)} {sh.get('used_gb', 0)}/{sh.get('total_gb', 0)}G ({used}%)")
 
-    # Phase 2: mesh service lifecycle (Physis/Praxis/llama-server/colibri)
+    # Phase 2: mesh services + fleet packages (CONFIG.md-declared lifecycle)
     services = data.get("services") or {}
     svc_list = services.get("services", []) if isinstance(services, dict) else []
     if svc_list:
@@ -83,13 +89,22 @@ def render_mesh(data: dict[str, Any], theme: dict) -> str:
         for s in svc_list:
             name = s.get("name", "?")
             host = s.get("host", "")
+            mark = "▌" if name == focus else " "
+            kind = "" if s.get("kind", "service") == "service" \
+                else f" [{theme.get('accent', '#5ad1ff')}]{s['kind']}[/]"
             if s.get("running"):
-                out.append(f"  [{theme.get('ok', '#7CFFB2')}]●[/] [{theme.get('fg', '#dbe6f0')}]{name}[/] "
-                           f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')}[/]")
+                out.append(f"  {mark}[{theme.get('ok', '#7CFFB2')}]●[/] "
+                           f"[{theme.get('fg', '#dbe6f0')}]{name}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')}[/]{kind}")
             else:
-                out.append(f"  [{theme.get('faint', '#6b7d8d')}]○[/] [{theme.get('fg', '#dbe6f0')}]{name}[/] "
+                out.append(f"  {mark}[{theme.get('faint', '#6b7d8d')}]○[/] "
+                           f"[{theme.get('fg', '#dbe6f0')}]{name}[/] "
                            f"[{theme.get('dim', '#9aabbb')}]{host}:{s.get('probe_value', '')} "
-                           f"{s.get('detail', 'down')}[/]")
+                           f"{s.get('detail', 'down')}[/]{kind}")
+        out.append(f"[{theme.get('faint', '#6b7d8d')}]j/k select · s start · "
+                   f"x stop · r restart · i install · d disable[/]")
+        if pending:
+            out.append(f"[{theme.get('warn', '#FFD479')}]  ⚠ armed: {pending}[/]")
 
     # Phase 3: aggregated agent sessions / memories / docs (mesh agg collection)
     agg = data.get("agg") or {}

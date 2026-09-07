@@ -75,6 +75,19 @@ def interpret(text: str) -> str | None:
     if m:
         return f"todo done {m.group(1)}"
 
+    # mesh package verbs: "restart colibri" / "stop omniroute" — only when the
+    # second word is an EXACTLY declared service name; "restart the model" must
+    # not silently become a fleet action. install/disable are deliberately NOT
+    # reachable from free text: provisioning needs the typed verb + 'yes'.
+    if len(words) == 2 and words[0] in ("start", "stop", "restart"):
+        try:
+            from . import meshsrv
+            meshsrv._ensure_fleet_services()
+            if words[1] in meshsrv.SERVICES:
+                return f"mesh {words[0]} {words[1]}"
+        except Exception:
+            pass
+
     # "open/check <app-ish> [args]" — verb + a known synonym anywhere after it
     if words[0] in _LAUNCH_VERBS:
         pairs = [(lw, ow) for lw, ow in zip(words[1:], owords[1:])
@@ -147,6 +160,7 @@ Commands:
   observe ai | observe off
   goto <{workspaces}>
   run <harness> <prompt>  run an AI task
+  mesh list | mesh status <name> | mesh start|stop|restart <name>
 
 Reply with exactly the command and nothing else. If the request is
 conversation or doesn't map cleanly, reply NONE.
@@ -191,6 +205,6 @@ def llm_translate(text: str, timeout: int = 10) -> str | None:
         return None
     first = line.split()[0]
     if first in ("app", "apps", "todo", "setup", "scan", "observe",
-                 "goto", "run", "help"):
+                 "goto", "run", "help", "mesh"):
         return line
     return None

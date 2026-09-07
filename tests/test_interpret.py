@@ -121,3 +121,18 @@ def test_help_command_logs_examples(tmp_path):
         await st._run_command("help")
     asyncio.run(run())
     assert any("todo buy milk" in line for line in st.state.logs)
+
+
+def test_mesh_service_rules():
+    """verb + an EXACT declared service name canonicalizes to `mesh ...`;
+    everything else must fall through untouched."""
+    from aion import meshsrv
+    meshsrv._ensure_fleet_services()
+    assert "colibri" in meshsrv.SERVICES           # base entry, always known
+    assert itp.interpret("restart colibri") == "mesh restart colibri"
+    assert itp.interpret("stop colibri") == "mesh stop colibri"
+    # unknown name: not a mesh command (no silent fleet action on prose)
+    assert itp.interpret("restart the colibri engine") is None
+    assert itp.interpret("restart definitely-not-a-service") is None
+    # provisioning verbs never come from free text — only from the typed form
+    assert itp.interpret("install minecraft") is None

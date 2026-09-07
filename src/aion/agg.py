@@ -302,7 +302,7 @@ def search(query: str, db_path: str | Path | None = None,
             params.append(kind)
         return _rows(
             con,
-            f"""
+            """
             SELECT kind, node, source, items.title, items.body, ts,
                    snippet(items_fts, 1, '[', ']', ' … ', 8) AS hl
             FROM items_fts

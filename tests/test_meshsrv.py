@@ -1,5 +1,9 @@
 """Tests for the RandoMesh service lifecycle pure logic (no network)."""
-from aion.meshsrv import probe_service, snapshot, control_service, SERVICES, ServiceState
+import json
+
+from aion import meshsrv
+from aion.meshsrv import (probe_service, snapshot, control_service, SERVICES,
+                          ServiceState, install_package, disable_package)
 
 
 def _fake(rc=0, out="", raise_timeout=False):
@@ -7,6 +11,17 @@ def _fake(rc=0, out="", raise_timeout=False):
         if raise_timeout:
             raise TimeoutError("ssh hung")
         return rc, out
+    return t
+
+
+def _rec():
+    """Fake transport that records (target, cmd) and succeeds."""
+    seen = []
+
+    def t(method, target, cmd):
+        seen.append((target, cmd))
+        return 0, ""
+    t.seen = seen  # type: ignore[attr-defined]
     return t
 
 
@@ -53,3 +68,138 @@ def test_transport_timeout_softfail():
     snap = snapshot(_fake(raise_timeout=True))
     assert snap["total"] == len(SERVICES)
     assert snap["up"] == 0
+
+
+# ── package lifecycle: install / disable / derived unit cmds / host override ──
+
+def _with_spec(name: str, spec: dict):
+    """Context-manager-ish helper: inject a spec, guarantee restore."""
+    saved = SERVICES.get(name)
+    SERVICES[name] = spec
+
+    def undo():
+        if saved is not None:
+            SERVICES[name] = saved
+        else:
+            SERVICES.pop(name, None)
+    return undo
+
+
+def test_install_and_disable_run_declared_cmds():
+    undo = _with_spec("tst-pkg", {"host": "pansa-ts", "unit": "a.service",
+                                  "install": "bash install-tst.sh",
+                                  "disable": "bash disable-tst.sh",
+                                  "kind": "package"})
+    try:
+        tr = _rec()
+        r = install_package("tst-pkg", tr)
+        assert r["ok"] and r["action"] == "install" and r["host"] == "pansa-ts"
+        assert tr.seen[-1] == ("pansa-ts", "bash install-tst.sh")
+        r = disable_package("tst-pkg", tr)
+        assert r["ok"] and r["action"] == "disable"
+        assert tr.seen[-1][1] == "bash disable-tst.sh"
+        # services without the cmd are refused, not silently "successful"
+        assert install_package("omo-llm", tr)["ok"] is False
+        assert install_package("nope", tr)["ok"] is False
+    finally:
+        undo()
+
+
+def test_control_derives_unit_cmd_and_honours_host_override():
+    undo = _with_spec("tst-derive", {"host": "declared-ts",
+                                     "unit": "b.service", "scope": "user"})
+    try:
+        tr = _rec()
+        control_service("tst-derive", "start", tr)
+        assert tr.seen[-1] == ("declared-ts", "systemctl --user start b.service")
+        control_service("tst-derive", "stop", tr, host="other-ts")
+        assert tr.seen[-1] == ("other-ts", "systemctl --user stop b.service")
+    finally:
+        undo()
+
+
+def test_explicit_control_cmd_beats_derived():
+    undo = _with_spec("tst-explicit", {"host": "h", "unit": "c.service",
+                                       "start": "systemctl --user restart c.service",
+                                       "stop": "systemctl --user stop c.service"})
+    try:
+        tr = _rec()
+        control_service("tst-explicit", "start", tr)
+        assert tr.seen[-1][1].startswith("systemctl --user restart")
+    finally:
+        undo()
+
+
+def test_probe_reports_lifecycle_flags():
+    undo = _with_spec("tst-flags", {"host": "h", "probe": ("tcp", 1),
+                                    "install": "x", "disable": "y",
+                                    "kind": "package"})
+    try:
+        d = probe_service("tst-flags", _fake(out="CLOSED")).as_dict()
+        assert d["kind"] == "package" and d["can_install"] and d["can_disable"]
+        d2 = probe_service("omo-llm", _fake(out="OPEN")).as_dict()
+        assert d2["kind"] == "service" and not d2["can_install"]
+    finally:
+        undo()
+
+
+def test_probe_host_override(tmp_path, monkeypatch):
+    # a cockpit may aim any package at any reachable box for one call
+    tr = _rec()
+    probe_service("omo-llm", tr, host="air-ts")
+    assert tr.seen[-1][0] == "air-ts"
+
+
+def test_fleetjson_services_declare_packages_and_win(tmp_path, monkeypatch):
+    """CONFIG.md-declared services merge into SERVICES — and OVERWRITE a base
+    entry of the same name (operator intent beats a stale hardcoded dict)."""
+    cfg = {"nodes": [], "serving": {}, "services": {
+        "testpkg": {"host": "test-ts", "unit": "test.service", "scope": "user",
+                    "install": "bash install-test.sh",
+                    "disable": "bash disable-test.sh", "kind": "package",
+                    "note": "test package"},
+        "omo-llm": {"host": "operator-ts", "port": "9999"}}}
+    path = tmp_path / "fleet.json"
+    path.write_text(json.dumps(cfg))
+    monkeypatch.setenv("AION_FLEET_CONFIG", str(path))
+    monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)
+    saved = dict(SERVICES)
+    try:
+        meshsrv._ensure_fleet_services()
+        spec = SERVICES["testpkg"]
+        # unit-only service: no port probe declared, probe_service falls back
+        # to the unit at probe time; the unit+scope must survive the loader
+        assert "probe" not in spec
+        assert spec["unit"] == "test.service" and spec["scope"] == "user"
+        assert spec["install"].endswith("install-test.sh")
+        r = install_package("testpkg", _fake(rc=0, out="ok"))
+        assert r["ok"] and r["host"] == "test-ts"
+        # the overlay's omo-llm replaced the base entry entirely
+        assert SERVICES["omo-llm"]["host"] == "operator-ts"
+    finally:
+        SERVICES.clear()
+        SERVICES.update(saved)
+
+
+def test_first_call_may_be_install_not_probe(tmp_path, monkeypatch):
+    """A fresh process whose FIRST call is install_package/ control_service
+    must still see CONFIG.md-declared services — a real bug caught live:
+    control/install skipped _ensure_fleet_services, so the first call in a
+    process answered 'unknown service' until some probe warmed the registry."""
+    cfg = {"nodes": [], "serving": {}, "services": {
+        "testpkg": {"host": "warm-ts", "unit": "t.service", "scope": "user",
+                    "install": "bash install-test.sh"}}}
+    path = tmp_path / "fleet.json"
+    path.write_text(json.dumps(cfg))
+    monkeypatch.setenv("AION_FLEET_CONFIG", str(path))
+    monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)
+    saved = dict(SERVICES)
+    try:
+        SERVICES["testpkg"] = None  # poison: force the loader to be the source
+        del SERVICES["testpkg"]
+        r = install_package("testpkg", _fake(rc=0, out="installed"))
+        assert r["ok"] and r["host"] == "warm-ts"
+    finally:
+        SERVICES.clear()
+        SERVICES.update(saved)
+        monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)

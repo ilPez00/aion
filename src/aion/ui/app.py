@@ -185,6 +185,14 @@ class AiOSApp(App):
         # per-node running-task history, feeds the Fleet sparklines
         self._fleet_history: dict[str, list[float]] = {}
         self._local_peers: list = []    # refreshed on a timer, not per render
+        # mesh package control (RandoMesh workspace): selection index into the
+        # cached service rows, an armed install/disable awaiting 'y', and the
+        # snapshot cache itself — SSH probes run on the interval, NEVER in the
+        # render path, so a slow host can't freeze the HUD.
+        self._mesh_sel = 0
+        self._mesh_pending: dict | None = None
+        self._mesh_cache: dict = {"ts": 0.0, "data": {}}
+        self._mesh_refreshing = False
         self._replanning = False        # one planner round-trip at a time
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
@@ -293,6 +301,13 @@ class AiOSApp(App):
 
         self.store.remote_callback = self._handle_remote_command
         self.store.fleet_callback = self._handle_fleet_command
+        self.store.mesh_callback = self._handle_mesh_command
+        # The Mesh panel's data: a background collector on an interval, NOT a
+        # kick at mount — the panel renders "collecting…" and starts the first
+        # refresh on demand. The cockpit already pays an SSH fan-out on mount
+        # via the dashboard; a second one on every boot (tests included) buys
+        # nothing until someone opens the workspace.
+        self.set_interval(20, self._refresh_mesh)
         # hypergraph agent monitoring (physis digest + ornith/qwen topology)
         self.store.hypergraph_substrate = getattr(self.store, 'hypergraph_substrate',
                                                  '/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json')
@@ -552,6 +567,45 @@ class AiOSApp(App):
         if event.key == "v":
             asyncio.create_task(self.voice.toggle())
             return
+        # ── Mesh workspace: j/k pick a package, a verb key acts on it ─────
+        # install (i) and disable (d) only ARM a pending action; 'y' runs it
+        # and anything else cancels — the two-step lives in the key path too.
+        if self.cfg["workspaces"][self.store.state.active_ws]["id"] == "mesh":
+            rows = self._mesh_rows()
+            if rows and self._mesh_sel >= len(rows):
+                self._mesh_sel = len(rows) - 1
+            sel_name = rows[self._mesh_sel].get("name", "") if rows else ""
+            k = event.key
+            if k in ("down", "j"):
+                self._mesh_sel = min(self._mesh_sel + 1, max(0, len(rows) - 1))
+                self._mesh_pending = None
+            elif k in ("up", "k"):
+                self._mesh_sel = max(self._mesh_sel - 1, 0)
+                self._mesh_pending = None
+            elif k in ("s", "x", "r") and sel_name:
+                self._mesh_pending = None
+                asyncio.create_task(self._mesh_key(
+                    sel_name, {"s": "start", "x": "stop", "r": "restart"}[k]))
+            elif k in ("i", "d") and sel_name:
+                from .. import meshsrv
+                act = "install" if k == "i" else "disable"
+                if (meshsrv.SERVICES.get(sel_name) or {}).get(act):
+                    self._mesh_pending = {"action": act, "name": sel_name}
+                else:
+                    self.store.state.logs.append(
+                        f"mesh {sel_name} declares no {act} cmd")
+            elif k == "y" and self._mesh_pending:
+                pend, self._mesh_pending = self._mesh_pending, None
+                asyncio.create_task(self._mesh_key(pend["name"],
+                                                   pend["action"]))
+            elif k == "n":
+                self._mesh_pending = None
+            else:
+                return        # ? / ctrl-k / v stay global even inside mesh ws
+            event.prevent_default()
+            self._render_center()
+            return
+
         intent = self.keymap.resolve(event.key)
         if intent is not None:
             event.prevent_default()
@@ -845,45 +899,42 @@ class AiOSApp(App):
                         if t.state.value in ("running", "pending")))
 
     def _mesh_panel(self, theme: dict) -> str:
-        """RandoMesh monitor + service lifecycle (Phase 1 + Phase 2).
+        """RandoMesh monitor + package lifecycle (Phase 1 + 2 + installer).
 
-        The rendering lives in `mesh_panel.py`. This method gathers the
-        already-collected dashboard (mesh nodes, storage, services) and delegates.
+        Data is the cached background snapshot (_refresh_mesh on an interval);
+        the render path itself must never touch the network. Rendering lives
+        in `mesh_panel.py`; selection + the armed action come from app state.
         """
         from .mesh_panel import render_mesh
-
-        dash = getattr(self.store.state, "dashboard", None)
-        data = dash if isinstance(dash, dict) else {}
-        # Fallback: pull straight from the live backends if dashboard is empty.
-        if not data.get("mesh"):
-            try:
-                from ..meshmon import snapshot as _snap
-                data = dict(data)
-                data["mesh"] = _snap()
-            except Exception:
-                data = data or {"mesh": {"nodes": [], "total": 0, "reachable": 0}}
-        if not data.get("services"):
-            try:
-                from ..meshsrv import snapshot as _srv
-                data = dict(data)
-                data["services"] = _srv()
-            except Exception:
-                pass
+        import time as _t
+        data = dict(self._mesh_cache.get("data") or {})
+        if not data:
+            self._refresh_mesh()   # first paint kicks the collector
+            data = {"mesh": {"nodes": [], "total": 0, "reachable": 0}}
+            age = "collecting…"
+        else:
+            age = f"{int(_t.time() - self._mesh_cache.get('ts', 0))}s"
         # Phase 3: aggregated agent sessions/memories/docs (read-only DB query —
         # cheap local SQLite, no network in the render path).
         try:
             from .. import agg as _agg
             st = _agg.status()
             if st.get("exists"):
-                data = dict(data)
+                st = dict(st)
                 st["recent"] = bool(_agg.recent(limit=1))
                 data["agg"] = st
             else:
-                data = dict(data)
                 data["agg"] = {"exists": False, "items": 0}
         except Exception:
             pass
-        return render_mesh(data, theme)
+        rows = self._mesh_rows()
+        focus = rows[self._mesh_sel].get("name", "") if rows \
+            and self._mesh_sel < len(rows) else ""
+        pending = ""
+        if self._mesh_pending:
+            pending = (f"{self._mesh_pending['action']} "
+                       f"{self._mesh_pending['name']} — y runs, n cancels")
+        return render_mesh(data, theme, focus=focus, pending=pending, age=age)
 
     def _swarm_panel(self, theme: dict, item: dict | None = None) -> str:
         """Render the multi-agent swarm dashboard."""
@@ -1196,6 +1247,151 @@ class AiOSApp(App):
 
         return ("usage: fleet show | fleet set <key> <value> | "
                 "fleet token show|rotate")
+
+    # ── Mesh: fleet package lifecycle from the cockpit ─────────────────────
+    #
+    # Definitions come from randomesh CONFIG.md ## SERVICES via meshsrv; the
+    # cockpit only ever execs over the existing SSH transport. install/disable
+    # are two-step on purpose: the first call prints exactly what would run
+    # against which host, and a literal trailing `yes` runs it (aion identity:
+    # power that can start or stop work says its bound out loud). "disable" is
+    # stop+offline — never an uninstall, never a delete.
+
+    def _mesh_rows(self) -> list[dict]:
+        """Service rows from the cached snapshot. Render-safe: never probes."""
+        data = self._mesh_cache.get("data") or {}
+        return (data.get("services") or {}).get("services") or []
+
+    def _refresh_mesh(self) -> None:
+        """Kick a background probe of mesh nodes + packages. One at a time;
+        results land in _mesh_cache and only then repaint the panel."""
+        if self._mesh_refreshing:
+            return
+        self._mesh_refreshing = True
+
+        async def run() -> None:
+            import time as _t
+            try:
+                from .. import meshmon, meshsrv
+                mesh = await asyncio.to_thread(meshmon.snapshot)
+                services = await asyncio.to_thread(meshsrv.snapshot)
+                self._mesh_cache = {"ts": _t.time(),
+                                    "data": {"mesh": mesh, "services": services}}
+            except Exception as e:
+                self.store.state.logs.append(
+                    f"mesh: refresh failed: {type(e).__name__}: {str(e)[:80]}")
+            finally:
+                self._mesh_refreshing = False
+                wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+                if wid == "mesh":
+                    self._render_center()
+        asyncio.ensure_future(run())
+
+    async def _mesh_do(self, name: str, action: str,
+                       host: str | None = None) -> str:
+        """Run one lifecycle action off-thread (ssh) and report the outcome."""
+        from .. import meshsrv
+        if action in ("start", "stop", "restart"):
+            res = await asyncio.to_thread(meshsrv.control_service,
+                                          name, action, None, host)
+        elif action in ("install", "disable"):
+            fn = (meshsrv.install_package if action == "install"
+                  else meshsrv.disable_package)
+            res = await asyncio.to_thread(fn, name, None, host)
+        else:
+            return f"mesh: unknown action {action!r}"
+        out = (res.get("out") or "").strip()
+        if res.get("ok"):
+            line = f"mesh {name} {action}: ok on {res.get('host', '?')}"
+        else:
+            line = (f"mesh {name} {action}: FAILED "
+                    f"({res.get('error') or 'rc=' + str(res.get('rc'))})")
+        if out:
+            line += "\n  " + out.replace("\n", "\n  ")[:400]
+        self._refresh_mesh()   # verify, don't trust: re-probe after acting
+        return line
+
+    async def _mesh_key(self, name: str, action: str) -> None:
+        """Key-path wrapper: run the action, log the result, repaint."""
+        line = await self._mesh_do(name, action)
+        self.store.state.logs.append(line)
+        self.store.state.logs = self.store.state.logs[-50:]
+        self._render_center()
+
+    async def _handle_mesh_command(self, text: str) -> str:
+        """Handle 'mesh list|status|start|stop|restart|install|disable'.
+
+        install/disable REQUIRE a trailing literal `yes` to execute; without it
+        they print the exact command and target instead of guessing."""
+        from .. import meshsrv
+        meshsrv._ensure_fleet_services()
+        parts = text.split(maxsplit=2)
+        sub = parts[1] if len(parts) > 1 else "list"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        if sub == "list":
+            rows = self._mesh_rows()
+            if not rows:   # cache cold: one explicit probe, on a worker thread
+                snap = await asyncio.to_thread(meshsrv.snapshot)
+                rows = snap["services"]
+                self._mesh_cache = {"ts": __import__("time").time(),
+                                    "data": {"services": snap}}
+            lines = [f"  {'●' if r.get('running') else '○'} {r['name']:16s} "
+                     f"{r.get('host', '?'):10s} [{r.get('kind', 'service')}] "
+                     f"{r.get('detail', '')[:24]}"
+                     for r in sorted(rows, key=lambda x: x.get("name", ""))]
+            up = sum(1 for r in rows if r.get("running"))
+            return f"mesh {up}/{len(rows)} up:\n" + "\n".join(lines)
+
+        if sub == "help":
+            return ("mesh list | mesh status <name> | "
+                    "mesh start|stop|restart <name> | "
+                    "mesh install|disable <name>[@host] yes")
+
+        toks = arg.split()
+        confirm = bool(toks) and toks[-1] == "yes"
+        if confirm:
+            toks = toks[:-1]
+        target = toks[0] if toks else ""
+        name, _, hostpart = target.partition("@")
+        host = hostpart or None
+        if not name:
+            return f"usage: mesh {sub} <name>[@host]" + (
+                " yes" if sub in ("install", "disable") else "")
+
+        if sub == "status":
+            st = (await asyncio.to_thread(
+                meshsrv.probe_service, name, None, host)).as_dict()
+            spec = meshsrv.SERVICES.get(name) or {}
+            acts = [a for a in ("start", "stop", "install", "disable")
+                    if spec.get(a)]
+            note = f"\n  note: {spec['note']}" if spec.get("note") else ""
+            return (f"mesh {name}: {st.get('host')} "
+                    f"probe={st.get('probe_kind')} {st.get('probe_value')} → "
+                    f"{'up' if st.get('running') else 'down'} "
+                    f"({st.get('detail', '')})\n"
+                    f"  kind={st.get('kind', 'service')} "
+                    f"actions={','.join(acts) or '—'}{note}")
+
+        if sub in ("start", "stop", "restart"):
+            return await self._mesh_do(name, sub, host)
+
+        if sub in ("install", "disable"):
+            spec = meshsrv.SERVICES.get(name) or {}
+            if not spec:
+                return f"mesh: unknown package '{name}' (try: mesh list)"
+            if not spec.get(sub):
+                return (f"mesh {name} declares no {sub} cmd "
+                        f"(kind={spec.get('kind', 'service')})")
+            if confirm:
+                return await self._mesh_do(name, sub, host)
+            return (f"mesh {sub} {name} → {host or spec.get('host', '?')}: "
+                    f"would run\n  {spec.get(sub)}\n"
+                    f"  (idempotent; never deletes data)\n"
+                    f"to proceed: mesh {sub} {target} yes")
+
+        return ("usage: mesh list|status|start|stop|restart|install|disable "
+                "<name>[@host] — install/disable need a trailing 'yes'")
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""
@@ -2008,6 +2204,9 @@ class AiOSApp(App):
                 f" [{di}]observe ai[/]   AI observer on terminal output\n"
                 f" [{di}]search <q>[/]   search vault notes\n"
                 f" [{di}]run <h> <t>[/]  run harness with label\n"
+                f" [{di}]mesh list[/]      fleet nodes + packages (●/○)\n"
+                f" [{di}]mesh start|stop|restart <name>[/]  control a package over ssh\n"
+                f" [{di}]mesh install|disable <name>[@host] yes[/]  provision (2-step)\n"
                 "\n"
                 f"[{a}]KEYS[/]\n"
                 f"  {ws_keys}  switch workspace  ↑↓/jk select item\n"

@@ -96,6 +96,7 @@ class Store(SwarmCommands):
         self._loop = None  # captured event loop (set in _chat for agent tools)
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.fleet_callback = None   # set by app: async fn(text) -> str
+        self.mesh_callback = None    # set by app: async fn(text) -> str (mesh pkg control)
         # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
         self.hypergraph_substrate = "/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json"
         self.hypergraph_remote_scan = "ssh -o ConnectTimeout=5 pansa-ts 'bash /home/gio/dev/physis-pro/deploy-pansa/hypergraph-pansa-digest.sh {dir}'"
@@ -329,6 +330,13 @@ class Store(SwarmCommands):
                              "when": m.get("when", "")}
                             for m in self.memory.items()]
             return items + memory_items
+        if ws in ("net", "mesh"):
+            # Fleet and RandoMesh render ONE whole panel each (they build their
+            # rows from app state, not per-item) — but _render_center mounts a
+            # cell per item, so with no items here those workspaces were blank.
+            # A single placeholder is what the panel branches in _center_line
+            # were always written expecting.
+            return [{"type": f"{ws}_panel"}]
         if ws in ("system", "sys"):
             return [{"kind": "live"}]  # rendered specially from stats
         if ws == "agent":
@@ -1088,6 +1096,17 @@ class Store(SwarmCommands):
                 self.state.logs = self.state.logs[-50:]
             else:
                 self.state.logs.append("remote: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "mesh":
+            # fleet package lifecycle from the cockpit: list|status|start|
+            # stop|restart|install|disable — see app._handle_mesh_command
+            if self.mesh_callback:
+                result = await self.mesh_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append("mesh: not available (app not connected)")
                 self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "swarm" and len(parts) >= 2:

@@ -166,3 +166,79 @@ def test_setup_without_set_still_reaches_the_scope_parser(store, home):
     run(store, "setup nonsense")
     assert any("usage: setup" in line for line in store.state.logs)
     assert not (home / ".env").exists()
+
+
+# ── mesh verb: fleet package lifecycle reaches the app callback ────────────
+
+def test_mesh_reaches_the_mesh_callback(store):
+    calls = []
+
+    async def fake_mesh(text):
+        calls.append(text)
+        return "mesh list ok"
+    store.mesh_callback = fake_mesh
+    asyncio.run(store._run_command("mesh list", _interpreted=True))
+    assert calls == ["mesh list"]
+    assert any("mesh list ok" in ln for ln in store.state.logs)
+
+
+def test_mesh_without_callback_says_so(store):
+    store.mesh_callback = None
+    asyncio.run(store._run_command("mesh stop colibri", _interpreted=True))
+    assert any("not available" in ln for ln in store.state.logs)
+
+
+def test_mesh_does_not_spawn_the_active_harness(store):
+    """A missed mesh verb must not leak into the chat/spawn fallback — it
+    would start an agent run on the active harness with 'mesh ...' glued to
+    the prompt (exactly the old run-harness bug in a new costume)."""
+    calls = []
+
+    async def fake_mesh(text):
+        calls.append(text)
+        return "handled"
+    store.mesh_callback = fake_mesh
+    run(store, "mesh list")
+    assert store.spawned == []
+    assert calls == ["mesh list"]
+
+
+# ── the mesh handler itself: preview vs confirm, unbound (no app boot) ─────
+
+class _FakeApp:
+    def __init__(self):
+        self._mesh_cache = {"ts": 0.0, "data": {}}
+        self.ran = []
+
+    def _mesh_rows(self):
+        return []
+
+    async def _mesh_do(self, name, action, host=None):
+        self.ran.append((name, action, host))
+        return "RAN"
+
+
+def test_mesh_install_is_preview_until_yes():
+    import asyncio as _aio
+    from aion import meshsrv
+    from aion.ui.app import AiOSApp
+    saved = meshsrv.SERVICES.get("tst-mc")
+    meshsrv.SERVICES["tst-mc"] = {"host": "h", "unit": "x.service",
+                                  "install": "bash i.sh", "kind": "package"}
+    app = _FakeApp()
+    try:
+        out = _aio.run(AiOSApp._handle_mesh_command(app, "mesh install tst-mc"))
+        assert "would run" in out and "bash i.sh" in out and not app.ran
+        out = _aio.run(AiOSApp._handle_mesh_command(app, "mesh install tst-mc yes"))
+        assert out == "RAN" and app.ran == [("tst-mc", "install", None)]
+        out = _aio.run(AiOSApp._handle_mesh_command(
+            app, "mesh install tst-mc@other-ts yes"))
+        assert app.ran[-1] == ("tst-mc", "install", "other-ts")
+        # a package without the cmd refuses instead of running something else
+        out = _aio.run(AiOSApp._handle_mesh_command(app, "mesh disable tst-mc yes"))
+        assert "no disable cmd" in out
+    finally:
+        if saved is None:
+            meshsrv.SERVICES.pop("tst-mc", None)
+        else:
+            meshsrv.SERVICES["tst-mc"] = saved

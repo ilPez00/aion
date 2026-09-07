@@ -5,11 +5,17 @@ colibri) across the fleet. Read-only probe + SSH control, both with an
 injectable transport so the pure logic is unit-testable (aion-extend-backend).
 
 Service model:
-  - each service has a host (Tailscale alias), a probe (tcp port OR systemd unit),
-    and an optional start/stop cmd.
+  - each service has a host (Tailscale alias), a probe (tcp port, http health
+    path, OR systemd unit — user scope by default), and lifecycle cmds:
+    start/stop/restart via control_service(), install/disable via
+    install_package()/disable_package(). Installers are idempotent scripts in
+    randomesh; they provision control-plane files (units, timers) and never
+    delete user data. "disable" is deliberately NOT "uninstall".
+  - definitions live in randomesh CONFIG.md ## SERVICES -> fleet.json; a
+    declared entry OVERWRITES a base entry of the same name (operator intent
+    wins over what aion hardcoded before the fleet declared itself).
   - snapshot() probes every service; unreachable host -> service marked down,
     never raises.
-  - control_service(name, action) runs start/stop/restart over SSH.
 
 aion identity: this is a HUD/control surface, not an orchestrator that owns
 the services. The deck emits MeshService Intents; meshsrv executes them.
@@ -173,6 +179,13 @@ def _load_fleet_services() -> dict[str, dict]:
         entry = {"host": host}
         if probe:
             entry["probe"] = probe
+        # Lifecycle commands travel with the declaration so a CONFIG.md entry is
+        # enough to make a package installable/disableable from the cockpit;
+        # `kind: package` marks entries that carry provisioning, not just a port.
+        for key in ("start", "stop", "install", "disable", "status", "kind"):
+            v = info.get(key)
+            if v:
+                entry[key] = str(v).strip()
         # A unit name gives the cockpit something to report and restart. `scope`
         # matters: these are almost all --user units, and `systemctl status X`
         # without --user reports "not found" for a service that is running fine.
@@ -204,6 +217,9 @@ class ServiceState:
     detail: str = ""
     start_cmd: str = ""
     stop_cmd: str = ""
+    kind: str = "service"
+    install_cmd: str = ""
+    disable_cmd: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -216,7 +232,18 @@ class ServiceState:
             "detail": self.detail,
             "start_cmd": self.start_cmd,
             "stop_cmd": self.stop_cmd,
+            "kind": self.kind,
+            "can_install": bool(self.install_cmd),
+            "can_disable": bool(self.disable_cmd),
         }
+
+
+def _lifecycle_fields(spec: dict) -> dict:
+    """Lifecycle fields every ServiceState carries — probed fine or dead."""
+    return {"start_cmd": spec.get("start", ""), "stop_cmd": spec.get("stop", ""),
+            "kind": spec.get("kind", "service"),
+            "install_cmd": spec.get("install", ""),
+            "disable_cmd": spec.get("disable", "")}
 
 
 def _probe_tcp(host: str, port: int, transport: Transport) -> tuple[bool, str]:
@@ -272,14 +299,16 @@ def _probe_http(host: str, port: int, path: str, transport: Transport) -> tuple[
     return False, "http no/bad response"
 
 
-def probe_service(name: str, transport: Optional[Transport] = None) -> ServiceState:
+def probe_service(name: str, transport: Optional[Transport] = None,
+                  host: Optional[str] = None) -> ServiceState:
     _ensure_fleet_services()
     if transport is None:
         transport = _ssh_transport
     spec = SERVICES.get(name)
     if not spec:
-        return ServiceState(name=name, host="?", probe_kind="?", probe_value="?",
-                             detail="unknown service")
+        return ServiceState(name=name, host=host or "?", probe_kind="?",
+                             probe_value="?", detail="unknown service")
+    h = host or spec["host"]
     # A service may declare a port probe, an http probe, or neither — CONFIG.md
     # lists units like aion-node and hermes-gateway that expose no port at all.
     # Falling back to the unit keeps them visible instead of raising KeyError and
@@ -290,23 +319,23 @@ def probe_service(name: str, transport: Optional[Transport] = None) -> ServiceSt
     kind, val, extra = (tuple(probe) + (None,))[:3]
     try:
         if kind == "tcp":
-            running, detail = _probe_tcp(spec["host"], int(val), transport)
+            running, detail = _probe_tcp(h, int(val), transport)
         elif kind == "http":
-            running, detail = _probe_http(spec["host"], int(val), extra or "/", transport)
+            running, detail = _probe_http(h, int(val), extra or "/", transport)
         else:
-            running, detail = _probe_unit(spec["host"], val, transport,
+            running, detail = _probe_unit(h, val, transport,
                                           spec.get("scope", "user"))
     except Exception as e:  # dead host / timeout -> soft-fail, never crash the HUD
-        return ServiceState(name=name, host=spec["host"], probe_kind=kind,
+        return ServiceState(name=name, host=h, probe_kind=kind,
                              probe_value=str(val), running=False, reachable=False,
                              detail=f"unreachable: {type(e).__name__}",
-                             start_cmd=spec.get("start", ""), stop_cmd=spec.get("stop", ""))
+                             **_lifecycle_fields(spec))
     if "CLOSED" in detail or "INACTIVE" in detail:
         running = False
     return ServiceState(
-        name=name, host=spec["host"], probe_kind=kind, probe_value=str(val),
+        name=name, host=h, probe_kind=kind, probe_value=str(val),
         running=running, reachable=True, detail=detail,
-        start_cmd=spec.get("start", ""), stop_cmd=spec.get("stop", ""),
+        **_lifecycle_fields(spec),
     )
 
 
@@ -328,23 +357,69 @@ def snapshot(transport: Optional[Transport] = None) -> dict:
     return {"total": len(states), "up": up, "services": states}
 
 
-def control_service(name: str, action: str, transport: Optional[Transport] = None) -> dict:
+def control_service(name: str, action: str, transport: Optional[Transport] = None,
+                    host: Optional[str] = None) -> dict:
     """start | stop | restart a mesh service over SSH. Returns a result dict.
-    action 'restart' = stop then start."""
-    if transport is None:
+    action 'restart' = stop then start. `host` overrides the declared host for
+    this one call — the cockpit may aim a package at any reachable box."""
+    _ensure_fleet_services()   # at the point of use: the first call in a fresh
+    if transport is None:      # process must see CONFIG.md-declared services
         transport = _ssh_transport
     spec = SERVICES.get(name)
     if not spec:
         return {"ok": False, "name": name, "error": "unknown service"}
     if action == "restart":
-        control_service(name, "stop", transport)
+        control_service(name, "stop", transport, host)
         action = "start"
-    cmd = spec.get("start" if action == "start" else "stop")
+    if action not in ("start", "stop"):
+        return {"ok": False, "name": name, "error": f"unknown action {action!r}"}
+    h = host or spec["host"]
+    cmd = spec.get(action)
+    if not cmd and spec.get("unit"):
+        # a declared unit is controllable without repeating the systemctl line
+        # for every service in CONFIG.md
+        flag = "--user " if spec.get("scope", "user") == "user" else ""
+        cmd = f"systemctl {flag}{action} {shlex.quote(spec['unit'])}"
     if not cmd:
         return {"ok": False, "name": name, "error": f"no {action} cmd"}
-    rc, out = transport("ssh", spec["host"], cmd)
-    return {"ok": rc == 0, "name": name, "action": action, "host": spec["host"],
+    rc, out = transport("ssh", h, cmd)
+    return {"ok": rc == 0, "name": name, "action": action, "host": h,
             "rc": rc, "out": out.strip()[-200:]}
+
+
+def _run_lifecycle(name: str, action: str, transport: Optional[Transport],
+                   host: Optional[str]) -> dict:
+    """Shared runner for install/disable: the spec's named cmd, ssh'd at the
+    target host. Unknown service / missing cmd are refusals, never crashes.
+    The cmd itself must be idempotent and must never delete user data."""
+    _ensure_fleet_services()   # point of use: a fresh process that installs
+    if transport is None:      # before it ever probes must still know the
+        transport = _ssh_transport   # fleet's declared packages
+    spec = SERVICES.get(name)
+    if not spec:
+        return {"ok": False, "name": name, "error": "unknown service"}
+    h = host or spec["host"]
+    cmd = spec.get(action)
+    if not cmd:
+        return {"ok": False, "name": name, "action": action, "host": h,
+                "error": f"no {action} cmd"}
+    rc, out = transport("ssh", h, cmd)
+    return {"ok": rc == 0, "name": name, "action": action, "host": h,
+            "rc": rc, "out": out.strip()[-400:]}
+
+
+def install_package(name: str, transport: Optional[Transport] = None,
+                    host: Optional[str] = None) -> dict:
+    """Run a package's install cmd over SSH: provision control-plane files
+    (unit files, timers) idempotently. Never deletes user data."""
+    return _run_lifecycle(name, "install", transport, host)
+
+
+def disable_package(name: str, transport: Optional[Transport] = None,
+                    host: Optional[str] = None) -> dict:
+    """Run a package's disable cmd over SSH: stop + take offline. Deliberately
+    NOT "uninstall" — worlds, dotfiles and repo state survive a disable."""
+    return _run_lifecycle(name, "disable", transport, host)
 
 
 # --- real transport (used at runtime) ---
