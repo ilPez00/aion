@@ -2,7 +2,7 @@
 id: AION-002
 track: aion
 phase: 1
-status: todo
+status: review
 rung: 1
 depends: [AION-001]
 gate: "python -m pytest tests/test_task_board.py -q"
