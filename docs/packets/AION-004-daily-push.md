@@ -2,7 +2,7 @@
 id: AION-004
 track: aion
 phase: 2
-status: todo
+status: review
 rung: 1
 depends: [AION-001]
 gate: "python -m pytest tests/test_daily_push.py -q"
