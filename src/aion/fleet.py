@@ -502,3 +502,185 @@ def node_health(ever_seen: bool, age_s: float, local: bool = False,
     if age_s >= stale_after:
         return HEALTH_STALE
     return HEALTH_LIVE
+
+
+# ── AION-001 FleetView engine ────────────────────────────────────────────────
+# Pure functions over (capability dict, task list, meshd state) → view models.
+# NO I/O in this block: readers live below, rendering in ui/fleet_panel.py.
+# The HUD answers "what can the fleet do" (capability) and "what is it doing"
+# (task queue). Lost/timed-out tasks are honest failures and render LOUDLY.
+TOOLCHAIN_KEYS = ("has_cargo", "has_node", "has_docker", "has_uv",
+                  "has_ollama", "has_llama_server", "has_sccache")
+
+
+def _safe_int(value: object) -> int:
+    """int() that never raises: garbage → 0 (HUD degrades, never crashes)."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+# Terminal states that mean "look at me", not "done".
+LOUD_STATUSES = ("lost", "timed-out")
+
+
+@dataclass
+class NodeCap:
+    """What one node can do, distilled from `mesh capability --json`."""
+    name: str
+    reachable: bool = False
+    cores: int = 0
+    mem_total_mb: int = 0
+    mem_avail_mb: int = 0
+    gpu_name: str = ""
+    gpu_vram_mb: int = 0
+    toolchains: list = field(default_factory=list)
+    role: str = ""
+
+    @property
+    def gpu(self) -> bool:
+        return bool(self.gpu_name) and self.gpu_vram_mb > 0
+
+
+@dataclass
+class TaskRow:
+    """One agent-task queue entry, from a task state dir meta.json."""
+    id: str
+    title: str = ""
+    engine: str = ""
+    status: str = "unknown"
+    rc: int | None = None
+    host: str = ""
+    submitted_at: str = ""
+
+    @property
+    def loud(self) -> bool:
+        """Honest-failure states. Never render these quietly."""
+        return self.status in LOUD_STATUSES
+
+    @property
+    def done_ok(self) -> bool:
+        return self.status == "done" and (self.rc in (None, 0))
+
+
+@dataclass
+class FleetView:
+    """View model over capability + queue + meshd snapshot counts."""
+    nodes: list = field(default_factory=list)   # list[NodeCap]
+    tasks: list = field(default_factory=list)   # list[TaskRow], recency first
+    meshd_reachable: int = 0
+    meshd_total: int = 0
+
+    # -- counts --
+    @property
+    def live_nodes(self) -> int:
+        return sum(1 for n in self.nodes if n.reachable)
+
+    @property
+    def loud_tasks(self) -> list:
+        return [t for t in self.tasks if t.loud]
+
+    @property
+    def running_tasks(self) -> list:
+        return [t for t in self.tasks
+                if t.status in ("running", "queued", "pending")]
+
+    def summary(self) -> str:
+        return (f"{len(self.nodes)} nodes · {self.live_nodes} live · "
+                f"{len(self.tasks)} tasks · "
+                f"{len(self.loud_tasks)} need attention")
+
+    # -- constructors (pure, tolerant of partial/malformed input) --
+    @classmethod
+    def from_capability(cls, cap: dict | None,
+                        roles: dict | None = None) -> "FleetView":
+        view = cls()
+        nodes = (cap or {}).get("nodes", {}) or {}
+        for name, raw in nodes.items():
+            if not isinstance(raw, dict):
+                continue    # malformed entry: skip, never crash
+            chains = [kachi for kachi, k in
+                      ((c, raw.get(c)) for c in TOOLCHAIN_KEYS) if k in ("yes", True, 1)]
+            view.nodes.append(NodeCap(
+                name=name,
+                reachable=bool(raw.get("reachable", False)),
+                cores=_safe_int(raw.get("cores")),
+                mem_total_mb=_safe_int(raw.get("mem_total_mb")),
+                mem_avail_mb=_safe_int(raw.get("mem_avail_mb")),
+                gpu_name=str(raw.get("gpu_name", "") or ""),
+                gpu_vram_mb=_safe_int(raw.get("gpu_vram_mb")),
+                toolchains=chains,
+                role=(roles or {}).get(name, ""),
+            ))
+        # reachable first, then most RAM (capable nodes to the top)
+        view.nodes.sort(key=lambda n: (not n.reachable, -n.mem_total_mb, n.name))
+        return view
+
+    @classmethod
+    def from_tasks(cls, items: list | None) -> "FleetView":
+        view = cls()
+        for raw in items or []:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            rc = raw.get("rc")
+            try:
+                rc = None if rc is None else int(rc)
+            except (TypeError, ValueError):
+                rc = None
+            view.tasks.append(TaskRow(
+                id=str(raw.get("id")),
+                title=str(raw.get("title", "") or ""),
+                engine=str(raw.get("engine", "") or ""),
+                status=str(raw.get("status", "unknown") or "unknown"),
+                rc=rc,
+                host=str(raw.get("host", "") or ""),
+                submitted_at=str(raw.get("submitted_at", "") or ""),
+            ))
+        # Loud (lost/timed-out) first, then recency first. Ids carry a
+        # timestamp prefix so lexicographic order is chronological.
+        view.tasks.sort(key=lambda t: (t.loud, t.submitted_at, t.id),
+                        reverse=True)
+        return view
+
+    def with_meshd(self, snap: dict | None) -> "FleetView":
+        snap = snap or {}
+        self.meshd_reachable = int(snap.get("reachable", 0) or 0)
+        self.meshd_total = int(snap.get("total", 0) or 0)
+        return self
+
+
+# ── Harness readers (I/O isolated here; never raise) ─────────────────────────
+def read_capability_json(path: str | Path) -> dict:
+    """Read a capability.json cache. Missing/malformed → {} (degrade, no crash)."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def read_task_queue(state_dir: str | Path) -> list[dict]:
+    """Read agent-task state dirs (meta.json each). Missing dir → []."""
+    root = Path(state_dir)
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    try:
+        entries = sorted(root.iterdir(), reverse=True)
+    except OSError:
+        return []
+    for d in entries:
+        meta = d / "meta.json"
+        if not d.is_dir() or not meta.exists():
+            continue
+        try:
+            raw = json.loads(meta.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if isinstance(raw, dict) and raw.get("id"):
+            out.append(raw)
+    return out
+
+
+def default_task_state_dir() -> Path:
+    return Path.home() / ".local" / "state" / "randomesh" / "tasks"

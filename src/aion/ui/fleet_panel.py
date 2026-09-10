@@ -169,3 +169,41 @@ def render_fleet(rows: list[FleetRow], theme: dict, tick: int = 0,
     out.append(f"[{di}]listening :{listen_port} ·[/] [{reach_color}]{reach}[/]"
                f"[{di}] · Ctrl-K 'remote run <node> <prompt>'[/]")
     return "\n".join(out)
+
+
+# ── AION-001: capability + task-queue section ─────────────────────────────────
+# Additive read-only view for the Mesh tab. Takes a FleetView (pure engine in
+# ..fleet), never touches the network or filesystem. Missing data degrades to
+# a placeholder row — the HUD must never crash on stale fleet data.
+def render_capability_tasks(view, theme: dict) -> str:
+    from ..fleet import HEALTH_LIVE  # noqa: F401 (documents the health contract)
+    di = theme.get("dim", "#9aabbb")
+    a = theme.get("accent", "#5ad1ff")
+    ok_ = theme.get("ok", "#7CFFB2")
+    warn = theme.get("warn", "#FFD479")
+    err = theme.get("err", "#FF8A8A")
+    out = [f"[{a}]▤ fleet capacity · what it can do / what it is doing[/]"]
+    if not view.nodes and not view.tasks:
+        out.append(f"  [{di}]no capability or task data — run mesh capability[/]")
+        return "\n".join(out)
+    for n in view.nodes:
+        if not n.reachable:
+            out.append(f"  [{di}]○ {n.name}  DOWN[/]")
+            continue
+        gpu = f" + {n.gpu_name.split('(')[0].strip()}" if n.gpu else ""
+        chains = f" · {','.join(n.toolchains[:3])}" if n.toolchains else ""
+        out.append(f"  [{ok_}]●[/] [{di}]{n.name}[/] "
+                   f"{n.cores}C {n.mem_avail_mb}/{n.mem_total_mb}MB{gpu}{chains}")
+    if view.tasks:
+        out.append(f"  [{di}]tasks:[/]")
+        for t in view.tasks[:8]:
+            if t.loud:
+                out.append(f"    [{err}]◆ {t.id} {t.status.upper()} — {t.title} ({t.engine})[/]")
+            elif t.status in ("running", "queued", "pending"):
+                out.append(f"    [{warn}]● {t.id} {t.status} — {t.title}[/]")
+            else:
+                rc = f" rc={t.rc}" if t.rc not in (None, 0) else ""
+                out.append(f"    [{di}]· {t.id} {t.status}{rc} — {t.title}[/]")
+        if len(view.tasks) > 8:
+            out.append(f"    [{di}]… {len(view.tasks) - 8} more[/]")
+    return "\n".join(out)
