@@ -2,7 +2,7 @@
 id: AION-001
 track: aion
 phase: 1
-status: todo
+status: review
 rung: 1
 depends: []
 gate: "python -m pytest tests/test_fleet_workspace.py -q"
