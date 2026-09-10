@@ -2,7 +2,7 @@
 id: AION-003
 track: aion
 phase: 2
-status: todo
+status: review
 rung: 1
 depends: [AION-002]
 gate: "python -m pytest tests/test_packets_board.py -q"
