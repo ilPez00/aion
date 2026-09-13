@@ -203,3 +203,48 @@ def test_first_call_may_be_install_not_probe(tmp_path, monkeypatch):
         SERVICES.clear()
         SERVICES.update(saved)
         monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)
+
+
+def test_fleetjson_nodes_all_rendered_and_fleet_wins(tmp_path, monkeypatch):
+    """Convergence contract (aion plan.md / randomesh plans/aion-convergence):
+    every fleet.json node and serving entry must be cockpit-visible, fleet
+    values win over the hardcoded base, and `host` must always stay an ssh
+    alias — never a bare IP (ssh to 127.0.0.1 would probe the WRONG box)."""
+    cfg = {"nodes": [
+        {"name": "testnode", "tailscale": "testnode-ts",
+         "serving_port": "18081", "role": "cpu-inference"},
+        {"name": "omo", "tailscale": "omo-ts",
+         "serving_port": "8081", "role": "source-storage"}],
+        "serving": {"nodes": {
+            "testnode": {"ip": "100.0.0.1", "port": "18081"},
+            "omo": {"ip": "127.0.0.1", "port": "18082"}}},
+        "services": {}}
+    path = tmp_path / "fleet.json"
+    path.write_text(json.dumps(cfg))
+    monkeypatch.setenv("AION_FLEET_CONFIG", str(path))
+    monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)
+    saved = dict(SERVICES)
+    try:
+        meshsrv._ensure_fleet_services()
+        # a brand-new node appears, addressed by alias, fleet port, runnable
+        spec = SERVICES["testnode"]
+        assert spec["host"] == "testnode-ts"
+        assert spec["probe"] == ("tcp", 18081)
+        assert spec["start"] and spec["stop"]
+        # fleet serving values win over the base entry — but the base's
+        # lifecycle cmds survive (fleet serving rows carry no start/stop)
+        omo = SERVICES["omo-llm"]
+        assert omo["probe"] == ("tcp", 18082)
+        assert omo["host"] == "omo-ts"
+        assert "pansa_node" not in omo["start"] and "llama-server" in omo["start"]
+        # no entry may ever point the ssh transport at loopback/an IP
+        for name, s in SERVICES.items():
+            h = s.get("host", "")
+            assert h and h != "127.0.0.1" and not h[0].isdigit(), name
+        # and the new node actually probes (soft-fail path, not KeyError)
+        st = probe_service("testnode", _fake(out="CLOSED"))
+        assert st.running is False and st.reachable is True
+    finally:
+        SERVICES.clear()
+        SERVICES.update(saved)
+        monkeypatch.setattr(meshsrv, "_FLEET_SERVICES_LOADED", False)

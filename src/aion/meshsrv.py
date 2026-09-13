@@ -84,10 +84,24 @@ SERVICES: dict[str, dict] = {
 # aion should NOT hardcode the node map (see meshmon comment).
 # This loader reads fleet.json from randomesh CONFIG.md → fleet.json so that
 # SERVICES stays in sync when a node is added/removed/changed in CONFIG.md.
-# The hardcoded SERVICES dict below is the base; fleet.json overrides/add per-node
-# llama-server configs. Base takes priority so existing services aren't clobbered.
+# The hardcoded SERVICES dict below is the base; fleet.json overrides/adds per-node
+# llama-server configs. Fleet wins (convergence rule); the base only supplies
+# lifecycle cmds the fleet rows don't declare. `host` always stays an ssh alias.
 # Call _ensure_fleet_services() once at entrypoint (app.py main, mesh status CLI).
 _FLEET_SERVICES_LOADED = False
+
+
+def _service_key(node_name: str) -> str:
+    """Cockpit row for a fleet serving node.
+
+    Fleet serving blocks key by node (`omo`); the hardcoded base keys the
+    same box's llama-server (`omo-llm`). Prefer the exact name, then the
+    `-llm` suffixed base row, else the bare node name (new row).
+    """
+    if node_name in SERVICES:
+        return node_name
+    suffixed = node_name + "-llm"
+    return suffixed if suffixed in SERVICES else node_name
 
 
 def _load_fleet_services() -> dict[str, dict]:
@@ -130,23 +144,38 @@ def _load_fleet_services() -> dict[str, dict]:
         }
 
     # Now enrich fleet.json's serving.nodes entries if present (these already have
-    # ip/port/gpu/tps from CONFIG.md export-config). We add them to SERVICES if
-    # the node name isn't already in the hardcoded base.
+    # ip/port/gpu/tps from CONFIG.md export-config).
+    #
+    # Convergence rule (aion plan.md / randomesh plans/aion-convergence):
+    # fleet wins over the hardcoded base, with one safety invariant — `host`
+    # stays an ssh alias, never a bare IP. The serving block's `ip` is where
+    # the SERVICE binds (127.0.0.1 on omo is correct there); `host` is where
+    # WE ssh to, and ssh'ing to 127.0.0.1 would probe whichever box the
+    # cockpit happens to run on. Lifecycle cmds fall back to the base entry
+    # (fleet serving rows carry no start/stop), else the generic fleet script.
     serving_nodes = data.get("serving", {}).get("nodes", {})
     for node_name, info in serving_nodes.items():
-        # Use the node's own ip/port from fleet.json if available
-        host = info.get("ip", "")
-        port = info.get("port", "8081")
-        if not host:
-            # Fall back to tailscale alias
-            host = fleet_nodes_map.get(node_name, {}).get("host", node_name + "-ts")
-        if not port:
-            port = "8081"
-        # Only add if not already in SERVICES (base takes priority)
-        if node_name not in SERVICES:
+        port = info.get("port", "8081") or "8081"
+        target = _service_key(node_name)
+        base = SERVICES.get(target, {})
+        host = (fleet_nodes_map.get(node_name, {}).get("host")
+                or base.get("host") or (node_name + "-ts"))
+        SERVICES[target] = {
+            "host": host,
+            "probe": ("tcp", int(port)),
+            "start": base.get("start")
+            or f"bash /home/gio/scripts/fleet/serve-start.sh {node_name}",
+            "stop": base.get("stop") or "pkill -f 'llama-server.*8081'",
+        }
+
+    # Nodes declared in CONFIG.md NODES but absent from the serving block
+    # (edge boxes, future workers) still get a visible cockpit row aimed at
+    # their serving port, so adding a node can never again appear to do nothing.
+    for node_name, info in fleet_nodes_map.items():
+        if _service_key(node_name) not in SERVICES:
             SERVICES[node_name] = {
-                "host": host,
-                "probe": ("tcp", int(port)),
+                "host": info["host"],
+                "probe": info["probe"],
                 "start": f"bash /home/gio/scripts/fleet/serve-start.sh {node_name}",
                 "stop": "pkill -f 'llama-server.*8081'",
             }

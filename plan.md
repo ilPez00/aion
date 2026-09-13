@@ -854,3 +854,39 @@ AION_WEB_HOST=0.0.0.0 .venv/bin/python scripts/aion_web.py           # web HUD o
 - `docs/aion-cyclops-reconcile.md` — spec-vs-repo map (what the PRS got wrong).
 - `docs/physis-integration.md` — how the brain plugs into the loops.
 - `docs/install-mobile.md` — PWA/APK install path + the HTTPS caveat.
+- `../randomesh/plans/aion-convergence-2026-09-13.md` — backend/contract view of
+  the same plan (this file is the product/surface view).
+
+## Aion ↔ RandoMesh convergence (2026-09-13)
+
+One cockpit, one backend, one truth. **aion becomes the only interface**
+(TUI + web PWA) for agentic sessions *and* fleet (services, storage, models);
+**randomesh becomes the only backend** (`CONFIG.md` = truth,
+`fleet.json`/`fleet-models.json` = wire, `scripts/fleet/*` = actuators).
+
+Roles (no dual-write): `agent-task.sh` owns durability (queued → running →
+done/failed/timed-out/lost under `~/.local/state/randomesh/tasks/`); aion owns
+gating (`hitl.py`, `agentctl.legal()`) + viewing (Fleet rows parsed from
+`agent-task status --all`, cf. `tests/test_task_board.py`). Placement:
+`delegate.sh`/`place.sh` score, aion budget/HITL gates decide. Services:
+`services/` catalog + `CONFIG.md` SERVICES win over the hardcoded
+`meshsrv.SERVICES` base (extend the services-merge rule at `meshsrv.py:162-166`
+to serving nodes, retiring the base-wins exception at `meshsrv.py:145-152`).
+
+Fleet surface: merge Net + Mesh workspaces (currently two — `config/layout.json`
+`net`/`mesh`) into one **Fleet** workspace with tabs: Nodes (cluster grid),
+Sessions (session rows + Conductor supervision via `RemoteClient`), Services
+(systemd rows), Storage (NAS rows), Models (`fleet-models.json` roles/caps).
+Stolen shapes: Agent Deck session rows + Conductor; OpenClaw Grid/Feed/Detail +
+cost bars; Paperclip budget/governance strip (`swarmbudget.py`); pbs-tui grid +
+`--dummy` fixtures; Cockpit "call the platform" for systemd/storage; Umbrel
+per-peer revocable tokens (recorded gap — single shared secret stays).
+
+Non-goals: no new daemon, no second queue, no per-peer tokens yet, no engine
+tuning (DS4/FreeToken/colibri/llama-server is the separate Qwen-pool plan).
+
+Gates per step: `tests/test_meshsrv.py`, `test_meshmon.py`, `test_fleet*.py`,
+`test_task_board.py`, `test_interpret.py`, `test_command_dispatch.py`;
+full gate `.venv/bin/python -m pytest tests/ --ignore=tests/test_term.py -q`
++ 6s TUI boot smoke; randomesh `bash scripts/fleet/export-config.sh CONFIG.md
+/dev/stdout >/dev/null` must keep passing.
