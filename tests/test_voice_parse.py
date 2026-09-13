@@ -53,7 +53,7 @@ WORKSPACES = [
     {"id": "system", "title": "System"},
     {"id": "term", "title": "Term"},
     {"id": "settings", "title": "Settings"},
-    {"id": "net", "title": "Fleet"},
+    {"id": "fleet", "title": "Fleet"},
 ]
 
 
@@ -71,6 +71,15 @@ def test_fleet_is_reachable_by_voice():
     """The whole reason for this change: the new workspace answers to voice."""
     v = _voice()
     for phrase in ("go to fleet", "show fleet", "open network", "fleet"):
+        i = v.parse(phrase)
+        assert i.type == IntentType.SWITCH_WORKSPACE, phrase
+        assert i.payload["index"] == 8, phrase
+
+
+def test_fleet_aliases_still_navigate():
+    """net/mesh ids and randomesh spoken name land on the merged workspace."""
+    v = _voice()
+    for phrase in ("go to mesh", "randomesh", "show net"):
         i = v.parse(phrase)
         assert i.type == IntentType.SWITCH_WORKSPACE, phrase
         assert i.payload["index"] == 8, phrase

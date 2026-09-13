@@ -94,14 +94,9 @@
       "icon": "\u2699"
     },
     {
-      "id": "net",
+      "id": "fleet",
       "title": "Fleet",
       "icon": "⏢"
-    },
-    {
-      "id": "mesh",
-      "title": "Mesh",
-      "icon": "⏣"
     }
   ],
   "deck": {

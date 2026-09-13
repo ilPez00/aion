@@ -567,10 +567,11 @@ class AiOSApp(App):
         if event.key == "v":
             asyncio.create_task(self.voice.toggle())
             return
-        # ── Mesh workspace: j/k pick a package, a verb key acts on it ─────
+        # ── Fleet workspace: j/k pick a package, a verb key acts on it ─────
         # install (i) and disable (d) only ARM a pending action; 'y' runs it
         # and anything else cancels — the two-step lives in the key path too.
-        if self.cfg["workspaces"][self.store.state.active_ws]["id"] == "mesh":
+        if self.cfg["workspaces"][self.store.state.active_ws]["id"] in (
+                "fleet", "mesh", "net"):
             rows = self._mesh_rows()
             if rows and self._mesh_sel >= len(rows):
                 self._mesh_sel = len(rows) - 1
@@ -826,12 +827,12 @@ class AiOSApp(App):
                 return (f"[{col}]{f}◎ #{it['n']} {it['text']}[/]  "
                         f"[{theme['dim']}]{it['when']}{head}[/]")
             return self._vault_line(it, focused, theme)
-        if ws == "net":
-            return self._net_panel(theme)
+        if ws in ("fleet", "net", "mesh"):
+            # one Fleet workspace (net+mesh merged); the old ids stay as
+            # aliases so existing configs and muscle memory keep working.
+            return self._fleet_panel(theme)
         if ws in ("system", "sys"):
             return self._sys_panel(theme)
-        if ws == "mesh":
-            return self._mesh_panel(theme)
         if ws == "life":
             return self._life_panel(theme)
         if ws == "desktop":
@@ -1302,7 +1303,7 @@ class AiOSApp(App):
             finally:
                 self._mesh_refreshing = False
                 wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
-                if wid == "mesh":
+                if wid in ("fleet", "mesh", "net"):
                     self._render_center()
         asyncio.ensure_future(run())
 
@@ -1709,6 +1710,14 @@ class AiOSApp(App):
             if note:
                 lines.append(f"  [{di}]{note}[/]")
         return "\n".join(lines)
+
+    def _fleet_panel(self, theme: dict) -> str:
+        """The one Fleet workspace: peers (instances) above, mesh below.
+
+        Net+mesh merged — a single surface for instances, nodes, services,
+        sessions and models instead of two workspaces showing halves.
+        """
+        return self._net_panel(theme) + "\n" + self._mesh_panel(theme)
 
     def _net_panel(self, theme: dict) -> str:
         """Render the Fleet workspace — every aion instance, local and remote."""

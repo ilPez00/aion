@@ -330,12 +330,12 @@ class Store(SwarmCommands):
                              "when": m.get("when", "")}
                             for m in self.memory.items()]
             return items + memory_items
-        if ws in ("net", "mesh"):
-            # Fleet and RandoMesh render ONE whole panel each (they build their
-            # rows from app state, not per-item) — but _render_center mounts a
-            # cell per item, so with no items here those workspaces were blank.
-            # A single placeholder is what the panel branches in _center_line
-            # were always written expecting.
+        if ws in ("net", "mesh", "fleet"):
+            # Fleet renders ONE whole panel (it builds rows from app state,
+            # not per-item) — but _render_center mounts a cell per item, so
+            # with no items here the workspace was blank. A single placeholder
+            # is what the panel branch in _center_line was always written
+            # expecting. net/mesh stay as aliases for old configs.
             return [{"type": f"{ws}_panel"}]
         if ws in ("system", "sys"):
             return [{"kind": "live"}]  # rendered specially from stats

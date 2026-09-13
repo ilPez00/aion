@@ -20,7 +20,7 @@ UL, UR, H, V = "┌", "┐", "─", "│"
 
 WS_ICONS = {"desktop": "⬡", "models": "◈", "tasks": "▤", "runs": "⟳",
             "agent": "✦", "vault": "📓", "system": "🖥", "term": "▣",
-            "settings": "⚙", "net": "🌐"}
+            "settings": "⚙", "fleet": "🌐", "net": "🌐", "mesh": "⏣"}
 
 # Three bands, matching the gauges elsewhere in the cockpit. A number that goes
 # red at 80 and the same number rendered flat somewhere else is how a dashboard

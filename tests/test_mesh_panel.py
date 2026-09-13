@@ -84,3 +84,47 @@ def test_mesh_place_palette_dry_run(monkeypatch, tmp_path):
     assert "would run on picked-ts" in out and "dry-run" in out
     out = _aio.run(AiOSApp._handle_mesh_command(_FakeApp(), "mesh place"))
     assert out.startswith("usage:")
+
+
+def test_fleet_panel_combines_peers_and_mesh():
+    """The merged workspace stacks both halves — no half goes missing."""
+    from aion.ui.app import AiOSApp
+
+    class _Stub:
+        def _net_panel(self, theme):
+            return "PEERS-HALF"
+
+        def _mesh_panel(self, theme):
+            return "MESH-HALF"
+
+    out = AiOSApp._fleet_panel(_Stub(), {})
+    assert out == "PEERS-HALF\nMESH-HALF"
+
+
+def test_shipped_config_has_one_fleet_workspace():
+    """net+mesh merged: exactly one fleet workspace, old ids gone."""
+    import json
+    from pathlib import Path
+    cfg = json.loads((Path(__file__).parent.parent
+                      / "config" / "layout.json").read_text())
+    ids = [w["id"] for w in cfg["workspaces"]]
+    assert ids.count("fleet") == 1
+    assert "net" not in ids and "mesh" not in ids
+
+
+def test_fleet_workspace_navigates():
+    """Switching to Fleet yields the panel placeholder, never a blank."""
+    from aion.core import Bus, Intent, IntentType, TaskRegistry, load_config
+    from aion.harnesses import build_harnesses
+    from aion.store import Store
+    cfg = load_config()
+    bus = Bus()
+    registry = TaskRegistry(bus)
+    store = Store(cfg, bus,
+                  harnesses=build_harnesses(cfg["harnesses"], bus, registry))
+    idx = [w["id"] for w in cfg["workspaces"]].index("fleet")
+    store.handle(Intent(IntentType.SWITCH_WORKSPACE, {"index": idx}))
+    items = store._current_items()
+    assert items == [{"type": "fleet_panel"}]
+    store.handle(Intent(IntentType.NAVIGATE, {"dir": "down"}))
+    store.handle(Intent(IntentType.ACTIVATE))

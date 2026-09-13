@@ -209,7 +209,10 @@ class JoystickInput(InputDevice):
 # Keyed by workspace id; every alias here is lowercased at match time.
 _WS_ALIASES = {
     "models": ("subsystems", "models", "backends"),
+    "fleet": ("fleet", "network", "nodes", "instances", "net", "mesh",
+              "randomesh"),
     "net": ("fleet", "network", "nodes", "instances"),
+    "mesh": ("mesh", "randomesh", "fleet"),
     "runs": ("runs", "processes", "results", "jobs", "agent work"),
     "desktop": ("desktop", "home", "dashboard"),
     "term": ("terminal", "term", "shell", "console"),
