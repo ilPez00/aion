@@ -24,11 +24,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# repos to track if config doesn't override
+# repos to track if config doesn't override (home-relative: any user, any box)
 DEFAULT_REPOS = [
-    "/home/gio/cyclops",
-    "/home/gio/aion",
-    "/home/gio/praxis_webapp",
+    str(Path.home() / "dev/CyclUno"),
+    str(Path.home() / "dev/aion"),
+    str(Path.home() / "Praxis/praxis_webapp"),
 ]
 
 DEFAULT_DB = Path.home() / ".hermes" / "state.db"

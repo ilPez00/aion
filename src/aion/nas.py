@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
@@ -137,11 +138,12 @@ def mount_nas(share: str, mountpoint: str | None = None) -> dict[str, Any]:
     """
     if share not in SHARES:
         return {"ok": False, "error": f"unknown share {share}"}
-    helper = shutil.which("nas-mount.sh") or "/home/gio/dev/randomesh/scripts/nas-mount.sh"
+    helper = (shutil.which("nas-mount.sh")
+              or str(Path.home() / "dev/randomesh/scripts/nas-mount.sh"))
     try:
         if shutil.which("sshfs"):
             cmd = ["sshfs", f"{PANSA}:{SHARES[share]}",
-                   mountpoint or f"/home/gio/nas-{share}",
+                   mountpoint or str(Path.home() / f"nas-{share}"),
                    "-o", "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,allow_other"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             return {"ok": r.returncode == 0, "error": r.stderr.strip() or None}

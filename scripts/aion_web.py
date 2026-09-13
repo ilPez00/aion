@@ -1326,7 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         if p == "/api/files":
-            path = q.get("path", ["/home/gio"])[0]
+            path = q.get("path", [os.path.expanduser("~")])[0]
             nodes, edges = [], []
             try:
                 entries = sorted(os.listdir(path))
@@ -1664,7 +1664,8 @@ async def editor_ws(ws):
             async for msg in ws:
                 d = json.loads(msg)
                 if d.get("type") == "open":
-                    fn = d.get("file", "/home/gio/aion/notes/welcome.md")
+                    fn = d.get("file", os.path.expanduser(
+                        "~/aion/notes/welcome.md"))
                     host = PTYHost(cols=100, rows=30, cmd=f"micro {shlex.quote(fn)}")
                     HOSTS[id(ws)] = host
                 elif d.get("type") == "input" and host:

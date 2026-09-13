@@ -310,8 +310,13 @@ class AiOSApp(App):
         # nothing until someone opens the workspace.
         self.set_interval(20, self._refresh_mesh)
         # hypergraph agent monitoring (physis digest + ornith/qwen topology)
-        self.store.hypergraph_substrate = getattr(self.store, 'hypergraph_substrate',
-                                                 '/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json')
+        import os as _os
+        self.store.hypergraph_substrate = getattr(
+            self.store, 'hypergraph_substrate',
+            _os.environ.get("AION_HYPERGRAPH_SUBSTRATE",
+                            f"{_os.path.expanduser('~')}/dev/physis-pro/"
+                            "deploy-pansa/digest-output/extensions.json"))
+        del _os
 
         self.title = self.cfg["app_name"]
         self.sub_title = f"multi-harness · stats visualizer · mode: {self.store.state.active_mode}"

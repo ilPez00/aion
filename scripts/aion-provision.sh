@@ -45,10 +45,11 @@ fi
 PY="$REPO/.venv/bin/python"
 
 say "installing aion + test deps"
+EXTRAS="${AION_EXTRAS:-dev,web}"
 if [ -x "$UV" ]; then
-  "$UV" pip install --python "$PY" -q -e ".[dev,web]" || die "uv install failed"
+  "$UV" pip install --python "$PY" -q -e ".[${EXTRAS}]" || die "uv install failed"
 else
-  "$PY" -m pip install -q -e ".[dev,web]" || die "pip install failed"
+  "$PY" -m pip install -q -e ".[${EXTRAS}]" || die "pip install failed"
 fi
 
 # An editable install pointing at a DIFFERENT checkout is the trap air fell

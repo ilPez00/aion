@@ -178,11 +178,11 @@ def collect_docs() -> list[dict]:
 _MODEL_ROOTS_DEFAULT = [
     "/mnt/29F19CF06CA44E9F/models/gguf",   # omo store
     "/mnt/29F19CF06CA44E9F/models",       # catch-all omo
-    "/home/gio/nas/models",               # feather NAS mount
+    "~/nas/models",                       # feather NAS mount (expanded per-user)
     "/srv/models",                        # shared fleet model NFS
-    "/home/gio/.cache/huggingface",       # HF download cache
-    "/home/gio/.ollama/models",           # ollama blobs
-    "/home/gio/.local/share/ollama/models",
+    "~/.cache/huggingface",               # HF download cache
+    "~/.ollama/models",                   # ollama blobs
+    "~/.local/share/ollama/models",
 ]
 # GLOB patterns for model weights / tensors.
 _MODEL_GLOBS = ("*.gguf", "*.bin", "*.safetensors", "*.pt", "*.ggml.*",
@@ -202,7 +202,7 @@ def collect_models() -> list[dict]:
     )
     seen: set[str] = set()
     for root in roots:
-        rp = Path(root)
+        rp = Path(root).expanduser()
         if not rp.is_dir():
             continue
         try:

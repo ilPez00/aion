@@ -64,6 +64,15 @@ install by hand. **One command starts everything:**
 ./aion.sh status       # what is running right now
 ```
 
+**New machine joining the fleet** — one installer does deps, Tailscale auth,
+the node, and the network merge (no secrets in the repo; the fleet token is
+pasted by a human, never logged):
+
+```bash
+./scripts/install.sh         # full run, safe to re-run
+./scripts/install.sh --dev   # + pytest/ruff for development
+```
+
 ```bash
 ./aion.sh up --cockpit # ...and drop into the TUI once the HUD is up
 ./aion.sh              # the TUI cockpit

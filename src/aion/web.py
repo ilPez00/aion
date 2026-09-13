@@ -20,9 +20,10 @@ import urllib.parse
 
 def _load_env() -> None:
     """Pull backend keys from the shared .env files (no secrets in code)."""
+    home = os.path.expanduser("~")
     try:
         from dotenv import load_dotenv  # type: ignore
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 try:
                     load_dotenv(f)
@@ -32,7 +33,7 @@ def _load_env() -> None:
                             k, v = line.strip().split("=", 1)
                             os.environ.setdefault(k, v)
     except Exception:
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 for line in open(f):
                     if line.startswith(("GROQ_API_KEY=",)):

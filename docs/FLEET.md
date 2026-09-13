@@ -143,23 +143,32 @@ loopback and requires a shared token.
    otherwise.
 
 2. Copy the secret to every machine in the fleet — one secret, not per-node
-   keys:
+   keys. On a fresh box the installer prompts for it (pasted, never logged):
+
+   ```bash
+   ./scripts/install.sh   # deps, tailscale auth, node, peer merge
+   ```
+
+   or by hand:
 
    ```bash
    scp ~/.aion/token other-box:~/.aion/token
    ```
 
-3. Add the node, from `config/layout.json`:
+3. Add the node. The installer discovers online tailnet peers and writes
+   them to the *user* overlay (`~/.config/aion/layout.json`), never the
+   shipped config — pulls can never clobber a machine's view of the fleet:
 
    ```json
-   "remote_nodes": [{"id": "pi5", "host": "192.168.1.100", "port": 8765}]
+   "remote_nodes": [{"id": "omo", "host": "100.116.39.57", "port": 8765}]
    ```
 
-   or at runtime via `Ctrl-K`:
+   Reach peers by Tailscale IP (stable per device), not LAN IPs (they change
+   the moment the machine leaves the building). Or at runtime via `Ctrl-K`:
 
    ```
-   remote add pi5 192.168.1.100:8765
-   remote run pi5 build the firmware
+   remote add omo 100.116.39.57:8765
+   remote run omo build the firmware
    ```
 
 Requests without the token get a 401 and no handler runs. Transport is plain

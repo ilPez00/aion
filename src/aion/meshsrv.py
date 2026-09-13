@@ -32,17 +32,21 @@ Transport = Callable[[str, str, str], tuple[int, str]]  # (method, target, cmd) 
 
 # name -> (host alias, probe kind, probe value, start-cmd, stop-cmd)
 # probe kind: "tcp" (port) or "unit" (systemd unit name)
+# Paths are ~-relative: the cockpit runs as any user on any box, and fleet
+# rows (CONFIG.md → fleet.json) override per-node values at load. Nothing
+# here may bind 0.0.0.0 (no auth on these services): loopback for the legacy
+# rows, the node's Tailscale IP for real serving (serve-start.sh pattern).
 SERVICES: dict[str, dict] = {
     "physis": {
         "host": "omo-ts",
         "probe": ("tcp", 8090),
-        "start": "cd /home/gio/physis_pro && PHYSIS_DEV=1 cargo run --release --bin physis-web 2>&1 | tail -3",
+        "start": "cd ~/dev/physis-pro && PHYSIS_DEV=1 cargo run --release --bin physis-web 2>&1 | tail -3",
         "stop": "pkill -f physis-web",
     },
     "praxis_webapp": {
         "host": "omo-ts",
         "probe": ("tcp", 8070),
-        "start": "cd /home/gio/praxis_webapp && npm run start 2>&1 | tail -3",
+        "start": "cd ~/Praxis/praxis_webapp && npm run start 2>&1 | tail -3",
         "stop": "pkill -f 'npm run start'",
     },
     # RandoMesh model-serving stack (llama.cpp Vulkan/ROCm, Caddy LB on omo:8088).
@@ -51,28 +55,28 @@ SERVICES: dict[str, dict] = {
     "mesh-lm-orch": {   # Caddy orchestrator on omo — unified /v1 endpoint
         "host": "omo-ts",
         "probe": ("tcp", 8088),
-        "start": "cd /home/gio/scripts/freetoken-cluster && caddy run --config Caddyfile.llama --adapter caddyfile 2>&1 | tail -3",
+        "start": "cd ~/scripts/freetoken-cluster && caddy run --config Caddyfile.llama --adapter caddyfile 2>&1 | tail -3",
         "stop": "pkill -f 'caddy run'",
     },
     "omo-llm": {        # llama-server node on RX 6650 XT (8GB, Vulkan/ROCm)
         "host": "omo-ts", "probe": ("tcp", 8081),
-        "start": "nohup /home/gio/dev/scripts/llama-b8831/llama-server -m /home/gio/models/gemma4-e2b-heretic-Q4_K_M.gguf -ngl 99 --host 0.0.0.0 --port 8081 --alias e2b --jinja -c 4096 >/tmp/omo-llama.log 2>&1 &",
+        "start": "nohup ~/llama.cpp/llama-server -m ~/models/gemma4-e2b-heretic-Q4_K_M.gguf -ngl 99 --host 127.0.0.1 --port 8081 --alias e2b --jinja -c 4096 >/tmp/omo-llama.log 2>&1 &",
         "stop": "pkill -f 'llama-server.*8081'",
     },
     "pansa-llm": {      # llama-server node on RX 550 (2GB, partial + CPU)
         "host": "pansa-ts", "probe": ("tcp", 8081),
-        "start": "bash /home/gio/models/pansa_node.sh",
+        "start": "bash ~/models/pansa_node.sh",
         "stop": "pkill -f 'llama-server.*8081'",
     },
     "air-llm": {        # llama-server CPU node (4-core, slow/conditional)
         "host": "air-ts", "probe": ("tcp", 8081),
-        "start": "bash /home/gio/air_node.sh",
+        "start": "bash ~/air_node.sh",
         "stop": "pkill -f 'llama-server.*8081'",
     },
     "colibri": {
         "host": "omo-ts",
         "probe": ("tcp", 11435),
-        "start": "cd /home/gio/colibri && uv run colibri serve 2>&1 | tail -3",
+        "start": "cd ~/colibri && uv run colibri serve 2>&1 | tail -3",
         "stop": "pkill -f colibri",
     },
 }
@@ -164,7 +168,7 @@ def _load_fleet_services() -> dict[str, dict]:
             "host": host,
             "probe": ("tcp", int(port)),
             "start": base.get("start")
-            or f"bash /home/gio/scripts/fleet/serve-start.sh {node_name}",
+            or f"bash ~/dev/randomesh/scripts/fleet/serve-start.sh {node_name}",
             "stop": base.get("stop") or "pkill -f 'llama-server.*8081'",
         }
 
@@ -176,7 +180,7 @@ def _load_fleet_services() -> dict[str, dict]:
             SERVICES[node_name] = {
                 "host": info["host"],
                 "probe": info["probe"],
-                "start": f"bash /home/gio/scripts/fleet/serve-start.sh {node_name}",
+                "start": f"bash ~/dev/randomesh/scripts/fleet/serve-start.sh {node_name}",
                 "stop": "pkill -f 'llama-server.*8081'",
             }
 

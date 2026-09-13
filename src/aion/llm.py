@@ -83,9 +83,10 @@ class ChatSession:
 
 def _load_env() -> None:
     """Ensure FCM/groq env vars are loaded."""
+    home = os.path.expanduser("~")
     try:
         from dotenv import load_dotenv
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 try:
                     load_dotenv(f)
@@ -95,7 +96,7 @@ def _load_env() -> None:
                             k, v = line.strip().split("=", 1)
                             os.environ.setdefault(k, v)
     except Exception:
-        for f in ("/home/gio/.env", "/home/gio/.hermes/.env"):
+        for f in (f"{home}/.env", f"{home}/.hermes/.env"):
             if os.path.exists(f):
                 for line in open(f):
                     if line.startswith(("GROQ_API_KEY=",)):

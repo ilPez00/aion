@@ -99,9 +99,19 @@ class Store(SwarmCommands):
         self.mesh_callback = None    # set by app: async fn(text) -> str (mesh pkg control)
         self.bridge_callback = None  # set by app: async fn(text) -> str (agent-bridge history)
         # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
-        self.hypergraph_substrate = "/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json"
-        self.hypergraph_remote_scan = "ssh -o ConnectTimeout=5 pansa-ts 'bash /home/gio/dev/physis-pro/deploy-pansa/hypergraph-pansa-digest.sh {dir}'"
+        # home-relative + env-overridable: the cockpit runs as any user on any box
+        import os as _os
+        _home = _os.path.expanduser("~")
+        _physis = _os.environ.get("AION_PHYSIS_PRO",
+                                  f"{_home}/dev/physis-pro")
+        self.hypergraph_substrate = _os.environ.get(
+            "AION_HYPERGRAPH_SUBSTRATE",
+            f"{_physis}/deploy-pansa/digest-output/extensions.json")
+        self.hypergraph_remote_scan = (
+            "ssh -o ConnectTimeout=5 pansa-ts "
+            f"'bash {_physis}/deploy-pansa/hypergraph-pansa-digest.sh {{dir}}'")
         self.hypergraph_remote_interact = "ssh -o ConnectTimeout=5 omo-ts 'curl -s --max-time 10 -X POST http://localhost:11434/v1/chat/completions -H \"Content-Type: application/json\" -d \"{\\\"model\\\":\\\"ornith-1.5-9b-agent\\\"}\"'"
+        del _os, _home, _physis
         self.memory = BrainStore()        # gbrain MCP with MemoryStore fallback
         self.credentials = CredentialStore()  # structured provider profiles
         from .todos import TodoStore
