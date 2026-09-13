@@ -42,9 +42,15 @@ def test_pick_skips_and_tie_order():
 
 
 def test_delegate_dry_run_parity_with_real_script():
-    """Cockpit pick() and the REAL delegate.sh agree on controlled inputs."""
+    """Cockpit pick() and the REAL delegate.sh agree on controlled inputs.
+
+    Live (ssh probes) — runs only with FLEET_LIVE=1. The suite contract is
+    no network from tests (conftest), so this stays opt-in.
+    """
     if not os.path.exists(DELEGATE):
         pytest.skip("delegate.sh not present")
+    if os.environ.get("FLEET_LIVE") != "1":
+        pytest.skip("needs FLEET_LIVE=1 (ssh probes)")
     me = socket.gethostname() + "-ts"
     chosen = delegate_dry_run(["no-such-host-ts", me], "echo hi")
     assert chosen == me  # unreachable skipped, only reachable chosen

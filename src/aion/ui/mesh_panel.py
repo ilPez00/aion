@@ -106,7 +106,43 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
         if pending:
             out.append(f"[{theme.get('warn', '#FFD479')}]  ⚠ armed: {pending}[/]")
 
-    # Phase 3: aggregated agent sessions / memories / docs (mesh agg collection)
+    # Phase 3: fleet sessions (agent-task queue) + model roles (fleet-models)
+    sessions = data.get("sessions") or {}
+    sess_rows = sessions.get("rows", []) if isinstance(sessions, dict) else []
+    models = data.get("models") or {}
+    model_rows = models.get("rows", []) if isinstance(models, dict) else []
+    if sess_rows or model_rows:
+        out.append("")
+        live = sessions.get("live", sum(1 for s in sess_rows
+                                        if not s.get("terminal", False))) \
+            if isinstance(sessions, dict) else 0
+        out.append(f"[{theme.get('dim', '#9aabbb')}]sessions "
+                   f"{live} live/{len(sess_rows)}[/]")
+        for s in sess_rows:
+            mark = "○" if s.get("terminal", False) else "●"
+            color = theme.get("faint", "#6b7d8d") if s.get("terminal", False) \
+                else theme.get("ok", "#7CFFB2")
+            out.append(f"  [{color}]{mark}[/] "
+                       f"[{theme.get('fg', '#dbe6f0')}]"
+                       f"{str(s.get('id', '?'))[:24]}[/] "
+                       f"[{theme.get('dim', '#9aabbb')}]"
+                       f"{s.get('status', '?')} {s.get('engine', '')} — "
+                       f"{str(s.get('title', ''))[:40]}[/]")
+        if model_rows:
+            roles = models.get("by_role", {}) if isinstance(models, dict) else {}
+            role_line = "  ".join(f"{k}:{c}" for k, c in roles.items()) or "—"
+            out.append(f"[{theme.get('dim', '#9aabbb')}]models "
+                       f"{len(model_rows)} · {role_line}[/]")
+            for m in model_rows:
+                if not m.get("enabled", True):
+                    continue
+                out.append(f"  [{theme.get('fg', '#dbe6f0')}]"
+                           f"{str(m.get('id', '?'))[:28]}[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]"
+                           f"{m.get('node', '?')} "
+                           f"{','.join(m.get('roles', []) or [])}[/]")
+
+    # Phase 3b: aggregated agent sessions / memories / docs (mesh agg collection)
     agg = data.get("agg") or {}
     if agg:
         out.append("")

@@ -1272,11 +1272,30 @@ class AiOSApp(App):
         async def run() -> None:
             import time as _t
             try:
-                from .. import meshmon, meshsrv
+                from .. import meshmon, meshsrv, fleettask, fleetview
                 mesh = await asyncio.to_thread(meshmon.snapshot)
                 services = await asyncio.to_thread(meshsrv.snapshot)
-                self._mesh_cache = {"ts": _t.time(),
-                                    "data": {"mesh": mesh, "services": services}}
+                # local-only, cheap: queue dir + models file, no network
+                sessions = await asyncio.to_thread(
+                    lambda: [t.as_dict()
+                             for t in fleettask.read_local_tasks()])
+                models = await asyncio.to_thread(fleetview.load_models)
+                by_role: dict[str, int] = {}
+                for m in models:
+                    if m.get("enabled", True):
+                        for r in m.get("roles", []) or []:
+                            by_role[r] = by_role.get(r, 0) + 1
+                live = sum(1 for s in sessions if not s.get("terminal", False))
+                self._mesh_cache = {"ts": _t.time(), "data": {
+                    "mesh": mesh, "services": services,
+                    "sessions": {"total": len(sessions), "live": live,
+                                 "rows": sessions},
+                    "models": {"total": len(models), "by_role": by_role,
+                               "rows": [{"id": m.get("id", ""),
+                                         "node": m.get("node", ""),
+                                         "roles": m.get("roles", []),
+                                         "enabled": m.get("enabled", True)}
+                                        for m in models]}}}
             except Exception as e:
                 self.store.state.logs.append(
                     f"mesh: refresh failed: {type(e).__name__}: {str(e)[:80]}")
@@ -1334,8 +1353,9 @@ class AiOSApp(App):
             if not rows:   # cache cold: one explicit probe, on a worker thread
                 snap = await asyncio.to_thread(meshsrv.snapshot)
                 rows = snap["services"]
+                old = self._mesh_cache.get("data") or {}
                 self._mesh_cache = {"ts": __import__("time").time(),
-                                    "data": {"services": snap}}
+                                    "data": {**old, "services": snap}}
             lines = [f"  {'●' if r.get('running') else '○'} {r['name']:16s} "
                      f"{r.get('host', '?'):10s} [{r.get('kind', 'service')}] "
                      f"{r.get('detail', '')[:24]}"
@@ -1346,7 +1366,37 @@ class AiOSApp(App):
         if sub == "help":
             return ("mesh list | mesh status <name> | "
                     "mesh start|stop|restart <name> | "
-                    "mesh install|disable <name>[@host] yes")
+                    "mesh install|disable <name>[@host] yes | "
+                    "mesh sessions | mesh place <shell command>")
+
+        if sub == "sessions":
+            # fleet session table (agent-task queue). Read-only: refresh/reap
+            # stay the queue's job; the cockpit never mutates queue state here.
+            from .. import fleettask
+            rows = await asyncio.to_thread(
+                lambda: [t.as_dict() for t in fleettask.read_local_tasks()])
+            if not rows:
+                return "fleet sessions: none queued (this host's queue is empty)"
+            lines = [f"  {'○' if r.get('terminal') else '●'} "
+                     f"{r['id'][:24]:24s} {r.get('status', '?'):10s} "
+                     f"{r.get('engine', '')[:20]:20s} {r.get('title', '')[:44]}"
+                     for r in rows]
+            live = sum(1 for r in rows if not r.get("terminal"))
+            return f"fleet sessions: {live} live/{len(rows)}:\n" + "\n".join(lines)
+
+        if sub == "place":
+            # placement preview: where WOULD this run? Dry-run only — the
+            # command is scored, never executed (delegate.sh --dry-run).
+            if not arg:
+                return "usage: mesh place <shell command>"
+            from .. import fleetplace
+            hosts = (os.environ.get("FLEET_TASK_HOSTS", "") or "").split()
+            chosen = await asyncio.to_thread(
+                fleetplace.delegate_dry_run, hosts or None, arg,
+                script=fleetplace.DELEGATE_SCRIPT)
+            if not chosen:
+                return "fleet place: no reachable candidate"
+            return f"fleet place: {arg[:60]!r} would run on {chosen} (dry-run)"
 
         toks = arg.split()
         confirm = bool(toks) and toks[-1] == "yes"
@@ -1391,7 +1441,8 @@ class AiOSApp(App):
                     f"to proceed: mesh {sub} {target} yes")
 
         return ("usage: mesh list|status|start|stop|restart|install|disable "
-                "<name>[@host] — install/disable need a trailing 'yes'")
+                "<name>[@host] | mesh sessions | mesh place <cmd> — "
+                "install/disable need a trailing 'yes'")
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""

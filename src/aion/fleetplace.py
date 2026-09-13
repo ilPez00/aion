@@ -77,16 +77,19 @@ def pick(candidates: list[Candidate], *, need_gpu: bool = False,
     return best
 
 
-def delegate_dry_run(hosts: list[str], command: str = "true", *,
+def delegate_dry_run(hosts: list[str] | None, command: str = "true", *,
                      need_gpu: bool = False, min_mem_mb: int = 0,
                      script: str = DELEGATE_SCRIPT,
                      env: dict | None = None) -> str | None:
     """Run the REAL delegate.sh --dry-run; return the chosen host (or None).
 
-    The cockpit proposes with pick(); the fleet disposes with this. A parity
-    test asserts both agree on controlled inputs.
+    hosts=None omits --host, so the script uses its own FLEET_DELEGATE_HOSTS
+    default. The cockpit proposes with pick(); the fleet disposes with this.
+    A parity test asserts both agree on controlled inputs.
     """
-    cmd = [script, command, "--host", ",".join(hosts), "--dry-run"]
+    cmd = [script, command, "--dry-run"]
+    if hosts:
+        cmd += ["--host", ",".join(hosts)]
     if need_gpu:
         cmd.append("--gpu")
     if min_mem_mb > 0:
