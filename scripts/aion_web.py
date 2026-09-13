@@ -576,6 +576,41 @@ def peers_snapshot() -> dict:
             "up": sum(1 for r in out if r["reachable"])}
 
 
+def fleet_sessions_snapshot() -> dict:
+    """What the HUD draws for the fleet queue: local agent-task rows."""
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    try:
+        from aion import fleettask
+        rows = [t.as_dict() for t in fleettask.read_local_tasks()]
+    except Exception as e:  # noqa: BLE001
+        return {"sessions": [], "total": 0, "live": 0,
+                "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    return {"sessions": rows, "total": len(rows),
+            "live": sum(1 for r in rows if not r.get("terminal"))}
+
+
+def fleet_models_snapshot() -> dict:
+    """What the HUD draws for fleet models: roles per model, no probes."""
+    sys.path.insert(0, os.path.join(os.path.dirname(ROOT), "src"))
+    try:
+        from aion import fleetview
+        # path resolved here, not as a default arg, so tests can point it
+        models = fleetview.load_models(fleetview.DEFAULT_MODELS)
+    except Exception as e:  # noqa: BLE001
+        return {"models": [], "total": 0, "by_role": {},
+                "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    by_role: dict = {}
+    rows = []
+    for m in models:
+        if m.get("enabled", True):
+            for r in m.get("roles", []) or []:
+                by_role[r] = by_role.get(r, 0) + 1
+        rows.append({"id": m.get("id", ""), "node": m.get("node", ""),
+                     "roles": m.get("roles", []),
+                     "enabled": m.get("enabled", True)})
+    return {"models": rows, "total": len(rows), "by_role": by_role}
+
+
 def _with_peers(snap: dict) -> dict:
     """Fold SSH peers into a process-graph snapshot as extra instances.
 
@@ -1355,6 +1390,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._sendj(_bridge(lambda b: b.apps()))
         if p == "/api/peers":
             return self._sendj(peers_snapshot())
+        if p == "/api/fleet/sessions":
+            return self._sendj(fleet_sessions_snapshot())
+        if p == "/api/fleet/models":
+            return self._sendj(fleet_models_snapshot())
         if p == "/api/route/plan":
             return self._sendj(route_plan(
                 harness=q.get("harness", [""])[0],

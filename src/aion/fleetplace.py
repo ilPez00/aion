@@ -7,12 +7,8 @@ and for the parity test that keeps the two from drifting.
 
 Formula (delegate.sh): score = 0.6*(fre/100) + 0.3*idle + 0.1*light where
 idle = max(0, 1-load/cores), light = max(0, 1-tasks/200). First-highest wins.
-Skip rules: unreachable, GPU-needed-but-absent, and the low-RAM gate.
-
-NOTE on the low-RAM gate: delegate.sh compares the free-RAM *percent* against
-a hardcoded 10 whenever --min-mem-mb > 0 (the MB value itself is unused — a
-units mismatch in the script). This mirror replicates that behavior verbatim;
-fixing the script is a separate change both sides must then adopt together.
+Skip rules: unreachable, GPU-needed-but-absent, and the --min-mem-mb hard gate
+in MB (probe.sh's memfree_mb field; percent only weights the score).
 """
 from __future__ import annotations
 
@@ -30,27 +26,32 @@ class Candidate:
     cores: float = 0.0
     load: float = 0.0
     fre: float = 0.0       # % RAM available (probe.sh memfree_pct)
+    fre_mb: float | None = None  # MB RAM available (memfree_mb; None = legacy
     gpu: float = 0.0       # % GPU busy, 0 if none/unknown
     tasks: float = 0.0
 
 
 def parse_probe_line(line: str) -> Candidate | None:
-    """Parse one probe.sh line. None for down/unparseable (never a zero-score
-    row — an unprobed node must not outrank a merely busy one)."""
+    """Parse one probe.sh line (6-field legacy or 7-field with MB). None for
+    down/unparseable (never a zero-score row — an unprobed node must not
+    outrank a merely busy one)."""
     parts = line.strip().split()
-    if len(parts) != 6:
+    if len(parts) not in (6, 7):
         return None
     name, rest = parts[0], parts[1:]
     if rest[0] == "down":
-        return None  # "host down 0 0 0 0 0" — unreachable, not idle
+        return None  # "host down 0 ..." — unreachable, not idle
     try:
-        cores, load, fre, gpu, tasks = (float(rest[0]), float(rest[1]),
-                                        float(rest[2]), float(rest[3]),
-                                        float(rest[4]))
+        nums = [float(x) for x in rest]
     except ValueError:
         return None
-    return Candidate(name=name, cores=cores, load=load, fre=fre, gpu=gpu,
-                     tasks=tasks)
+    if len(nums) == 5:
+        cores, load, fre, gpu, tasks = nums
+        fre_mb = None
+    else:
+        cores, load, fre, fre_mb, gpu, tasks = nums
+    return Candidate(name=name, cores=cores, load=load, fre=fre, fre_mb=fre_mb,
+                     gpu=gpu, tasks=tasks)
 
 
 def score(c: Candidate) -> float:
@@ -63,13 +64,17 @@ def score(c: Candidate) -> float:
 
 def pick(candidates: list[Candidate], *, need_gpu: bool = False,
          min_mem_mb: int = 0) -> Candidate | None:
-    """First-highest scorer wins; ties keep the earlier candidate."""
+    """First-highest scorer wins; ties keep the earlier candidate.
+
+    The MB gate applies only when the probe carried MB data (legacy 6-field
+    probes can't be gated — same rule as delegate.sh).
+    """
     best: Candidate | None = None
     best_score = -1.0
     for c in candidates:
         if need_gpu and c.gpu == 0:
             continue
-        if min_mem_mb > 0 and c.fre < 10:
+        if min_mem_mb > 0 and c.fre_mb is not None and c.fre_mb < min_mem_mb:
             continue
         s = score(c)
         if s > best_score:
