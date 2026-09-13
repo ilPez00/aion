@@ -1,13 +1,24 @@
 """Tests for fleetplace.py — cockpit mirror of delegate.sh scoring."""
+import json
 import os
 import socket
 
 import pytest
 
-from aion.fleetplace import (Candidate, delegate_dry_run, parse_probe_line,
-                             pick, score)
+from aion.fleetplace import (Candidate, delegate_dry_run, load_capability,
+                             parse_probe_line, pick, pick_with_reasons,
+                             satisfies, score)
 
 DELEGATE = os.path.expanduser("~/dev/randomesh/scripts/fleet/delegate.sh")
+
+CAPS_GPU = {"reachable": True, "cores": 16, "mem_avail_mb": 8735,
+            "mem_total_mb": 15000, "disks": {"/": 90000},
+            "gpu_vram_mb": 8176, "vulkan": "yes", "kfd": "yes",
+            "has_cargo": "yes", "llama_server": "/home/x/llama-server"}
+CAPS_PLAIN = {"reachable": True, "cores": 12, "mem_avail_mb": 4168,
+              "mem_total_mb": 15000, "disks": {"/": 40000},
+              "gpu_vram_mb": 0, "has_cargo": "yes",
+              "llama_server": "none"}
 
 
 def test_parse_probe_line():
@@ -49,6 +60,52 @@ def test_pick_skips_and_tie_order():
     assert pick([]) is None
 
 
+def test_satisfies_matrix():
+    assert satisfies(CAPS_GPU, "gpu")
+    assert satisfies(CAPS_GPU, "ram:8000")
+    assert not satisfies(CAPS_GPU, "ram:99999")
+    assert satisfies(CAPS_GPU, "disk:50000")
+    assert not satisfies(CAPS_GPU, "disk:999999")
+    assert satisfies(CAPS_GPU, "tool:cargo")
+    assert satisfies(CAPS_GPU, "tool:llama")
+    assert not satisfies(CAPS_GPU, "tool:definitely-not-here")
+    assert not satisfies(CAPS_PLAIN, "gpu")       # dead card: 0 VRAM
+    assert satisfies(CAPS_PLAIN, "ram:4000")
+    assert not satisfies({}, "tool:cargo")        # no data: fail closed
+    assert satisfies({}, "anything-else")         # unknown kinds pass open
+
+
+def test_pick_with_reasons_and_caps():
+    g = Candidate("g", 16, 0.14, 57, fre_mb=8735, gpu=0, tasks=88,
+                  caps=CAPS_GPU)
+    p = Candidate("p", 12, 1.0, 70, fre_mb=4168, gpu=0, tasks=50,
+                  caps=CAPS_PLAIN)
+    best, rej = pick_with_reasons([p, g], needs=["tool:cargo"])
+    assert best.name == "p" and rej == {}  # both qualify: load decides
+    best, rej = pick_with_reasons([p, g], needs=["tool:cargo", "gpu"])
+    assert best.name == "g" and rej == {"p": ["gpu"]}
+    best, rej = pick_with_reasons(
+        [p, g], needs=["tool:definitely-not-here"])
+    assert best is None
+    assert rej == {"p": ["tool:definitely-not-here"],
+                   "g": ["tool:definitely-not-here"]}
+    # legacy rows without caps: gpu falls back to the probe flag, tool: fails
+    leg = Candidate("leg", 4, 0.5, 90, gpu=50, tasks=10)
+    best, rej = pick_with_reasons([leg], needs=["gpu"])
+    assert best.name == "leg"
+    best, rej = pick_with_reasons([leg], needs=["tool:cargo"])
+    assert best is None and rej == {"leg": ["tool:cargo"]}
+
+
+def test_load_capability(tmp_path):
+    p = tmp_path / "cap.json"
+    p.write_text(json.dumps({"nodes": {"omo-ts": CAPS_GPU}}))
+    assert load_capability(p)["omo-ts"]["has_cargo"] == "yes"
+    assert load_capability(tmp_path / "missing.json") == {}
+    (tmp_path / "broken.json").write_text("{oops")
+    assert load_capability(tmp_path / "broken.json") == {}
+
+
 def test_delegate_dry_run_parity_with_real_script():
     """Cockpit pick() and the REAL delegate.sh agree on controlled inputs.
 
@@ -65,6 +122,9 @@ def test_delegate_dry_run_parity_with_real_script():
     assert delegate_dry_run(["no-such-host-ts"]) is None  # none reachable
     # the MB gate agrees too: impossible floor gates even the reachable host
     assert delegate_dry_run([me], "echo hi", min_mem_mb=99999999) is None
+    # --needs agrees too: unsatisfiable need rejects everywhere, both sides
+    assert delegate_dry_run([me], "echo hi",
+                            needs=["tool:definitely-not-here"]) is None
     # same inputs through the mirror: down candidate parses to None,
     # so pick() over the survivors must agree with the script
     assert pick([Candidate(me, 12, 1.0, 70, gpu=0, tasks=50)]).name == me

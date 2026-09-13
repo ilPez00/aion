@@ -1385,7 +1385,7 @@ class AiOSApp(App):
             return ("mesh list | mesh status <name> | "
                     "mesh start|stop|restart <name> | "
                     "mesh install|disable <name>[@host] yes | "
-                    "mesh sessions | mesh place <shell command>")
+                    "mesh sessions | mesh place <shell command> [--needs SPEC]")
 
         if sub == "sessions":
             # fleet session table (agent-task queue). Read-only: refresh/reap
@@ -1405,16 +1405,29 @@ class AiOSApp(App):
         if sub == "place":
             # placement preview: where WOULD this run? Dry-run only — the
             # command is scored, never executed (delegate.sh --dry-run).
+            # `--needs SPEC` (repeatable) filters by capability; the shell
+            # prints per-node rejection reasons when nothing qualifies.
             if not arg:
-                return "usage: mesh place <shell command>"
+                return ("usage: mesh place <shell command> [--needs SPEC] — "
+                        "needs: gpu | ram:MB | disk:MB | tool:NAME")
             from .. import fleetplace
             hosts = (os.environ.get("FLEET_TASK_HOSTS", "") or "").split()
+            toks = arg.split()
+            needs = [toks[i + 1] for i in range(len(toks) - 1)
+                     if toks[i] == "--needs"]
+            cmd = " ".join(t for i, t in enumerate(toks)
+                           if t != "--needs" and (i == 0 or toks[i - 1] != "--needs"))
+            if not cmd:
+                return ("usage: mesh place <shell command> [--needs SPEC]")
             chosen = await asyncio.to_thread(
-                fleetplace.delegate_dry_run, hosts or None, arg,
-                script=fleetplace.DELEGATE_SCRIPT)
+                fleetplace.delegate_dry_run, hosts or None, cmd,
+                needs=needs, script=fleetplace.DELEGATE_SCRIPT)
             if not chosen:
-                return "fleet place: no reachable candidate"
-            return f"fleet place: {arg[:60]!r} would run on {chosen} (dry-run)"
+                return ("fleet place: no reachable candidate"
+                        + (f" for [{', '.join(needs)}]" if needs else ""))
+            extra = f" [{', '.join(needs)}]" if needs else ""
+            return (f"fleet place: {cmd[:60]!r} would run on "
+                    f"{chosen}{extra} (dry-run)")
 
         toks = arg.split()
         confirm = bool(toks) and toks[-1] == "yes"
@@ -1459,7 +1472,7 @@ class AiOSApp(App):
                     f"to proceed: mesh {sub} {target} yes")
 
         return ("usage: mesh list|status|start|stop|restart|install|disable "
-                "<name>[@host] | mesh sessions | mesh place <cmd> — "
+                "<name>[@host] | mesh sessions | mesh place <cmd> [--needs SPEC] — "
                 "install/disable need a trailing 'yes'")
 
     async def _handle_bridge_command(self, text: str) -> str:

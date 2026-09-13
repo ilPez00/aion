@@ -97,6 +97,26 @@ def test_mesh_place_palette_dry_run(monkeypatch, tmp_path):
     assert out.startswith("usage:")
 
 
+def test_mesh_place_passes_needs(monkeypatch, tmp_path):
+    from aion import fleetplace
+    from aion.ui.app import AiOSApp
+    # the stand-in records argv: --needs must reach the real script's flags.
+    log = tmp_path / "argv.log"
+    fake = tmp_path / "delegate.sh"
+    fake.write_text("#!/usr/bin/env bash\n"
+                    f"printf '%s\\n' \"$@\" > {log}\n"
+                    "echo '=== chosen: picked-ts (score=0.9000) ==='\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(fleetplace, "DELEGATE_SCRIPT", str(fake))
+    out = _aio.run(AiOSApp._handle_mesh_command(
+        _FakeApp(), "mesh place echo hi --needs tool:cargo --needs gpu"))
+    assert "would run on picked-ts" in out
+    assert "[tool:cargo, gpu]" in out
+    argv = log.read_text().split()
+    assert argv.count("--needs") == 2
+    assert "tool:cargo" in argv and "gpu" in argv
+
+
 def test_fleet_panel_combines_peers_and_mesh():
     """The merged workspace stacks both halves — no half goes missing."""
     from aion.ui.app import AiOSApp
