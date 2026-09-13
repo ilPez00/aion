@@ -14,6 +14,7 @@ The command palette is optional, searchable, and shows completions.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import os
 import shutil
 from pathlib import Path
@@ -1282,10 +1283,16 @@ class AiOSApp(App):
                 from .. import meshmon, meshsrv, fleettask, fleetview
                 mesh = await asyncio.to_thread(meshmon.snapshot)
                 services = await asyncio.to_thread(meshsrv.snapshot)
-                # local-only, cheap: queue dir + models file, no network
+                # local-only, cheap: queue dirs + models file, no network.
+                # dispatch jobs join the sessions table (engine "dispatch",
+                # ᴰ marks idempotent) so lost rows and their requeue
+                # suggestion are visible where sessions live.
+                from .. import fleetdispatch
                 sessions = await asyncio.to_thread(
                     lambda: [t.as_dict()
-                             for t in fleettask.read_local_tasks()])
+                             for t in fleettask.read_local_tasks()]
+                    + [j.as_session_row()
+                       for j in fleetdispatch.read_local_jobs()])
                 models = await asyncio.to_thread(fleetview.load_models)
                 by_role: dict[str, int] = {}
                 for m in models:
@@ -1386,7 +1393,8 @@ class AiOSApp(App):
                     "mesh start|stop|restart <name> | "
                     "mesh install|disable <name>[@host] yes | "
                     "mesh sessions | mesh place <shell command> [--needs SPEC] | "
-                    "mesh dispatch <shell command> [--needs SPEC] [--stage DIR] [yes]")
+                    "mesh dispatch <shell command> [--needs SPEC] [--stage DIR] [yes] | "
+                    "mesh requeue [yes]")
 
         if sub == "sessions":
             # fleet session table (agent-task queue). Read-only: refresh/reap
@@ -1469,6 +1477,33 @@ class AiOSApp(App):
             except RuntimeError as e:
                 return f"fleet dispatch: submit failed ({e})"
             return f"fleet dispatch: submitted {real} -> {node}"
+
+        if sub == "requeue":
+            # recover lost idempotent jobs elsewhere. Preview by default;
+            # trailing "yes" runs it (same two-step as dispatch submit —
+            # re-running is a side effect even when marked safe).
+            from .. import fleetdispatch
+            script = fleetdispatch.DISPATCH_SCRIPT
+            confirm = arg.strip() == "yes"
+            if arg.strip() and not confirm:
+                return "usage: mesh requeue [yes]"
+            try:
+                p = await asyncio.to_thread(
+                    subprocess.run, [script, "requeue", "--dry-run"],
+                    capture_output=True, text=True, timeout=180)
+            except Exception as e:  # noqa: BLE001
+                return f"fleet requeue: preview failed ({type(e).__name__})"
+            preview = (p.stdout or "").strip()
+            if not confirm:
+                return ("fleet requeue preview (append 'yes' to run):\n"
+                        + preview)
+            try:
+                p = await asyncio.to_thread(
+                    subprocess.run, [script, "requeue"],
+                    capture_output=True, text=True, timeout=300)
+            except Exception as e:  # noqa: BLE001
+                return f"fleet requeue: failed ({type(e).__name__})"
+            return "fleet requeue:\n" + (p.stdout or "").strip()
 
         toks = arg.split()
         confirm = bool(toks) and toks[-1] == "yes"

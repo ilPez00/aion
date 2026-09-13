@@ -9,13 +9,16 @@ same HITL shape the mesh verbs already use.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 DISPATCH_SCRIPT = os.path.expanduser(
     "~/dev/randomesh/scripts/fleet/dispatch.sh")
+DISPATCH_JOBS = Path.home() / ".local/state/randomesh/jobs"
 
 
 @dataclass
@@ -36,6 +39,43 @@ class DispatchJob:
         return {"id": self.id, "node": self.node, "name": self.name,
                 "state": self.state, "rc": self.rc,
                 "idempotent": self.idempotent, "terminal": self.terminal}
+
+    def as_session_row(self) -> dict:
+        """Fleet sessions-table shape (cf. fleettask rows)."""
+        mark = "ᴰ" if self.idempotent else ""
+        return {"id": self.id, "title": f"{self.name}{mark} @{self.node}",
+                "status": self.state, "engine": "dispatch",
+                "rc": self.rc, "terminal": self.terminal}
+
+
+def read_local_jobs(state_root: str | Path | None = None) -> list[DispatchJob]:
+    """This host's dispatch queue, from spec.json + cached status files.
+    Local reads only — liveness stays the shell's job (`status` probes)."""
+    root = Path(state_root or DISPATCH_JOBS)
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return []
+    jobs: list[DispatchJob] = []
+    for d in entries:
+        if not d.is_dir():
+            continue
+        try:
+            spec = json.loads((d / "spec.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(spec, dict) or not spec.get("id"):
+            continue
+        try:
+            state = (d / "status").read_text().split()
+        except OSError:
+            state = ["queued"]
+        jobs.append(DispatchJob(
+            id=str(spec["id"]), node=str(spec.get("host", "?")),
+            name=str(spec.get("name", "")), state=state[0] if state else "?",
+            rc=state[1] if len(state) > 1 else "-",
+            idempotent=bool(spec.get("idempotent"))))
+    return jobs
 
 
 _ROW = re.compile(r"^(\S+)\s+(\S+)\s+(.{1,24}?)\s{2,}(\S+)\s+(\S+)\s*(\S*)\s*$")
