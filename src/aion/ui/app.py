@@ -1385,7 +1385,8 @@ class AiOSApp(App):
             return ("mesh list | mesh status <name> | "
                     "mesh start|stop|restart <name> | "
                     "mesh install|disable <name>[@host] yes | "
-                    "mesh sessions | mesh place <shell command> [--needs SPEC]")
+                    "mesh sessions | mesh place <shell command> [--needs SPEC] | "
+                    "mesh dispatch <shell command> [--needs SPEC] [--stage DIR] [yes]")
 
         if sub == "sessions":
             # fleet session table (agent-task queue). Read-only: refresh/reap
@@ -1428,6 +1429,46 @@ class AiOSApp(App):
             extra = f" [{', '.join(needs)}]" if needs else ""
             return (f"fleet place: {cmd[:60]!r} would run on "
                     f"{chosen}{extra} (dry-run)")
+
+        if sub == "dispatch":
+            # submit a roaming job: preview first, real submit only on
+            # trailing "yes" (same two-step as install/disable). Starting
+            # work is an operator action, never a side effect of viewing.
+            from .. import fleetdispatch
+            rest = arg
+            confirm = rest.endswith(" yes")
+            if confirm:
+                rest = rest[:-4].strip()
+            toks = rest.split()
+            needs = [toks[i + 1] for i in range(len(toks) - 1)
+                     if toks[i] == "--needs"]
+            stage = ""
+            if "--stage" in toks:
+                i = toks.index("--stage")
+                stage = toks[i + 1] if i + 1 < len(toks) else ""
+            cmd = " ".join(t for i, t in enumerate(toks)
+                           if t not in ("--needs", "--stage")
+                           and (i == 0 or toks[i - 1] not in ("--needs", "--stage")))
+            if not cmd:
+                return ("usage: mesh dispatch <shell command> [--needs SPEC] "
+                        "[--stage DIR] [yes]")
+            try:
+                jid, node = await asyncio.to_thread(
+                    fleetdispatch.submit_preview, cmd, needs=needs,
+                    stage=stage, script=fleetdispatch.DISPATCH_SCRIPT)
+            except RuntimeError as e:
+                return f"fleet dispatch: no node qualifies ({e})"
+            if not confirm:
+                extra = f" [{', '.join(needs)}]" if needs else ""
+                return (f"fleet dispatch preview: {cmd[:60]!r} -> {node}{extra} "
+                        f"— append 'yes' to submit")
+            try:
+                real = await asyncio.to_thread(
+                    fleetdispatch.submit, cmd, needs=needs, stage=stage,
+                    script=fleetdispatch.DISPATCH_SCRIPT)
+            except RuntimeError as e:
+                return f"fleet dispatch: submit failed ({e})"
+            return f"fleet dispatch: submitted {real} -> {node}"
 
         toks = arg.split()
         confirm = bool(toks) and toks[-1] == "yes"
@@ -1472,7 +1513,7 @@ class AiOSApp(App):
                     f"to proceed: mesh {sub} {target} yes")
 
         return ("usage: mesh list|status|start|stop|restart|install|disable "
-                "<name>[@host] | mesh sessions | mesh place <cmd> [--needs SPEC] — "
+                "<name>[@host] | mesh sessions | mesh place <cmd> [--needs SPEC] | mesh dispatch <cmd> [--needs SPEC] [--stage DIR] [yes] — "
                 "install/disable need a trailing 'yes'")
 
     async def _handle_bridge_command(self, text: str) -> str:
