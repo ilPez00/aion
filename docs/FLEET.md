@@ -165,3 +165,34 @@ loopback and requires a shared token.
 Requests without the token get a 401 and no handler runs. Transport is plain
 HTTP — the token authenticates the caller, it does not encrypt the traffic.
 Treat it as a trusted-LAN feature; do not expose these ports to the internet.
+
+## Shared agentic history (agent-bridge)
+
+Beyond live instances, the fleet keeps one shared history every agent on
+every machine reads and writes: inbox messages plus a learnings store.
+The on-disk protocol matches
+[EthanSK/agent-bridge](https://github.com/EthanSK/agent-bridge) 1:1, so the
+same `~/.agent-bridge/` files work with the real CLI where it is installed —
+aion needs no Node, `src/aion/agentbridge.py` speaks the shapes natively.
+
+```
+~/.agent-bridge/
+  inbox/aion/<uuid>.json          pending messages for this cockpit
+  inbox/.archive/aion/            consumed messages (acked, not deleted)
+  inbox/.processed                ledger of consumed ids (stops re-delivery)
+  shared-context/learnings.ndjson full replica, append-only, uuid-keyed
+```
+
+Palette (`Ctrl-K`): `bridge inbox` · `bridge send <target> <text> [--host H]` ·
+`bridge ack <target> <id-prefix>` · `bridge learn <title> | <body> [#tags]` ·
+`bridge search <query> [#tag]` · `bridge sync [hosts...]`. The Fleet panel
+shows pending count + learnings total; `/api/fleet/sessions` and
+`/api/fleet/models` expose the same to the web HUD.
+
+Sync is append-only union by id in both directions — pushes, pulls and
+replays are idempotent, and concurrent appends on either side cannot clobber
+each other. Peers come from `fleet.json` (override: `AGENT_BRIDGE_HOSTS`).
+Rule of the road, same as upstream: search before debugging something another
+agent may have solved; record anything a different agent on a different
+machine would benefit from. Per-harness memory stays where it is — this store
+is additive, never a replacement.
