@@ -106,6 +106,22 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
         if pending:
             out.append(f"[{theme.get('warn', '#FFD479')}]  ⚠ armed: {pending}[/]")
 
+    # Phase 2b: shared agentic history (agent-bridge inbox + learnings)
+    bridge = data.get("bridge") or {}
+    if bridge.get("pending") or bridge.get("learnings"):
+        out.append("")
+        out.append(f"[{theme.get('dim', '#9aabbb')}]bridge "
+                   f"{bridge.get('pending', 0)} pending · "
+                   f"{bridge.get('learnings', 0)} learnings[/]")
+        for m in bridge.get("rows", []) or []:
+            out.append(f"  [{theme.get('warn', '#FFD479')}]✉[/] "
+                       f"[{theme.get('fg', '#dbe6f0')}]"
+                       f"{m.get('id', '?')}[/] "
+                       f"[{theme.get('dim', '#9aabbb')}]"
+                       f"{m.get('from', '?')} — {m.get('content', '')}[/]")
+        out.append(f"[{theme.get('faint', '#6b7d8d')}]  ↳ "
+                   f"`bridge inbox|ack|learn|search|sync`[/]")
+
     # Phase 3: fleet sessions (agent-task queue) + model roles (fleet-models)
     sessions = data.get("sessions") or {}
     sess_rows = sessions.get("rows", []) if isinstance(sessions, dict) else []

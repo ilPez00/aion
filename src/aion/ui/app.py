@@ -302,6 +302,7 @@ class AiOSApp(App):
         self.store.remote_callback = self._handle_remote_command
         self.store.fleet_callback = self._handle_fleet_command
         self.store.mesh_callback = self._handle_mesh_command
+        self.store.bridge_callback = self._handle_bridge_command
         # The Mesh panel's data: a background collector on an interval, NOT a
         # kick at mount — the panel renders "collecting…" and starts the first
         # refresh on demand. The cockpit already pays an SSH fan-out on mount
@@ -1287,10 +1288,21 @@ class AiOSApp(App):
                         for r in m.get("roles", []) or []:
                             by_role[r] = by_role.get(r, 0) + 1
                 live = sum(1 for s in sessions if not s.get("terminal", False))
+                # shared agentic history — local files only, no network
+                from .. import agentbridge as ab
+                pending = await asyncio.to_thread(ab.read_inbox, "aion")
+                learnings = await asyncio.to_thread(
+                    lambda: sum(1 for _ in ab.iter_learnings()))
                 self._mesh_cache = {"ts": _t.time(), "data": {
                     "mesh": mesh, "services": services,
                     "sessions": {"total": len(sessions), "live": live,
                                  "rows": sessions},
+                    "bridge": {"pending": len(pending),
+                               "rows": [{"id": m["id"][:8],
+                                         "from": m.get("from", "?"),
+                                         "content": str(m.get("content", ""))[:64]}
+                                        for m in pending[:3]],
+                               "learnings": learnings},
                     "models": {"total": len(models), "by_role": by_role,
                                "rows": [{"id": m.get("id", ""),
                                          "node": m.get("node", ""),
@@ -1444,6 +1456,118 @@ class AiOSApp(App):
         return ("usage: mesh list|status|start|stop|restart|install|disable "
                 "<name>[@host] | mesh sessions | mesh place <cmd> — "
                 "install/disable need a trailing 'yes'")
+
+    async def _handle_bridge_command(self, text: str) -> str:
+        """Handle 'bridge inbox|send|ack|learn|search|sync' palette commands.
+
+        Shared agentic history (agent-bridge protocol, stdlib-native):
+        every agent on every machine reads/writes the same inbox + learnings
+        shapes. Local ops are file reads; sync/send --host fan out over SSH
+        on worker threads, never in the render path.
+        """
+        from .. import agentbridge as ab
+        parts = text.split(maxsplit=2)
+        sub = parts[1] if len(parts) > 1 else "inbox"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+        target = "aion"
+
+        if sub == "help":
+            return ("bridge inbox [target] | bridge send <target> <text> "
+                    "[--host H] | bridge ack <target> <id-prefix> | "
+                    "bridge learn <title> | <body> [#tag..] | "
+                    "bridge search <query> [#tag] | bridge sync [host..]")
+
+        if sub == "inbox":
+            t = arg or target
+            rows = await asyncio.to_thread(ab.read_inbox, t)
+            if not rows:
+                return f"bridge inbox {t}: empty"
+            lines = [f"  ○ {m['id'][:8]} [{m.get('from', '?')}] "
+                     f"{str(m.get('content', ''))[:72]}"
+                     for m in rows]
+            return f"bridge inbox {t}: {len(rows)} pending:\n" + "\n".join(lines)
+
+        if sub == "send":
+            toks = arg.split()
+            host = None
+            if "--host" in toks:
+                i = toks.index("--host")
+                host = toks[i + 1] if i + 1 < len(toks) else None
+                toks = toks[:i] + toks[i + 2:]
+                if not host:
+                    return "usage: bridge send <target> <text> [--host H]"
+            if len(toks) < 2:
+                return "usage: bridge send <target> <text> [--host H]"
+            tgt, content = toks[0], " ".join(toks[1:])
+            if host:
+                ok = await asyncio.to_thread(
+                    ab.send_remote, host, tgt, content, ab.local_machine())
+                return (f"bridge send → {host}:{tgt}: queued"
+                        if ok else f"bridge send → {host}:{tgt}: FAILED")
+            try:
+                p = ab.send_local(tgt, content, ab.local_machine())
+            except ValueError as e:
+                return f"bridge send: {e}"
+            return f"bridge send → {tgt}: queued {p.stem[:8]}"
+
+        if sub == "ack":
+            toks = arg.split()
+            if len(toks) < 1:
+                return "usage: bridge ack [target] <id-prefix>"
+            tgt, prefix = (toks[0], toks[1]) if len(toks) > 1 else (target, toks[0])
+            rows = await asyncio.to_thread(ab.read_inbox, tgt)
+            hits = [m for m in rows if m["id"].startswith(prefix)]
+            if not hits:
+                return f"bridge ack: no pending message starts with {prefix!r}"
+            if len(hits) > 1:
+                return (f"bridge ack: {prefix!r} is ambiguous "
+                        f"({len(hits)} match) — use more characters")
+            ok = ab.ack(tgt, hits[0]["id"])
+            return (f"bridge ack: consumed {hits[0]['id'][:8]}"
+                    if ok else "bridge ack: FAILED")
+
+        if sub == "learn":
+            if "|" not in arg:
+                return "usage: bridge learn <title> | <body> [#tag..]"
+            title, rest = arg.split("|", 1)
+            words = rest.split()
+            tags = [w[1:] for w in words if w.startswith("#")]
+            body = " ".join(w for w in words if not w.startswith("#"))
+            try:
+                e = await asyncio.to_thread(
+                    ab.add_learning, title, body, tags, "aion")
+            except ValueError as e:
+                return f"bridge learn: {e}"
+            return f"bridge learn: recorded {e['id'][:8]} ({len(tags)} tags)"
+
+        if sub == "search":
+            toks = arg.split()
+            tags = [w[1:] for w in toks if w.startswith("#")]
+            query = " ".join(w for w in toks if not w.startswith("#"))
+            rows = await asyncio.to_thread(
+                ab.search_learnings, query, tags[0] if tags else None)
+            if not rows:
+                return "bridge search: no fleet learning matches"
+            lines = [f"  ◆ {r['id'][:8]} [{r.get('machine', '?')}] "
+                     f"{r.get('title', '')[:64]}" for r in rows]
+            return f"bridge search: {len(rows)}:\n" + "\n".join(lines)
+
+        if sub == "sync":
+            hosts = arg.split() or await asyncio.to_thread(ab.fleet_hosts)
+            hosts = [h for h in hosts if not h.startswith(ab.local_machine())]
+            if not hosts:
+                return "bridge sync: no peers known"
+            out = []
+            for h in hosts:
+                try:
+                    r = await asyncio.to_thread(ab.sync_with, h)
+                    out.append(f"  {h}: +{r['pulled']}/-{r['pushed']}")
+                except Exception as e:  # noqa: BLE001 — one dead peer ≠ failed sync
+                    out.append(f"  {h}: unreachable ({type(e).__name__})")
+            return "bridge sync:\n" + "\n".join(out)
+
+        return ("usage: bridge inbox|send|ack|learn|search|sync — "
+                "bridge help for forms")
 
     async def _handle_remote_command(self, text: str) -> str:
         """Handle 'remote run|cancel|add|list' palette commands."""

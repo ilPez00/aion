@@ -97,6 +97,7 @@ class Store(SwarmCommands):
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.fleet_callback = None   # set by app: async fn(text) -> str
         self.mesh_callback = None    # set by app: async fn(text) -> str (mesh pkg control)
+        self.bridge_callback = None  # set by app: async fn(text) -> str (agent-bridge history)
         # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
         self.hypergraph_substrate = "/home/gio/dev/physis-pro/deploy-pansa/digest-output/extensions.json"
         self.hypergraph_remote_scan = "ssh -o ConnectTimeout=5 pansa-ts 'bash /home/gio/dev/physis-pro/deploy-pansa/hypergraph-pansa-digest.sh {dir}'"
@@ -1107,6 +1108,17 @@ class Store(SwarmCommands):
                 self.state.logs = self.state.logs[-50:]
             else:
                 self.state.logs.append("mesh: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "bridge":
+            # shared agentic history (agent-bridge protocol): inbox|send|ack|
+            # learn|search|sync — see app._handle_bridge_command
+            if self.bridge_callback:
+                result = await self.bridge_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append("bridge: not available (app not connected)")
                 self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "swarm" and len(parts) >= 2:

@@ -47,6 +47,17 @@ def test_render_mesh_tolerates_missing_sections():
     assert "sessions" not in out and "models 0" not in out
 
 
+def test_render_mesh_bridge_section():
+    data = {"mesh": {"nodes": [], "total": 0, "reachable": 0},
+            "bridge": {"pending": 1, "learnings": 5, "rows": [
+                {"id": "abc123", "from": "omo",
+                 "content": "check the pool"}]}}
+    out = render_mesh(data, THEME)
+    assert "1 pending" in out and "5 learnings" in out
+    assert "abc123" in out and "check the pool" in out
+    assert "bridge inbox" in out
+
+
 class _FakeApp:
     def __init__(self):
         self._mesh_cache = {"ts": 0.0, "data": {}}
