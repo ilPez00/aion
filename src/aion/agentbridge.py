@@ -45,8 +45,17 @@ def local_machine() -> str:
 
 
 def utcnow() -> str:
+    """UTC, ISO 8601, microsecond resolution.
+
+    The microseconds are load-bearing, not decoration. read_inbox promises
+    "oldest first" and sorts on this field; truncating to whole seconds gave
+    two messages sent in the same second identical timestamps. The sort then
+    fell through to st_mtime_ns — which the kernel reports identically for
+    writes that close together — and finally to the message id, a uuid4. Two
+    messages a microsecond apart came back in random order.
+    """
     return (datetime.datetime.now(datetime.timezone.utc)
-            .replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+            .isoformat().replace("+00:00", "Z"))
 
 
 def valid_target(target: str) -> bool:
