@@ -704,6 +704,23 @@ bus, register it in `HARNESS_TYPES` + `config/layout.json`.
 - per-harness VRAM/throughput sparklines in the right rail
 - workspace layouts saved to config (spatial memory)
 
+## Who wrote this
+
+`git shortlog -sne` reads:
+
+    162  Aion (agent) <aion@local>
+     19  Giovanni Antonio Pezzin <pezzingiovanniantonio@gmail.com>
+
+`Aion <aion@local>` is not a second contributor. It is this project's own
+agent loop, running on my machine, committing the work I directed it to do.
+It wrote most of aion over two months.
+
+That is left in the history deliberately rather than squashed away. aion is a
+multi-harness agent shell; the interesting claim it can make is that its own
+agent loop built it, and the commit log is the evidence. The architecture,
+the `Intent`/`Harness` boundary, the review and the direction are mine; the
+typing largely was not.
+
 ## License
 
 Apache-2.0. See `LICENSE` for the terms and `NOTICE` for the copyright.

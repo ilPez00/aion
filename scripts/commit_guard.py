@@ -24,7 +24,7 @@ import re
 ALLOWED_TOP = {
     "AGENTS.md", "README.md", "plan.md", "pyproject.toml", "aion.sh",
     "LICENSE", "NOTICE",
-    "twa-manifest.json", ".gitignore", ".githooks", ".github",
+    "twa-manifest.json", ".gitignore", ".mailmap", ".githooks", ".github",
     "src", "tests", "docs", "config", "scripts", "static",
 }
 

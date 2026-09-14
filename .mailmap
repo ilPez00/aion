@@ -1,0 +1,14 @@
+# Canonical identities for this repository's history.
+#
+# `Aion <aion@local>` is not a person. It is this project's own agent loop,
+# running on the author's machine and committing the work it was directed to
+# do. It wrote most of aion. That is left visible on purpose — see README.
+#
+# The human identities below are one person across several machines and git
+# configs; they are collapsed so `git shortlog` reads honestly.
+
+Aion (agent) <aion@local>                                        Aion <aion@local>
+Giovanni Antonio Pezzin <pezzingiovanniantonio@gmail.com>        ilPez00 <pezzingiovanniantonio@gmail.com>
+Giovanni Antonio Pezzin <pezzingiovanniantonio@gmail.com>        ilPez00 <110197768+ilPez00@users.noreply.github.com>
+Giovanni Antonio Pezzin <pezzingiovanniantonio@gmail.com>        gio <gio@ilPez.dev>
+Giovanni Antonio Pezzin <pezzingiovanniantonio@gmail.com>        gio <gio@local>
