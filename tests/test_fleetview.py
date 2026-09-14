@@ -1,7 +1,15 @@
 """Tests for fleetview.py — unified Fleet view-model (no network)."""
 import json
+from pathlib import Path
+
+import pytest
 
 from aion.fleetview import collect, load_models, summary
+
+# The real fleet config lives in the sibling randomesh checkout. It is present
+# on a fleet machine and absent everywhere else — CI included, where this test
+# asserted 0 >= 1 on every run and was the whole of the red badge.
+REAL_MODELS = Path("/home/gio/dev/randomesh/fleet-models.json")
 
 
 def _nodes():
@@ -61,11 +69,13 @@ def test_load_models_malformed(tmp_path):
     assert [m["id"] for m in load_models(p)] == ["ok"]
 
 
+@pytest.mark.skipif(not REAL_MODELS.is_file(),
+                    reason=f"no fleet config at {REAL_MODELS} (not a fleet machine)")
 def test_collect_live_against_real_files():
     """Real fleet-models.json parses; real queue reads without raising."""
     view = collect(lambda: {"total": 0, "reachable": 0, "nodes": []},
                    lambda: {"total": 0, "up": 0, "services": []},
                    lambda: [],
-                   models_path="/home/gio/dev/randomesh/fleet-models.json")
+                   models_path=str(REAL_MODELS))
     assert view["models"]["total"] >= 1
     assert "coding" in view["models"]["by_role"]
