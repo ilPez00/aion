@@ -127,12 +127,41 @@ def test_snapshot_counts_states_and_soft_fails_per_host():
     assert snap["hosts"][0]["name"] == "pansa"    # live sorts above down
 
 
+def test_default_host_is_pansa_and_env_overrides_it(monkeypatch):
+    """The hub's free plan covers one machine: pansa is the one a bare verb means."""
+    monkeypatch.delenv("AION_SENTINELX_HOST", raising=False)
+    assert sentinelx.DEFAULT_HOST == "pansa"
+    assert sentinelx.default_host() == "pansa"
+    monkeypatch.setenv("AION_SENTINELX_HOST", "omo")
+    assert sentinelx.default_host() == "omo"
+    monkeypatch.setenv("AION_SENTINELX_HOST", "  ")   # blank is not an override
+    assert sentinelx.default_host() == "pansa"
+
+
+def test_control_without_a_host_targets_the_default(monkeypatch):
+    monkeypatch.delenv("AION_SENTINELX_HOST", raising=False)
+    t = _rec()
+    res = control("", "restart", t, hosts={"pansa": "pansa-ts", "omo": "omo-ts"})
+    assert res["ok"] is True and res["name"] == "pansa"
+    assert t.seen[0][1] == "pansa-ts"
+
+
+def test_snapshot_marks_and_sorts_the_default_host(monkeypatch):
+    monkeypatch.delenv("AION_SENTINELX_HOST", raising=False)
+    snap = snapshot(_fake(out=LIVE_BLOCK),
+                    hosts={"omo": "omo-ts", "pansa": "pansa-ts"})
+    assert snap["default"] == "pansa"
+    assert snap["hosts"][0]["name"] == "pansa"        # default sorts first
+    assert snap["hosts"][0]["is_default"] is True
+    assert snap["hosts"][1]["is_default"] is False
+
+
 def test_snapshot_never_raises_without_hosts(monkeypatch):
     monkeypatch.setattr(sentinelx, "_load_hosts", lambda: {})
     snap = snapshot(_fake(rc=255), hosts={})
     assert snap == {"hosts": [], "total": 0, "live": 0, "unenrolled": 0,
                     "hub": sentinelx.HUB, "connector": sentinelx.CONNECTOR,
-                    "unit": sentinelx.UNIT}
+                    "unit": sentinelx.UNIT, "default": sentinelx.default_host()}
 
 
 def test_control_builds_scoped_systemctl_command():
@@ -213,13 +242,13 @@ def test_panel_section_renders_states_and_conn_session():
                                   "accent")}
     data = {"mesh": {"nodes": [], "total": 0, "reachable": 0}, "sentinelx": {
         "total": 2, "live": 1, "connector": sentinelx.CONNECTOR,
-        "unit": sentinelx.UNIT,
+        "unit": sentinelx.UNIT, "default": "pansa",
         "hosts": [
             {**SentinelHost(name="pansa", host="pansa-ts", reachable=True,
                             installed=True, enrolled=True, unit="active",
                             host_id="host_e4f4b084b37844b3", cmd_count=86,
                             conn_session="sess_aed3618b2322",
-                            sudoers=True).as_dict()},
+                            sudoers=True, is_default=True).as_dict()},
             {**SentinelHost(name="air", host="air-ts", reachable=True,
                             installed=True, enrolled=False,
                             host_id="host_756c6e2cd2a843d2").as_dict()},
@@ -230,7 +259,8 @@ def test_panel_section_renders_states_and_conn_session():
     assert "pansa" in text and "sess_aed361" in text
     assert "86 cmds" in text and "sudo" in text
     assert "air" in text and "unenrolled" in text
-    assert "sentinelx start|stop|restart <host>" in text
+    assert "pansa    ★" in text                      # default host is marked
+    assert "sentinelx start|stop|restart <host> · default pansa" in text
 
 
 def test_panel_tolerates_missing_sentinelx_section():
@@ -318,9 +348,10 @@ def test_app_sentinelx_commands_over_the_cached_snapshot(monkeypatch):
             await app._handle_sentinelx_command("sentinelx restart air"),
             await app._handle_sentinelx_command("sentinelx frobnicate"),
             await app._handle_sentinelx_command("sentinelx connector"),
+            await app._handle_sentinelx_command("sentinelx status"),
         )
 
-    listing, detail, denied, bogus, connector = asyncio.run(go())
+    listing, detail, denied, bogus, connector, bare = asyncio.run(go())
     assert "1/2 live" in listing and "pansa" in listing and "air" in listing
     assert "host_e4f4b084b37844b3" in detail
     assert "identity present" in detail and "86 commands" in detail
@@ -329,5 +360,7 @@ def test_app_sentinelx_commands_over_the_cached_snapshot(monkeypatch):
     assert "FAILED" in denied
     # connector instructions are the only thing that needs no probe at all
     assert "mcp.sentinelx.app/mcp/mcp" in connector
+    # a bare `sentinelx status` reports the default machine without naming it
+    assert "sentinelx status pansa:" in bare and "pansa-ts" in bare
     # acting triggers exactly one re-probe (verify, don't trust)
     assert refreshed == [1]

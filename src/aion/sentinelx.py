@@ -40,6 +40,17 @@ IDENTITY = f"{ETC_DIR}/identity.json"
 CONFIG = f"{ETC_DIR}/config.yaml"
 HOST_ID_FILE = f"{ETC_DIR}/host_id"
 
+# The host a command means when it omits one. The hub's FREE plan covers a
+# single machine, so pansa (this cockpit's own box) is the default; point
+# AION_SENTINELX_HOST elsewhere when the account covers more than one.
+DEFAULT_HOST = "pansa"
+
+
+def default_host() -> str:
+    """Default target host, overridable with AION_SENTINELX_HOST."""
+    import os
+    return os.environ.get("AION_SENTINELX_HOST", "").strip() or DEFAULT_HOST
+
 # Fallback node table. The real one comes from randomesh CONFIG.md → fleet.json
 # (single source of truth, same rule as meshmon): a node added there appears in
 # this panel without touching aion.
@@ -158,6 +169,7 @@ class SentinelHost:
     since: str = ""
     restarts: int = 0
     up_s: int = 0            # agent process age (seconds); 0 when the unit is down
+    is_default: bool = False # the host a bare `sentinelx <verb>` means
     note: str = ""
 
     @property
@@ -272,7 +284,13 @@ def snapshot(transport: Optional[Transport] = None,
         except Exception as e:                 # belt and braces: row, not crash
             rows.append(SentinelHost(name=name, host=alias, reachable=False,
                                      note=f"{type(e).__name__}: {str(e)[:60]}"))
-    rows.sort(key=lambda h: (_STATE_RANK.get(h.state, 9), h.name))
+    dflt = default_host()
+    for h in rows:
+        h.is_default = h.name == dflt
+    # Default host first inside its state group, then alphabetical: the machine
+    # a bare verb acts on should be the one your eye lands on.
+    rows.sort(key=lambda h: (_STATE_RANK.get(h.state, 9),
+                             not h.is_default, h.name))
     return {
         "hosts": [h.as_dict() for h in rows],
         "total": len(rows),
@@ -281,10 +299,11 @@ def snapshot(transport: Optional[Transport] = None,
         "hub": HUB,
         "connector": CONNECTOR,
         "unit": UNIT,
+        "default": dflt,
     }
 
 
-def control(name: str, action: str, transport: Optional[Transport] = None,
+def control(name: str = "", action: str = "", transport: Optional[Transport] = None,
             hosts: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """start | stop | restart the SentinelX agent on one host.
 
@@ -292,6 +311,7 @@ def control(name: str, action: str, transport: Optional[Transport] = None,
     intentional: a cockpit must not be able to prompt for a password, and a
     missing grant has to be visible in the output rather than silently ignored.
     """
+    name = name or default_host()      # bare verb -> the default machine
     if action not in ("start", "stop", "restart"):
         return {"ok": False, "name": name, "action": action,
                 "error": f"unknown action {action!r} (start|stop|restart)"}

@@ -126,16 +126,22 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
             name = str(h.get("name", "?"))
             state = h.get("state", "")
             hid = str(h.get("host_id", ""))[:14]
+            # The machine a bare `sentinelx <verb>` acts on wears a star: with
+            # the hub's free plan covering a single host, that star is the
+            # answer to "which one am I actually pointing at".
+            name_cell = f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/]"
+            if h.get("is_default"):
+                name_cell += f"[{theme.get('accent', '#5ad1ff')}]★[/]"
             if state == "down":
                 out.append(f"  [{theme.get('faint', '#6b7d8d')}]○[/] "
-                           f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
+                           f"{name_cell} "
                            f"[{theme.get('err', '#FF8A8A')}]DOWN[/] "
                            f"[{theme.get('dim', '#9aabbb')}]"
                            f"{h.get('note', '')[:28]}[/]")
                 continue
             if state == "absent":
                 out.append(f"  [{theme.get('faint', '#6b7d8d')}]·[/] "
-                           f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
+                           f"{name_cell} "
                            f"[{theme.get('faint', '#6b7d8d')}]not installed[/]")
                 continue
             if state == "live":
@@ -165,14 +171,14 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
                             f"{span(h['up_s'])}[/]")
             elif state == "live":
                 bits.append(f"[{theme.get('faint', '#6b7d8d')}]conn ?[/]")
-            out.append(f"  [{color}]{glyph}[/] "
-                       f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
-                       f"{' '.join(bits)}")
+            out.append(f"  [{color}]{glyph}[/] {name_cell} {' '.join(bits)}")
             if state == "unenrolled" and h.get("enroll_url"):
                 out.append(f"     [{theme.get('faint', '#6b7d8d')}]↳ enroll: "
                            f"{h['enroll_url']}[/]")
+        dflt = sx.get("default", "")
         out.append(f"[{theme.get('faint', '#6b7d8d')}]"
-                   f"sentinelx start|stop|restart <host>[/]")
+                   f"sentinelx start|stop|restart <host>"
+                   f"{f' · default {dflt}' if dflt else ''}[/]")
 
     # Phase 2b: shared agentic history (agent-bridge inbox + learnings)
     bridge = data.get("bridge") or {}

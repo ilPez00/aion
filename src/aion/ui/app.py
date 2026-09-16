@@ -1402,7 +1402,7 @@ class AiOSApp(App):
                 return "sentinelx: no hosts to probe (fleet.json empty?)"
             if sub == "status":
                 if not arg:
-                    return "usage: sentinelx status <host>"
+                    arg = data.get("default") or sx.default_host()
                 row = next((h for h in rows if h["name"] == arg), None)
                 if row is None:
                     return (f"sentinelx status: unknown host {arg!r} "
@@ -1440,6 +1440,7 @@ class AiOSApp(App):
                              f"{'sudo ' if h.get('sudoers') else '     '}"
                              f"{sess}")
             head = (f"sentinelx {data.get('live', 0)}/{data.get('total', 0)} live · "
+                    f"default {data.get('default', sx.default_host())} · "
                     f"hub {data.get('hub', sx.HUB)} · connector {sx.CONNECTOR}")
             return head + "\n" + "\n".join(lines)
 
@@ -1472,8 +1473,9 @@ class AiOSApp(App):
                     f"--allow-sudo")
 
         if sub in ("start", "stop", "restart"):
-            if not arg:
-                return f"usage: sentinelx {sub} <host>"
+            # no host -> the default machine (pansa on the free plan), because
+            # a bare verb should not need the operator to name the box twice.
+            arg = arg or sx.default_host()
             res = await asyncio.to_thread(sx.control, arg, sub, None, None)
             if res.get("ok"):
                 line = f"sentinelx {arg} {sub}: ok on {res.get('host', '?')}"
