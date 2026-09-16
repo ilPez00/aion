@@ -156,6 +156,28 @@ def test_snapshot_marks_and_sorts_the_default_host(monkeypatch):
     assert snap["hosts"][1]["is_default"] is False
 
 
+def test_snapshot_probes_hosts_concurrently():
+    """Wall-clock must be one node's latency, not the sum of them.
+
+    With air and pi down on this fleet, sequential probing costs 2 x ssh
+    timeout on every refresh cycle — the difference between a live panel and
+    a panel that updates once a minute.
+    """
+    import time
+
+    def slow_transport(method, target, cmd):
+        time.sleep(0.2)
+        return 0, LIVE_BLOCK
+
+    hosts = {n: f"{n}-ts" for n in ("pansa", "omo", "feather", "air", "pi")}
+    t0 = time.monotonic()
+    snap = snapshot(slow_transport, hosts=hosts)
+    elapsed = time.monotonic() - t0
+    assert snap["total"] == 5 and len(snap["hosts"]) == 5
+    assert snap["live"] == 5                      # order preserved, data intact
+    assert elapsed < 0.6, f"probes look sequential ({elapsed:.2f}s)"
+
+
 def test_snapshot_never_raises_without_hosts(monkeypatch):
     monkeypatch.setattr(sentinelx, "_load_hosts", lambda: {})
     snap = snapshot(_fake(rc=255), hosts={})

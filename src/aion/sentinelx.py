@@ -275,15 +275,31 @@ def probe_host(name: str, alias: str, transport: Optional[Transport] = None) -> 
 
 def snapshot(transport: Optional[Transport] = None,
              hosts: Optional[dict[str, str]] = None) -> dict[str, Any]:
-    """Probe every node. Never raises; healthy hosts sort above broken ones."""
+    """Probe every node. Never raises; healthy hosts sort above broken ones.
+
+    Probes run CONCURRENTLY: a HUD refresh should wait for the slowest node, not
+    for the sum of them, and on a fleet where two boxes are down that difference
+    is the whole refresh budget (2 x ssh timeout, every cycle).
+    """
     table = _load_hosts() if hosts is None else hosts
     rows: list[SentinelHost] = []
-    for name, alias in (table or {}).items():
+
+    def one(name: str, alias: str) -> SentinelHost:
         try:
-            rows.append(probe_host(name, alias, transport))
+            return probe_host(name, alias, transport)
         except Exception as e:                 # belt and braces: row, not crash
-            rows.append(SentinelHost(name=name, host=alias, reachable=False,
-                                     note=f"{type(e).__name__}: {str(e)[:60]}"))
+            return SentinelHost(name=name, host=alias, reachable=False,
+                                note=f"{type(e).__name__}: {str(e)[:60]}")
+
+    items = list((table or {}).items())
+    if not items:
+        rows = []
+    elif len(items) == 1:
+        rows = [one(*items[0])]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+            rows = list(pool.map(lambda kv: one(*kv), items))
     dflt = default_host()
     for h in rows:
         h.is_default = h.name == dflt
@@ -348,9 +364,11 @@ def _ssh_transport(method: str, target: str, cmd: str) -> tuple[int, str]:
 
     if method != "ssh":
         raise ValueError(f"unsupported transport method {method}")
+    # Same budget as meshmon: a dead node must cost one timeout, not a stall
+    # in the refresh cycle that also carries the reachable ones.
     p = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes",
+        ["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes",
          "-o", "ServerAliveInterval=15", target, cmd],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=15,
     )
     return p.returncode, p.stdout + p.stderr
