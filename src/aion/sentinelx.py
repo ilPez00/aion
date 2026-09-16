@@ -27,6 +27,7 @@ Two deliberate omissions:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from .probeopts import budget, ssh_opts
 from typing import Any, Callable, Optional
 
 Transport = Callable[[str, str, str], tuple[int, str]]
@@ -371,8 +372,7 @@ def _ssh_transport(method: str, target: str, cmd: str) -> tuple[int, str]:
     # Same budget as meshmon: a dead node must cost one timeout, not a stall
     # in the refresh cycle that also carries the reachable ones.
     p = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes",
-         "-o", "ServerAliveInterval=15", target, cmd],
-        capture_output=True, text=True, timeout=15,
+        ["ssh", *ssh_opts(keepalive=15), target, cmd],
+        capture_output=True, text=True, timeout=budget(),
     )
     return p.returncode, p.stdout + p.stderr

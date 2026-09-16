@@ -34,6 +34,12 @@ def isolate_aion_home(tmp_path, monkeypatch):
     # fleet settings are module-global; reset so one test cannot configure
     # thresholds for the next
     fleet.configure({})
+    # Probe budget: the collectors talk real ssh to real hosts, and a box that
+    # is powered off costs its full connect timeout on every probe. Boot tests
+    # then die in Textual's pilot waiting for a screen stuck in on_mount — a
+    # red suite that reports the state of the house, not the state of the code.
+    monkeypatch.setenv("AION_PROBE_CONNECT_TIMEOUT", "1")
+    monkeypatch.setenv("AION_PROBE_TIMEOUT", "2")
     # Stub the onboarding gate OFF so the tour never auto-launches and swallows
     # keystrokes in tests that boot the app for unrelated work. No marker file
     # is written (a file would leak into tests that walk tmp_path). Tests that

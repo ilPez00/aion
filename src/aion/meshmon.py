@@ -15,6 +15,7 @@ a later phase — Phase 1 is read-only visibility, nothing mutates a node.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from .probeopts import budget, ssh_opts
 from typing import Any, Callable
 
 # Tailscale aliases for the physical mesh. pansa also surfaces storage.
@@ -89,8 +90,8 @@ def _default_transport(method: str, target: str, cmd: str) -> tuple[int, str]:
         return 1, ""
     try:
         r = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", target, cmd],
-            capture_output=True, text=True, timeout=15,
+            ["ssh", *ssh_opts(), target, cmd],
+            capture_output=True, text=True, timeout=budget(),
         )
         return r.returncode, (r.stdout + r.stderr)
     except Exception as e:  # network/timeout — node counts as unreachable

@@ -28,6 +28,8 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from .probeopts import budget, ssh_opts
+
 LEARNINGS_REL = Path("shared-context/learnings.ndjson")
 DEFAULT_TTL = 86400  # 1 day, 0 = no expiry (matches upstream default)
 
@@ -248,12 +250,13 @@ def merge_missing(root: Path | None = None,
     return out
 
 
-SSH_OPTS = ["-o", "ConnectTimeout=8", "-o", "BatchMode=yes"]
+# built at call time so the test suite can shrink the probe budget (probeopts)
+SSH_OPTS = None  # kept for import compatibility; use ssh_opts() instead
 
 
 def _ssh(host: str, remote_cmd: str, stdin: str | None = None,
          timeout: int = 60) -> tuple[int, str]:
-    p = subprocess.run(["ssh", *SSH_OPTS, host, remote_cmd], input=stdin,
+    p = subprocess.run(["ssh", *ssh_opts(), host, remote_cmd], input=stdin,
                        capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass, field
+from .probeopts import budget, ssh_opts
 from typing import Callable, Optional
 
 Transport = Callable[[str, str, str], tuple[int, str]]  # (method, target, cmd) -> (rc, out)
@@ -461,7 +462,6 @@ def _ssh_transport(method: str, target: str, cmd: str) -> tuple[int, str]:
 
     if method != "ssh":
         raise ValueError(f"unsupported transport method {method}")
-    full = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes",
-            "-o", "ServerAliveInterval=15", target, cmd]
-    p = subprocess.run(full, capture_output=True, text=True, timeout=30)
+    full = ["ssh", *ssh_opts(keepalive=15), target, cmd]
+    p = subprocess.run(full, capture_output=True, text=True, timeout=budget(30))
     return p.returncode, p.stdout + p.stderr
