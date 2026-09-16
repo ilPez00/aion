@@ -97,6 +97,7 @@ class Store(SwarmCommands):
         self.remote_callback = None  # set by app: async fn(cmd, args) -> str
         self.fleet_callback = None   # set by app: async fn(text) -> str
         self.mesh_callback = None    # set by app: async fn(text) -> str (mesh pkg control)
+        self.sentinelx_callback = None  # set by app: async fn(text) -> str (SentinelX agents)
         self.bridge_callback = None  # set by app: async fn(text) -> str (agent-bridge history)
         # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
         # home-relative + env-overridable: the cockpit runs as any user on any box
@@ -1118,6 +1119,19 @@ class Store(SwarmCommands):
                 self.state.logs = self.state.logs[-50:]
             else:
                 self.state.logs.append("mesh: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] == "sentinelx":
+            # SentinelX agents (allowlisted shell per host, behind the hub):
+            # list|status|start|stop|restart|enroll — see
+            # app._handle_sentinelx_command
+            if self.sentinelx_callback:
+                result = await self.sentinelx_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append(
+                    "sentinelx: not available (app not connected)")
                 self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "bridge":

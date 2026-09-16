@@ -303,6 +303,7 @@ class AiOSApp(App):
         self.store.remote_callback = self._handle_remote_command
         self.store.fleet_callback = self._handle_fleet_command
         self.store.mesh_callback = self._handle_mesh_command
+        self.store.sentinelx_callback = self._handle_sentinelx_command
         self.store.bridge_callback = self._handle_bridge_command
         # The Mesh panel's data: a background collector on an interval, NOT a
         # kick at mount — the panel renders "collecting…" and starts the first
@@ -1283,6 +1284,10 @@ class AiOSApp(App):
                 from .. import meshmon, meshsrv, fleettask, fleetview
                 mesh = await asyncio.to_thread(meshmon.snapshot)
                 services = await asyncio.to_thread(meshsrv.snapshot)
+                # SentinelX agents: one SSH round trip per node, same fan-out as
+                # the mesh probe above (they hit the same five boxes).
+                from .. import sentinelx as _sx
+                sentinelx = await asyncio.to_thread(_sx.snapshot)
                 # local-only, cheap: queue dirs + models file, no network.
                 # dispatch jobs join the sessions table (engine "dispatch",
                 # ᴰ marks idempotent) so lost rows and their requeue
@@ -1306,7 +1311,7 @@ class AiOSApp(App):
                 learnings = await asyncio.to_thread(
                     lambda: sum(1 for _ in ab.iter_learnings()))
                 self._mesh_cache = {"ts": _t.time(), "data": {
-                    "mesh": mesh, "services": services,
+                    "mesh": mesh, "services": services, "sentinelx": sentinelx,
                     "sessions": {"total": len(sessions), "live": live,
                                  "rows": sessions},
                     "bridge": {"pending": len(pending),
@@ -1361,6 +1366,128 @@ class AiOSApp(App):
         self.store.state.logs.append(line)
         self.store.state.logs = self.store.state.logs[-50:]
         self._render_center()
+
+    async def _handle_sentinelx_command(self, text: str) -> str:
+        """Handle 'sentinelx list|status|start|stop|restart|enroll|connector'.
+
+        SentinelX (https://sentinelx.app) puts an allowlisted shell on a host
+        behind ONE outbound WebSocket to the hub mcp.sentinelx.app, so an MCP
+        client can operate that machine. The cockpit's job is to make those
+        agents visible and to restart them where the operator has granted the
+        scoped sudoers rule; it never reads the enrollment token, and it never
+        types a password (control runs `sudo -n` and reports a missing grant).
+
+        `list` is render-safe: it uses the cached snapshot and only probes once
+        if the cache is cold, so typing it cannot hang the cockpit.
+        """
+        from .. import sentinelx as sx
+
+        parts = text.split(maxsplit=2)
+        sub = parts[1] if len(parts) > 1 else "list"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        async def _snapshot(force: bool = False) -> dict:
+            data = (self._mesh_cache.get("data") or {}).get("sentinelx") or {}
+            if force or not data.get("hosts"):
+                data = await asyncio.to_thread(sx.snapshot)
+                old = self._mesh_cache.get("data") or {}
+                self._mesh_cache = {"ts": __import__("time").time(),
+                                    "data": {**old, "sentinelx": data}}
+            return data
+
+        if sub in ("list", "status"):
+            data = await _snapshot()
+            rows = data.get("hosts") or []
+            if not rows:
+                return "sentinelx: no hosts to probe (fleet.json empty?)"
+            if sub == "status":
+                if not arg:
+                    return "usage: sentinelx status <host>"
+                row = next((h for h in rows if h["name"] == arg), None)
+                if row is None:
+                    return (f"sentinelx status: unknown host {arg!r} "
+                            f"(have: {', '.join(h['name'] for h in rows)})")
+                bits = [f"  host     {row.get('host', '')}",
+                        f"  state    {row.get('state', '')}",
+                        f"  unit     {row.get('unit', '?')} "
+                        f"({row.get('unit_enabled', '?')})",
+                        f"  host_id  {row.get('host_id', '-')}",
+                        f"  identity {'present' if row.get('enrolled') else 'MISSING — needs enrollment'}",
+                        f"  allowlist {row.get('cmd_count', 0)} commands",
+                        f"  sudo     {'agent has NOPASSWD' if row.get('sudoers') else 'no rule'}",
+                        f"  mine     {'can control (scoped grant)' if row.get('can_control') else 'cannot systemctl (no grant)'}",
+                        f"  process  up {sx.span(row.get('up_s', 0))}"
+                        + (f", {row.get('restarts')} restarts"
+                           if row.get("restarts") else ""),
+                        f"  hub      {row.get('hub_code', '?')} "
+                        f"{'(reachable)' if row.get('hub_ok') else '(unreachable)'}",
+                        f"  session  {row.get('conn_session') or '?'}"
+                        + ("" if row.get("conn_session") else
+                           "  (journal not readable by this user — add it to"
+                           " the systemd-journal group to see the live session)")]
+                if row.get("enroll_url") and not row.get("enrolled"):
+                    bits.append(f"  enroll   {row['enroll_url']}")
+                return f"sentinelx status {arg}:\n" + "\n".join(bits)
+
+            lines = []
+            for h in rows:
+                mark = "●" if h.get("state") == "live" else "○"
+                sess = h.get("conn_session") or ""
+                cmd = (f"{h.get('cmd_count', 0)} cmds"
+                       if h.get("cmd_count") else "      ")
+                lines.append(f"  {mark} {h['name']:9s} {h.get('state', ''):11s} "
+                             f"{cmd} "
+                             f"{'sudo ' if h.get('sudoers') else '     '}"
+                             f"{sess}")
+            head = (f"sentinelx {data.get('live', 0)}/{data.get('total', 0)} live · "
+                    f"hub {data.get('hub', sx.HUB)} · connector {sx.CONNECTOR}")
+            return head + "\n" + "\n".join(lines)
+
+        if sub == "connector":
+            return (f"sentinelx connector: {sx.CONNECTOR}\n"
+                    f"  dashboard: {sx.HUB}/dashboard\n"
+                    f"  Claude: Settings → Connectors → Add custom connector\n"
+                    f"  ChatGPT: install the SentinelX app, Connect")
+
+        if sub == "enroll":
+            data = await _snapshot()
+            rows = data.get("hosts") or []
+            target = arg or ""
+            row = next((h for h in rows if h["name"] == target), None)
+            if row is None:
+                return (f"sentinelx enroll: name a host "
+                        f"({', '.join(h['name'] for h in rows) or 'none known'})")
+            if row.get("enrolled"):
+                return (f"sentinelx enroll {target}: already enrolled "
+                        f"({row.get('host_id', '?')})")
+            if not row.get("enroll_url"):
+                return (f"sentinelx enroll {target}: no host_id on that node — "
+                        f"install the agent first (mesh sentinelx --host "
+                        f"{row.get('host', target)} --enroll-url)")
+            return (f"sentinelx enroll {target}: open this URL, sign in, then\n"
+                    f"  {row['enroll_url']}\n"
+                    f"  save the token as '{target}=<jwt>' in "
+                    f"~/.config/randomesh/sentinelx-tokens and run:\n"
+                    f"  bash ~/dev/randomesh/scripts/fleet/install-sentinelx-all.sh "
+                    f"--allow-sudo")
+
+        if sub in ("start", "stop", "restart"):
+            if not arg:
+                return f"usage: sentinelx {sub} <host>"
+            res = await asyncio.to_thread(sx.control, arg, sub, None, None)
+            if res.get("ok"):
+                line = f"sentinelx {arg} {sub}: ok on {res.get('host', '?')}"
+            else:
+                line = (f"sentinelx {arg} {sub}: FAILED — "
+                        f"{res.get('error') or 'rc=' + str(res.get('rc'))}")
+                if res.get("hint"):
+                    line += f"\n  grant it once with:\n  {res['hint']}"
+            self._refresh_mesh()          # verify, don't trust: re-probe after acting
+            return line
+
+        return (f"sentinelx: unknown verb {sub!r} — "
+                f"list | status <host> | start|stop|restart <host> | "
+                f"enroll <host> | connector")
 
     async def _handle_mesh_command(self, text: str) -> str:
         """Handle 'mesh list|status|start|stop|restart|install|disable'.

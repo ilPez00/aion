@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..sentinelx import span
+
 WIDTH = 54
 
 
@@ -105,6 +107,72 @@ def render_mesh(data: dict[str, Any], theme: dict, focus: str = "",
                    f"x stop · r restart · i install · d disable[/]")
         if pending:
             out.append(f"[{theme.get('warn', '#FFD479')}]  ⚠ armed: {pending}[/]")
+
+    # SentinelX agents — an allowlisted shell per host, driven from the hub
+    # (mcp.sentinelx.app) by an MCP client. aion's share of the job: say which
+    # hosts have one, whether it is enrolled, whether the unit is up, how big
+    # its allowlist is, and when it last connected. Lifecycle runs from the
+    # command bar (`sentinelx start|stop|restart <host>`) because the fleet's
+    # s/x/r keys already belong to the service table above.
+    sx = data.get("sentinelx") or {}
+    sx_rows = sx.get("hosts", []) if isinstance(sx, dict) else []
+    if sx_rows:
+        out.append("")
+        live = sx.get("live", sum(1 for h in sx_rows if h.get("state") == "live"))
+        out.append(f"[{theme.get('accent', '#5ad1ff')}]⛨ SentinelX[/]  "
+                   f"[{theme.get('dim', '#9aabbb')}]{live}/{len(sx_rows)} live  "
+                   f"· {sx.get('unit', 'sentinelx-cloud-core')}[/]")
+        for h in sx_rows:
+            name = str(h.get("name", "?"))
+            state = h.get("state", "")
+            hid = str(h.get("host_id", ""))[:14]
+            if state == "down":
+                out.append(f"  [{theme.get('faint', '#6b7d8d')}]○[/] "
+                           f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
+                           f"[{theme.get('err', '#FF8A8A')}]DOWN[/] "
+                           f"[{theme.get('dim', '#9aabbb')}]"
+                           f"{h.get('note', '')[:28]}[/]")
+                continue
+            if state == "absent":
+                out.append(f"  [{theme.get('faint', '#6b7d8d')}]·[/] "
+                           f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
+                           f"[{theme.get('faint', '#6b7d8d')}]not installed[/]")
+                continue
+            if state == "live":
+                glyph, color = "●", theme.get("ok", "#7CFFB2")
+            elif state == "stopped":
+                glyph, color = "◐", theme.get("warn", "#FFD479")
+            else:                              # unenrolled
+                glyph, color = "◌", theme.get("accent", "#5ad1ff")
+            bits = [f"[{theme.get('dim', '#9aabbb')}]{hid}[/]"]
+            if state == "unenrolled":
+                bits.insert(0, f"[{theme.get('accent', '#5ad1ff')}]unenrolled[/]")
+            elif state == "stopped":
+                bits.insert(0, f"[{theme.get('warn', '#FFD479')}]stopped[/]")
+            if h.get("cmd_count"):
+                bits.append(f"[{theme.get('dim', '#9aabbb')}]"
+                            f"{h.get('cmd_count')} cmds[/]")
+            if h.get("sudoers"):
+                bits.append(f"[{theme.get('warn', '#FFD479')}]sudo[/]")
+            sess = str(h.get("conn_session", ""))[:11]
+            if sess:
+                bits.append(f"[{theme.get('ok', '#7CFFB2')}]{sess}[/]")
+            elif state == "live" and h.get("up_s"):
+                # Journal unreadable by this user: fall back to the agent
+                # process age, which is exact, unprivileged, and enough to
+                # spot a flapping or freshly-restarted agent.
+                bits.append(f"[{theme.get('dim', '#9aabbb')}]up "
+                            f"{span(h['up_s'])}[/]")
+            elif state == "live":
+                bits.append(f"[{theme.get('faint', '#6b7d8d')}]conn ?[/]")
+            out.append(f"  [{color}]{glyph}[/] "
+                       f"[{theme.get('fg', '#dbe6f0')}]{name:<9}[/] "
+                       f"{' '.join(bits)}")
+            if state == "unenrolled" and h.get("enroll_url"):
+                out.append(f"     [{theme.get('faint', '#6b7d8d')}]↳ enroll: "
+                           f"{h['enroll_url']}[/]")
+        out.append(f"[{theme.get('faint', '#6b7d8d')}]"
+                   f"sentinelx start|stop|restart <host>[/]")
 
     # Phase 2b: shared agentic history (agent-bridge inbox + learnings)
     bridge = data.get("bridge") or {}

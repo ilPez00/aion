@@ -205,3 +205,65 @@ Rule of the road, same as upstream: search before debugging something another
 agent may have solved; record anything a different agent on a different
 machine would benefit from. Per-harness memory stays where it is — this store
 is additive, never a replacement.
+
+## SentinelX agents (allowlisted shell per host)
+
+SentinelX ([sentinelx.app](https://sentinelx.app), agent
+`pensados/sentinelx-cloud-core`) gives an MCP client — Claude.ai, ChatGPT, any
+MCP client — an **allowlisted, auditable shell** on a host, over a single
+*outbound* WebSocket to the hub `mcp.sentinelx.app`. No inbound port. The
+rollout, host_ids and the install path live in the randomesh repo
+(`docs/SENTINELX.md`, `scripts/fleet/install-sentinelx*.sh`); this is the
+cockpit's half of it.
+
+`src/aion/sentinelx.py` probes each node in **one SSH round trip** and folds the
+result into the Fleet workspace as a fifth section:
+
+```
+⛨ SentinelX  3/5 live  · sentinelx-cloud-core
+  ● pansa     host_e4f4b084b 86 cmds sudo sess_aed361
+  ● omo       host_07ef13a4f 86 cmds sudo conn ?
+  ○ air       DOWN ssh: connect to host 100.66.51.47 port 22
+  · pi        not installed
+  ◌ feather   unenrolled host_1c3042784
+     ↳ enroll: https://mcp.sentinelx.app/auth/dashboard/enroll?host_id=…
+sentinelx start|stop|restart <host>
+```
+
+Five states, because they need five different reactions: `live` · `stopped`
+(installed + enrolled, unit down) · `unenrolled` (needs a browser visit) ·
+`absent` (never installed) · `down` (host unreachable). Hosts come from
+randomesh `CONFIG.md → fleet.json` (`AION_FLEET_CONFIG` to point elsewhere), so
+adding a node there adds a row here.
+
+Palette / command bar: `sentinelx list` · `sentinelx status <host>` ·
+`sentinelx start|stop|restart <host>` · `sentinelx enroll <host>` ·
+`sentinelx connector`.
+
+Two rules worth keeping:
+
+* **The enrollment token is never read.** `/etc/sentinelx/identity.json` is
+  `0600 root:sentinelx`; the HUD reports *that it exists*, never its contents.
+  For a host that lacks it the panel prints the enrollment URL and leaves the
+  token to the operator.
+* **No password plumbing.** Lifecycle runs `sudo -n systemctl …`, so it works
+  only where the operator granted a *scoped* rule for that one unit:
+
+  ```
+  # /etc/sudoers.d/gio-sentinelx  (0440 root:root, validate with visudo -c)
+  gio ALL=(root) NOPASSWD: /usr/bin/systemctl start sentinelx-cloud-core, \
+                           /usr/bin/systemctl stop sentinelx-cloud-core, \
+                           /usr/bin/systemctl restart sentinelx-cloud-core, \
+                           /usr/bin/systemctl is-active sentinelx-cloud-core
+  ```
+
+  (`sentinelx.grant_hint(alias=...)` prints the whole `ssh <host> … visudo -c`
+  line.) Without the grant the action fails and says so, instead of aion ever
+  handling a password. The panel shows `conn ?` for a live agent when this user
+  cannot read the journal — the live `connected; session=…` line needs
+  membership of the `systemd-journal` group; without it, `unit active` is still
+  accurate and is the actionable signal.
+
+The `sudo` tag on a row means the **agent** (user `sentinelx`) holds
+`NOPASSWD: ALL` — root-equivalent on that host. Revoke per host with
+`rm /etc/sudoers.d/sentinelx && systemctl restart sentinelx-cloud-core`.
