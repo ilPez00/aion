@@ -240,6 +240,13 @@ Palette / command bar: `sentinelx list` · `sentinelx status <host>` ·
 `sentinelx start|stop|restart <host>` · `sentinelx enroll <host>` ·
 `sentinelx connector`.
 
+**The scoped grant is live** (pansa, omo, feather): `sentinelx status` shows
+`mine can control (scoped grant)`, the panel's capability flag is true, and the
+live `connected; session=…` line is visible because this user joined
+`systemd-journal`. Nothing wider is granted — `sudo -n cat /etc/shadow`,
+`sudo -n id` and `sudo -n systemctl restart ssh` are all refused on all three.
+Verify per host and revert steps: randomesh `docs/SENTINELX.md`.
+
 **Default host: `pansa`** (overridable with `AION_SENTINELX_HOST`). The hub's
 free plan covers a single machine, so a bare verb means pansa: `sentinelx
 status` reports it, `sentinelx restart` restarts it, and its row carries a `★`
