@@ -105,7 +105,11 @@ PROBE = "\n".join([
     # Agent process age. Unprivileged and exact: the unit is a system unit, so
     # `systemctl show` is readable and /proc/<pid> stat is world-readable.
     'echo "up=$(ps -o etimes= -p $(systemctl show -p MainPID --value $U) 2>/dev/null | tr -d \' \')"',
-    'echo "sudo=$(sudo -n true 2>/dev/null && echo 1 || echo 0)"',
+    # can_control: test the SCOPED verb the cockpit actually runs. `sudo -n true`
+    # answers "no" on a correctly locked-down box whose grant covers exactly one
+    # unit — which is the state this fleet is in, so it reported "cannot control"
+    # for hosts that had just restarted the agent for us.
+    'echo "sudo=$(sudo -n systemctl is-active $U >/dev/null 2>&1 && echo 1 || echo 0)"',
 ])
 
 # States, healthy-first for rendering: the agent you can use sorts above the one

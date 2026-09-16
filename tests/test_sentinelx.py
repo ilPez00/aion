@@ -110,6 +110,10 @@ def test_probe_host_sends_one_ssh_per_host():
     assert (method, target) == ("ssh", "pansa-ts")
     assert "U=sentinelx-cloud-core" in cmd
     assert "systemctl is-active $U" in cmd
+    # ...and the capability flag must test that same scoped verb, never blanket
+    # sudo: `sudo -n true` is refused on a correctly scoped host.
+    assert "sudo -n systemctl is-active $U" in cmd
+    assert "sudo -n true" not in cmd
     assert "/etc/sentinelx/identity.json" in cmd
     # the HUD must never read the enrollment token, only its existence
     assert "cat /etc/sentinelx/identity.json" not in cmd
