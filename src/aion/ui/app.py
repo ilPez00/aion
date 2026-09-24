@@ -1517,12 +1517,20 @@ class AiOSApp(App):
             up = sum(1 for r in rows if r.get("running"))
             return f"mesh {up}/{len(rows)} up:\n" + "\n".join(lines)
 
+        if sub == "k8s":
+            # aion's Kubernetes execution provider: placement against the
+            # Randomesh k8s inventory, submission as a Job. Blocking kubectl
+            # calls go on a thread like every other fleet probe here.
+            from .. import k8s as aionk8s
+            return await asyncio.to_thread(aionk8s.run_cli, arg.split() if arg else ["status"])
+
         if sub == "help":
             return ("mesh list | mesh status <name> | "
                     "mesh start|stop|restart <name> | "
                     "mesh install|disable <name>[@host] yes | "
                     "mesh sessions | mesh place <shell command> [--needs SPEC] | "
                     "mesh dispatch <shell command> [--needs SPEC] [--stage DIR] [yes] | "
+                    "mesh k8s <backend|nodes|place|submit|status|logs|delete> | "
                     "mesh requeue [yes]")
 
         if sub == "sessions":

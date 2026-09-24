@@ -276,6 +276,12 @@ Environment
   AION_FS_MAX_FILES=600     scan cap
 EOF
     ;;
+  k8s)
+    # Kubernetes execution provider (src/aion/k8s.py). Same module the HUD
+    # reaches via `mesh k8s`, so the CLI and the cockpit cannot drift.
+    ensure_venv
+    exec "$PY" -m aion.k8s "${@:2}"
+    ;;
   shell)
     ensure_venv
     exec "$PY" "${@:2}"
