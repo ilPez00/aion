@@ -17,6 +17,7 @@ import asyncio
 import subprocess
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +195,11 @@ class AiOSApp(App):
         self._mesh_pending: dict | None = None
         self._mesh_cache: dict = {"ts": 0.0, "data": {}}
         self._mesh_refreshing = False
+        # container surface (docker/k8s/mirrord): snapshot cache refreshed on
+        # an interval like the mesh panel — CLI probes never run in the render
+        self._containers_cache: dict = {"ts": 0.0, "rows": [], "errors": [],
+                                        "backends": ""}
+        self._containers_refreshing = False
         self._replanning = False        # one planner round-trip at a time
         self._tour_active = False       # walkthrough mode
         self._tour_step = 0
@@ -305,12 +311,15 @@ class AiOSApp(App):
         self.store.mesh_callback = self._handle_mesh_command
         self.store.sentinelx_callback = self._handle_sentinelx_command
         self.store.bridge_callback = self._handle_bridge_command
+        self.store.container_callback = self._handle_container_command
+        self.set_interval(20, self._refresh_containers)
         # The Mesh panel's data: a background collector on an interval, NOT a
         # kick at mount — the panel renders "collecting…" and starts the first
         # refresh on demand. The cockpit already pays an SSH fan-out on mount
         # via the dashboard; a second one on every boot (tests included) buys
         # nothing until someone opens the workspace.
         self.set_interval(20, self._refresh_mesh)
+        self.set_interval(20, self._refresh_containers)
         # hypergraph agent monitoring (physis digest + ornith/qwen topology)
         import os as _os
         self.store.hypergraph_substrate = getattr(
@@ -901,11 +910,19 @@ class AiOSApp(App):
 
         deck = getattr(self, "deck", None)
         link = getattr(deck, "link", None)
-        return render_sys(
+        base = render_sys(
             self.store.state.stats, theme, tick=self._viz_tick,
             deck_available=bool(link is not None and link.available),
             running=sum(1 for t in self.store.registry.tasks.values()
                         if t.state.value in ("running", "pending")))
+        c = self._containers_cache
+        if not c.get("rows") and not c.get("backends"):
+            return base   # no backend probed yet — don't claim an empty cluster
+        from .containers_panel import render_containers
+        block = render_containers(c.get("rows") or [], theme,
+                                  errors=c.get("errors"),
+                                  backends=c.get("backends", ""))
+        return f"{base}\n{block}"
 
     def _mesh_panel(self, theme: dict) -> str:
         """RandoMesh monitor + package lifecycle (Phase 1 + 2 + installer).
@@ -1271,6 +1288,84 @@ class AiOSApp(App):
         data = self._mesh_cache.get("data") or {}
         return (data.get("services") or {}).get("services") or []
 
+    def _refresh_containers(self) -> None:
+        """Background snapshot of docker/k8s. One at a time; a missing CLI
+        makes one probe and then the cache holds the 'no backends' note."""
+        if getattr(self, "_containers_refreshing", False):
+            return
+        self._containers_refreshing = True
+
+        async def run() -> None:
+            try:
+                from .. import containers as _c
+                data = await asyncio.to_thread(_c.snapshot)
+                if (data.get("rows") or data.get("errors")
+                        or "none" not in data.get("backends", "none")):
+                    self._containers_cache = data
+            except Exception as e:  # noqa: BLE001 — the HUD never dies for this
+                self._containers_cache = {**self._containers_cache,
+                                          "errors": [str(e)[:120]]}
+            finally:
+                self._containers_refreshing = False
+        asyncio.create_task(run())
+
+    async def _handle_container_command(self, text: str) -> str:
+        """Handle 'containers list|logs|restart|rm|mirror'.
+
+        `list` is render-safe: cached snapshot, one probe only if cold — the
+        same rule sentinelx follows. `logs`/`restart`/`rm` are real work and
+        run off-loop; `mirror` assembles the mirrord argv and drops the
+        cockpit into the Term workspace, which owns the session.
+        """
+        from .. import containers as cx
+
+        parts = text.split(maxsplit=2)
+        sub = parts[1] if len(parts) > 1 else "list"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        if sub in ("list", "status", ""):
+            c = self._containers_cache
+            if not c.get("rows") and time.time() - c.get("ts", 0) > 5:
+                data = await asyncio.to_thread(cx.snapshot)
+                self._containers_cache = data
+                c = data
+            from .containers_panel import render_containers
+            return render_containers(c.get("rows") or [], self.cfg["theme"],
+                                     errors=c.get("errors"),
+                                     backends=c.get("backends", ""))
+        if sub == "logs" and arg:
+            try:
+                out = await asyncio.to_thread(cx.logs, arg)
+                return f"logs {arg}:\n{out[-1500:]}"
+            except Exception as e:  # noqa: BLE001 — CLI errors are the answer
+                return f"containers logs: {e}"
+        if sub == "restart" and arg:
+            try:
+                return await asyncio.to_thread(cx.restart, arg)
+            except Exception as e:  # noqa: BLE001
+                return f"containers restart: {e}"
+        if sub in ("rm", "delete") and arg:
+            try:
+                return await asyncio.to_thread(cx.delete, arg)
+            except Exception as e:  # noqa: BLE001
+                return f"containers rm: {e}"
+        if sub == "mirror" and " " in arg:
+            target, cmd = arg.split(" ", 1)
+            try:
+                await asyncio.to_thread(cx.mirror, target, cmd)
+            except Exception as e:  # noqa: BLE001
+                return f"mirror: {e}"
+            argv = f"mirrord exec --target {target if '/' in target else f'pod/{target}'} -- {cmd}"
+            self.store.state.term_command = argv
+            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+            if "term" in ws_ids:
+                self.store.state.active_ws = ws_ids.index("term")
+                self.store.state.focus = 0
+            self.store.state.history.append(f"mirror: {argv}")
+            return f"mirror: launched in Term — {argv}"
+        return ("containers: usage  list | logs <id> | restart <id> | "
+                "rm <id> | mirror <pod> <cmd>")
+
     def _refresh_mesh(self) -> None:
         """Kick a background probe of mesh nodes + packages. One at a time;
         results land in _mesh_cache and only then repaint the panel."""
@@ -1331,9 +1426,6 @@ class AiOSApp(App):
                     f"mesh: refresh failed: {type(e).__name__}: {str(e)[:80]}")
             finally:
                 self._mesh_refreshing = False
-                wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
-                if wid in ("fleet", "mesh", "net"):
-                    self._render_center()
         asyncio.ensure_future(run())
 
     async def _mesh_do(self, name: str, action: str,

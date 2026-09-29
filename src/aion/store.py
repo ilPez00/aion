@@ -99,6 +99,8 @@ class Store(SwarmCommands):
         self.mesh_callback = None    # set by app: async fn(text) -> str (mesh pkg control)
         self.sentinelx_callback = None  # set by app: async fn(text) -> str (SentinelX agents)
         self.bridge_callback = None  # set by app: async fn(text) -> str (agent-bridge history)
+        self.github_growth_callback = None  # set by app: async fn(text) -> str (github growth)
+        self.container_callback = None  # set by app: async fn(text) -> str (docker/k8s/mirrord)
         # hypergraph substrate: pre-specced physis digest -> ornith/qwen (randomesh 2026-09-03)
         # home-relative + env-overridable: the cockpit runs as any user on any box
         import os as _os
@@ -195,7 +197,9 @@ class Store(SwarmCommands):
             for binary, name in [("opencode", "OpenCode"), ("hermes", "Hermes"),
                                  ("agy", "Antigravity"), ("omniroute", "OmniRoute"),
                                  ("claude", "Claude Code"), ("free-coding-models", "FCM"),
-                                 ("codex", "Codex CLI")]:
+                                 ("codex", "Codex CLI"),
+                                 ("kubectl", "kubectl"), ("docker", "Docker"),
+                                 ("mirrord", "mirrord"), ("k9s", "k9s")]:
                 if shutil.which(binary) is not None:
                     tools.append({"name": name, "description": f"`{binary}` found", "source": "PATH"})
             # scan known skill dirs
@@ -1134,6 +1138,18 @@ class Store(SwarmCommands):
                     "sentinelx: not available (app not connected)")
                 self.state.logs = self.state.logs[-50:]
             return
+        if parts[0] == "containers":
+            # docker/k8s pods + mirrord: list|logs <id>|restart <id>|rm <id>|
+            # mirror <target> <cmd> — see app._handle_container_command
+            if self.container_callback:
+                result = await self.container_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append(
+                    "containers: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
+            return
         if parts[0] == "bridge":
             # shared agentic history (agent-bridge protocol): inbox|send|ack|
             # learn|search|sync — see app._handle_bridge_command
@@ -1143,6 +1159,15 @@ class Store(SwarmCommands):
                 self.state.logs = self.state.logs[-50:]
             else:
                 self.state.logs.append("bridge: not available (app not connected)")
+                self.state.logs = self.state.logs[-50:]
+            return
+        if parts[0] in ("github-growth", "github_growth"):
+            if self.github_growth_callback:
+                result = await self.github_growth_callback(text)
+                self.state.logs.append(result)
+                self.state.logs = self.state.logs[-50:]
+            else:
+                self.state.logs.append("github-growth: not available (app not connected)")
                 self.state.logs = self.state.logs[-50:]
             return
         if parts[0] == "swarm" and len(parts) >= 2:
