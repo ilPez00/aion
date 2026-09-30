@@ -117,3 +117,24 @@ def test_mirror_missing_mirrord_raises():
     with patch("aion.containers.shutil.which", side_effect=which_only_kubectl):
         with pytest.raises(ContainerError):
             mirror("default/api-7d9f", "ls")
+
+
+# ── ctnr workspace wiring (config + pure render) ─────────────────────────────
+def test_ctnr_workspace_registered():
+    import json as _json
+    layout = _json.loads((ROOT / "config" / "layout.json").read_text())
+    ids = [w["id"] for w in layout["workspaces"]]
+    assert "ctnr" in ids, ids
+
+
+def test_ctnr_panel_uses_live_cache():
+    """The Containers workspace renders the very same cache the System panel
+    appends, so the two never disagree."""
+    rows = [{**POD, "name": "stuck", "state": "CrashLoopBackOff",
+             "id": "ns/stuck", "backend": "kubectl"}]
+    cache = {"ts": 0.0, "rows": rows, "errors": [], "backends": "kubectl"}
+    out = render_containers(cache["rows"], THEME, errors=cache["errors"],
+                            backends=cache["backends"])
+    assert "stuck" in out and "kubectl" in out
+    assert out.index("stuck") == out.index("CONTAINERS") + out[out.index("CONTAINERS"):].index("stuck")
+

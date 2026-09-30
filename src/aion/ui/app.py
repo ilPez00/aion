@@ -365,7 +365,7 @@ class AiOSApp(App):
             self._poll_jarvis()
         # workspaces that poll on a timer, not on input
         wid = self.cfg["workspaces"][self.store.state.active_ws]["id"]
-        if wid in ("vault", "system", "sys", "desktop"):
+        if wid in ("vault", "system", "sys", "desktop", "ctnr", "containers"):
             self._render_center()
         self._sync_term_pane()
         self._tick_observer()
@@ -848,6 +848,8 @@ class AiOSApp(App):
             # one Fleet workspace (net+mesh merged); the old ids stay as
             # aliases so existing configs and muscle memory keep working.
             return self._fleet_panel(theme)
+        if ws in ("ctnr", "containers"):
+            return self._containers_panel(theme)
         if ws in ("system", "sys"):
             return self._sys_panel(theme)
         if ws == "life":
@@ -904,7 +906,7 @@ class AiOSApp(App):
 
         The rendering lives in `sys_panel.py`. Only the four things it needs
         from a live app are gathered here: the stats snapshot, the animation
-        tick, whether the deck is plugged in, and how much work is running.
+        tick, whether the deck is plugged in,         and how much work is running.
         """
         from .sys_panel import render_sys
 
@@ -923,6 +925,16 @@ class AiOSApp(App):
                                   errors=c.get("errors"),
                                   backends=c.get("backends", ""))
         return f"{base}\n{block}"
+
+    def _containers_panel(self, theme: dict) -> str:
+        """Containers workspace: live pod/container status, rendered from the
+        same cache that feeds the System panel section. Uses the Term pane's
+        lifecycle note only when the cockpit is headless."""
+        from .containers_panel import render_containers
+        return render_containers(self._containers_cache.get("rows") or [],
+                                 theme,
+                                 errors=self._containers_cache.get("errors"),
+                                 backends=self._containers_cache.get("backends", ""))
 
     def _mesh_panel(self, theme: dict) -> str:
         """RandoMesh monitor + package lifecycle (Phase 1 + 2 + installer).
@@ -2704,6 +2716,7 @@ class AiOSApp(App):
                 f" [{di}]7 ▣ Term[/]     Embedded terminal (btop, shell, etc)\n"
                 f" [{di}]8 ⚙ Settings[/] API providers + installed skills\n"
                 f" [{di}]9 🌐 Net[/]      Remote aion nodes + live status\n"
+            f" [{di}]📦 Containers[/]  docker/k8s pods (goto ctnr)\n"
                 "\n"
                 f"[{a}]CTRL-K COMMANDS[/]\n"
                 f" [{di}]todo <t>[/]     add to-do item\n"

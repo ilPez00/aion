@@ -97,6 +97,11 @@
       "id": "fleet",
       "title": "Fleet",
       "icon": "⏢"
+    },
+    {
+      "id": "ctnr",
+      "title": "Containers",
+      "icon": "📦"
     }
   ],
   "deck": {
