@@ -1352,19 +1352,33 @@ class AiOSApp(App):
         if sub == "mirror" and " " in arg:
             target, cmd = arg.split(" ", 1)
             try:
-                await asyncio.to_thread(cx.mirror, target, cmd)
+                argv = await asyncio.to_thread(cx.mirror, target, cmd)
             except Exception as e:  # noqa: BLE001
                 return f"mirror: {e}"
-            argv = f"mirrord exec --target {target if '/' in target else f'pod/{target}'} -- {cmd}"
-            self.store.state.term_command = argv
-            ws_ids = [w["id"] for w in self.cfg["workspaces"]]
-            if "term" in ws_ids:
-                self.store.state.active_ws = ws_ids.index("term")
-                self.store.state.focus = 0
-            self.store.state.history.append(f"mirror: {argv}")
+            self._switch_to_term(argv, "mirror")
             return f"mirror: launched in Term — {argv}"
+        if sub == "exec" and arg:
+            bits = arg.split(" ", 1)
+            target = bits[0]
+            shell = bits[1] if len(bits) == 2 else "sh"
+            try:
+                argv = cx.exec_argv(target, shell)
+            except Exception as e:  # noqa: BLE001
+                return f"containers exec: {e}"
+            self._switch_to_term(argv, "exec")
+            return f"exec: launched in Term — {argv}"
         return ("containers: usage  list | logs <id> | restart <id> | "
-                "rm <id> | mirror <pod> <cmd>")
+                "rm <id> | mirror <pod> <cmd> | exec <id> [shell]")
+
+    def _switch_to_term(self, argv: str, label: str) -> None:
+        """Drop the cockpit into the Term workspace running `argv` — same path
+        as `app <name>`. Reuses the lazy TermPane mounted by _sync_term_pane."""
+        self.store.state.term_command = argv
+        ws_ids = [w["id"] for w in self.cfg["workspaces"]]
+        if "term" in ws_ids:
+            self.store.state.active_ws = ws_ids.index("term")
+            self.store.state.focus = 0
+        self.store.state.history.append(f"{label}: {argv}")
 
     def _refresh_mesh(self) -> None:
         """Kick a background probe of mesh nodes + packages. One at a time;
@@ -2717,6 +2731,7 @@ class AiOSApp(App):
                 f" [{di}]containers list[/]   docker/k8s pods (see System pane)\n"
                 f" [{di}]containers logs <id>[/] tail logs from a pod/container\n"
                 f" [{di}]containers restart|rm <id>[/] recycle/delete a pod/container\n"
+                f" [{di}]containers exec <id> [shell][/] open shell into a pod/container (drops to Term)\n"
                 f" [{di}]mirror <pod> <cmd>[/]   run <cmd> in a k8s pod's netns via mirrord (drops to Term)\n"
                 "\n"
                 f"[{a}]KEYS[/]\n"

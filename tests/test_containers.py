@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -79,3 +80,40 @@ def test_errors_are_shown_not_swallowed():
     out = render_containers([], THEME, errors=["kubectl: conn refused"],
                             backends="kubectl")
     assert "conn refused" in out
+
+
+# ── argv assembly (pure, no subprocess) ────────────────────────────────────────
+from aion.containers import exec_argv, mirror, ContainerError  # noqa: E402
+
+
+def test_exec_argv_kubectl_for_ns_name():
+    with patch("aion.containers.shutil.which", return_value="/bin/kubectl"):
+        argv = exec_argv("default/api-7d9f")
+    assert argv == "kubectl exec -it default/api-7d9f -- sh"
+
+
+def test_exec_argv_custom_shell():
+    with patch("aion.containers.shutil.which", return_value="/bin/kubectl"):
+        argv = exec_argv("default/api-7d9f", "bash")
+    assert "bash" in argv and argv.startswith("kubectl exec -it")
+
+
+def test_exec_argv_no_backend_raises():
+    with patch("aion.containers.shutil.which", return_value=None):
+        with pytest.raises(ContainerError):
+            exec_argv("default/api-7d9f")
+
+
+def test_mirror_validates_then_returns_argv():
+    with patch("aion.containers.shutil.which", return_value="/bin/x"), \
+         patch("aion.containers._run", return_value="pod/default/x\n"):
+        argv = mirror("default/api-7d9f", "curl http://localhost:8080/health")
+    assert argv.startswith("mirrord exec --target") and "curl" in argv
+
+
+def test_mirror_missing_mirrord_raises():
+    def which_only_kubectl(b):
+        return "/bin/kubectl" if b == "kubectl" else None
+    with patch("aion.containers.shutil.which", side_effect=which_only_kubectl):
+        with pytest.raises(ContainerError):
+            mirror("default/api-7d9f", "ls")

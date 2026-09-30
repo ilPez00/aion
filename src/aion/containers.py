@@ -131,7 +131,11 @@ def delete(target: str) -> str:
 
 
 def mirror(target: str, cmd: str, timeout: int = 20) -> str:
-    """Wrap `cmd` with mirrord against a k8s target (pod/deployment)."""
+    """Validate `target` against the live cluster and return the mirrord argv.
+
+    `target` is a pod name or "ns/name"; validation is the side effect, the
+    return is plain argv so the caller can hand it straight to the PTY.
+    """
     if not shutil.which("mirrord"):
         raise ContainerError(
             "mirrord not found — install: https://mirrord.dev (cargo/npm)")
@@ -141,5 +145,21 @@ def mirror(target: str, cmd: str, timeout: int = 20) -> str:
     _run(["kubectl", "get", target if "/" in target else f"pod/{target}",
           "-o", "name"], timeout=timeout)
     full = target if "/" in target else f"pod/{target}"
-    return (f"run in Term:  mirrord exec --target {full} -- {cmd}\n"
-            f"(aion assembles the argv; the PTY owns the session)")
+    return f"mirrord exec --target {full} -- {cmd}"
+
+
+def exec_argv(target: str, shell: str = "sh") -> str:
+    """Interactive shell argv into a pod/container.
+
+    "ns/name" + kubectl -> `kubectl exec -it ns/name -- <shell>`
+    container id/name  + docker   -> `docker exec -it <id> <shell>`
+    The Term workspace mounts this as term_command (same path as `app <name>`),
+    so the PTY owns the session; aion only assembles the argv.
+    """
+    if "/" in target and shutil.which("kubectl"):
+        return f"kubectl exec -it {target} -- {shell}"
+    if shutil.which("docker"):
+        return f"docker exec -it {target} {shell}"
+    raise ContainerError(
+        "exec: need kubectl (for 'ns/name') or docker (for container id)"
+        + ("" if "/" in target else " — no kubectl on PATH"))
