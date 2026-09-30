@@ -50,14 +50,21 @@ SERVICES: dict[str, dict] = {
         "start": "cd ~/Praxis/praxis_webapp && npm run start 2>&1 | tail -3",
         "stop": "pkill -f 'npm run start'",
     },
-    # RandoMesh model-serving stack (llama.cpp Vulkan/ROCm, Caddy LB on omo:8088).
-    # Each node serves gemma4-e2b on :8081; the LB is the unified OpenAI endpoint.
+    # RandoMesh model-serving stack (llama.cpp Vulkan/ROCm + ollama).
+    # Model-aware router on omo :8090 (model_router.py) — routes by model name.
+    # Fallback Caddy LB on :8088 over omo:8081 + pansa:8081 (gemma only).
+    # Each node serves gemma4-e2b on :8081; omo ollama serves 14 models on :11434.
     # Host check = ssh to that host and probe its localhost port.
     "mesh-lm-orch": {   # Caddy orchestrator on omo — unified /v1 endpoint
         "host": "omo-ts",
         "probe": ("tcp", 8088),
         "start": "cd ~/scripts/freetoken-cluster && caddy run --config Caddyfile.llama --adapter caddyfile 2>&1 | tail -3",
         "stop": "pkill -f 'caddy run'",
+    },
+    "mesh-model-router": {  # model-aware router on omo :8090 (NEW, preferred)
+        "host": "omo-ts", "probe": ("tcp", 8090),
+        "start": "systemctl --user start model-router.service",
+        "stop": "systemctl --user stop model-router.service",
     },
     "omo-llm": {        # llama-server node on RX 6650 XT (8GB, Vulkan/ROCm)
         "host": "omo-ts", "probe": ("tcp", 8081),
