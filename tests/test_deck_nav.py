@@ -83,3 +83,34 @@ def test_deck_keyboard_parity():
     deck_b = Intent.back()
     kb_esc = keymap.resolve("escape")
     assert kb_esc is not None and kb_esc.type == deck_b.type
+
+
+def test_all_workspaces_reachable_by_key():
+    """Every configured workspace has a number-key binding (fleet/ctnr
+    used to be reachable only by cycling)."""
+    from aion.input import KeyboardMap
+    cfg = load_config()
+    keymap = KeyboardMap(cfg["keybindings"])
+    total = len(cfg["workspaces"])
+    for i in range(total):
+        name = f"workspace_{i + 1}"
+        bound = cfg["keybindings"].get(name)
+        assert bound, f"{name} ({cfg['workspaces'][i]['id']}) has no key"
+        intent = keymap.resolve(bound)
+        assert intent is not None and intent.type == IntentType.SWITCH_WORKSPACE
+        assert intent.payload.get("index") == i
+
+
+def test_switch_index_reaches_fleet_and_ctnr():
+    """Store honors indexes 10/11 (fleet, ctnr) via Intent."""
+    cfg = load_config()
+    bus = Bus()
+    registry = TaskRegistry(bus)
+    harnesses = build_harnesses(cfg["harnesses"], bus, registry)
+    store = Store(cfg, bus, harnesses=harnesses)
+    ws_ids = [w["id"] for w in store.cfg["workspaces"]]
+    for target in ("fleet", "ctnr"):
+        idx = ws_ids.index(target)
+        store.handle(Intent(IntentType.SWITCH_WORKSPACE, {"index": idx}))
+        assert store.state.active_ws == idx
+        assert store.state.focus == 0

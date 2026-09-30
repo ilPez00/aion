@@ -306,6 +306,9 @@ DEFAULT_LAYOUT = {
     ],
     "keybindings": {
         "workspace_1": "1", "workspace_2": "2", "workspace_3": "3",
+        "workspace_4": "4", "workspace_5": "5", "workspace_6": "6",
+        "workspace_7": "7", "workspace_8": "8", "workspace_9": "9",
+        "workspace_10": "0", "workspace_11": "minus", "workspace_12": "equals",
         "nav_up": ["up", "k"], "nav_down": ["down", "j"],
         "nav_left": ["left", "h"], "nav_right": ["right", "l"],
         "activate": ["enter", "space"], "back": ["escape", "b"],

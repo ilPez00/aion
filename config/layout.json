@@ -151,7 +151,9 @@
     ],
     "palette": "ctrl+k",
     "voice": "v",
-    "workspace_10": "0"
+    "workspace_10": "0",
+    "workspace_11": "minus",
+    "workspace_12": "equals"
   },
   "harnesses": [
     {

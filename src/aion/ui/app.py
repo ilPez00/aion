@@ -47,9 +47,19 @@ class Cell(Static):
     DEFAULT_CSS = "Cell { height: auto; } Cell:hover { background: #131d26; }"
 
     def on_click(self) -> None:
-        """Click activates the focused item or toggles palette on bottom."""
+        """Click navigates: a rail cell switches workspace, a center row
+        selects on first click and activates on second. Cells without a
+        target fall back to plain activate."""
         app = self.app
         if not isinstance(app, AiOSApp):
+            return
+        ws = getattr(self, "_ws_index", None)
+        if ws is not None:
+            app.click_workspace(ws)
+            return
+        idx = getattr(self, "_item_index", None)
+        if idx is not None:
+            app.click_item(idx)
             return
         app.action_activate()
 
@@ -594,6 +604,13 @@ class AiOSApp(App):
                 self._mesh_sel = len(rows) - 1
             sel_name = rows[self._mesh_sel].get("name", "") if rows else ""
             k = event.key
+            # workspace jump keys stay global here too — digits used to die
+            # in this branch, stranding fleet/ctnr behind the keyboard.
+            intent = self.keymap.resolve(k)
+            if intent is not None and intent.type == IntentType.SWITCH_WORKSPACE:
+                asyncio.create_task(self.bus.publish(TOPIC_INTENT, intent))
+                event.prevent_default()
+                return
             if k in ("down", "j"):
                 self._mesh_sel = min(self._mesh_sel + 1, max(0, len(rows) - 1))
                 self._mesh_pending = None
@@ -651,6 +668,26 @@ class AiOSApp(App):
 
     def action_activate(self) -> None:
         self.store.handle(Intent.activate())
+
+    def click_workspace(self, index: int) -> None:
+        """Trackpad: one click on a rail icon switches workspace."""
+        self.store.handle(Intent.switch_workspace(index=index))
+        self._render_all()
+
+    def click_item(self, index: int) -> None:
+        """Trackpad: first click selects a row, second click activates it.
+        Fleet/mesh/net rows use the panel selection, not state.focus."""
+        ws = self.cfg["workspaces"][self.store.state.active_ws]["id"]
+        if ws in ("fleet", "mesh", "net"):
+            self._mesh_sel = max(0, index)
+            self._mesh_pending = None
+            self._render_center()
+            return
+        if self.store.state.focus == index:
+            self.store.handle(Intent.activate())
+        else:
+            self.store.state.focus = index
+        self._render_center()
 
     def action_pause(self) -> None:
         self.store.handle(Intent(IntentType.PAUSE))
@@ -750,6 +787,7 @@ class AiOSApp(App):
             mark = "▶" if i == self.store.state.active_ws else " "
             col = theme["accent"] if i == self.store.state.active_ws else theme["dim"]
             cls = "focus" if i == self.store.state.active_ws else ""
+            cell._ws_index = i
             cell.set_class(i == self.store.state.active_ws, "focus")
             cell.update(f"[{col}]{mark} {w['icon']} {w['title']}[/]")
 
@@ -771,6 +809,7 @@ class AiOSApp(App):
             center.mount(*self._center)
         for i, (cell, it) in enumerate(zip(self._center, items)):
             focused = i == self.store.state.focus
+            cell._item_index = i
             cell.set_class(focused, "focus")
             cell.update(self._center_line(ws, it, focused, theme))
 
@@ -2694,8 +2733,7 @@ class AiOSApp(App):
 
     def _help_text(self, extended: bool = False) -> str:
         theme = self.cfg["theme"]
-        ws_count = len(self.cfg["workspaces"])
-        ws_keys = "/".join(str(i) for i in range(1, ws_count + 1))
+        ws_keys = "1-9, 0, -, ="
         a, di, ok_, wa = theme["accent"], theme["dim"], theme["ok"], theme["warn"]
 
         if extended:
@@ -2706,17 +2744,19 @@ class AiOSApp(App):
                 f" [{di}]aion is an agentic OS cockpit — a split-screen HUD + application [/]\n"
                 f" [{di}]desktop. It runs on your terminal and adapts to what you do.[/]\n"
                 "\n"
-                f"[{a}]WORKSPACES (keys 1-9)[/]\n"
+                f"[{a}]WORKSPACES (keys 1-9, 0, -, =; ←→/hl cycles all)[/]\n"
                 f" [{di}]1 ⬡ Desktop[/]   Home hub — status, launcher, context widgets\n"
                 f" [{di}]2 ◈ Subsystems[/] Active harnesses filtered by context\n"
                 f" [{di}]3 ▤ Tasks[/]      Running/finished tasks + kanban boards\n"
-                f" [{di}]4 ✦ Agent[/]     Agents, swarm, chat (context picks mode)\n"
-                f" [{di}]5 📓 Vault[/]    Note graph + memory facts\n"
-                f" [{di}]6 🖥 System[/]   Detailed computer + health + physis gauges\n"
-                f" [{di}]7 ▣ Term[/]     Embedded terminal (btop, shell, etc)\n"
-                f" [{di}]8 ⚙ Settings[/] API providers + installed skills\n"
-                f" [{di}]9 🌐 Net[/]      Remote aion nodes + live status\n"
-            f" [{di}]📦 Containers[/]  docker/k8s pods (goto ctnr)\n"
+                f" [{di}]4 ⟳ Runs[/]       Live run detail + tabs (t)\n"
+                f" [{di}]5 ✦ Agent[/]     Agents, swarm, chat (context picks mode)\n"
+                f" [{di}]6 ◫ Vault[/]     Note graph + memory facts\n"
+                f" [{di}]7 ◍ System[/]    Computer + health + physis gauges\n"
+                f" [{di}]8 ☯ Life[/]       Life dashboard\n"
+                f" [{di}]9 ▣ Term[/]      Embedded terminal (btop, shell, etc)\n"
+                f" [{di}]0 ⚙ Settings[/]  API providers + installed skills\n"
+                f" [{di}]- ⏢ Fleet[/]      Fleet nodes + packages (j/k, s/x/r)\n"
+                f" [{di}]= 📦 Containers[/] docker/k8s pods\n"
                 "\n"
                 f"[{a}]CTRL-K COMMANDS[/]\n"
                 f" [{di}]todo <t>[/]     add to-do item\n"
@@ -2750,6 +2790,7 @@ class AiOSApp(App):
                 f"[{a}]KEYS[/]\n"
                 f"  {ws_keys}  switch workspace  ↑↓/jk select item\n"
                 f"  Enter/Space activate   ←→/hl switch ws\n"
+                f"  click rail icon: switch ws · click row: select, again: activate\n"
                 f"  p pause  x cancel  r re-run  ? help\n"
                 f"  v voice toggle   Ctrl-K command palette\n"
                 "\n"
@@ -2770,12 +2811,14 @@ class AiOSApp(App):
             "  'containers list' · 'mirror <pod> <cmd>'\n"
             "\n"
             f"[{a}]Keys[/]  {ws_keys}:workspaces  ↑↓/jk:select  Enter:activate\n"
+            f"  click rail icon: switch ws · click row: select, again: activate\n"
             f"  p pause  x cancel  r re-run  v voice  ? help\n"
             f"  Ctrl-K: command palette     manual: extended reference\n"
             "\n"
             f"[{a}]Workspaces[/]\n"
-            "  1⬡ Desktop  2◈ Subsystems  3▤ Tasks  4✦ Agent\n"
-            "  5📓 Vault   6🖥 System     7▣ Term   8⚙ Settings  9🌐 Net\n"
+            "  1⬡ Desktop  2◈ Subsystems  3▤ Tasks  4⟳ Runs\n"
+            "  5✦ Agent    6◫ Vault       7◍ System  8☯ Life\n"
+            "  9▣ Term     0⚙ Settings   -⏢ Fleet  =📦 Containers\n"
             "\n"
             f"[{a}]More:[/] type 'help manual' in Ctrl-K for full reference"
         )
