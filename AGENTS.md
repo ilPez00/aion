@@ -36,6 +36,21 @@ details on the omo vs pansa distinction.
 | TUI | `ui/app.py`, `ui/gauges.py` | Render only; emit Intents |
 | Deck | `deck/*`, `input.py` | Serial → Intent / uinput gamepad |
 | Optional I/O | `voice/*`, `llm.py` | Secondary; must not own product identity |
+| Local tools | `github_growth/` | Legitimate, approval-gated GitHub engagement |
+
+## GitHub Growth subsystem (`github_growth/`)
+
+A legitimate, non-spam GitHub profile/project discovery and engagement toolkit.
+All actions are **dry-run by default** — use `--live` to actually follow/unfollow.
+
+- Token resolution: `CredentialStore` → `GITHUB_TOKEN` env → `GITHUB` env → `~/.env` `GITHUB=`
+- Safety: kill switch (`enabled=False` default), daily limits (5 follow/day, 10 total/day),
+  bot/org exclusion, allowlist/blocklist, min followers/stars thresholds
+- Scoring: 5-factor weighted (contribution 25%, engagement 25%, quality 20%,
+  spam-inverted 15%, network 15%) with configurable `min_score_to_queue`
+- Audit: all actions logged to `~/.aion/github_growth.db` (SQLite)
+- Commands: `github-growth discover | enrich | score | queue list|approve|clear | run | follow | unfollow | execute | report summary|user|metrics | stats | config`
+- Tests: `tests/test_github_growth.py` (34 tests)
 
 ## Factory gates (every cycle)
 

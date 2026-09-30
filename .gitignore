@@ -15,3 +15,7 @@ server.py
 /build/
 /dist/
 *.egg-info/
+
+# Vendored JS plugin (OpenCode CodeGraph), not a Python-repo dependency
+# 89M incl. node_modules — do not track
+src/opencode-codegraph/

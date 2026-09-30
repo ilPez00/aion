@@ -38,6 +38,7 @@ web = ["websockets", "requests", "python-dotenv"]  # optional: web HUD server
 
 [project.scripts]
 aion = "aion.ui.app:main"
+github-growth = "aion.github_growth.cli:main"
 
 [project.urls]
 Source = "https://github.com/ilPez00/aion"
