@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from .probeopts import budget, ssh_opts
+from . import probecache
 from typing import Any, Callable
 
 # Tailscale aliases for the physical mesh. pansa also surfaces storage.
@@ -154,25 +155,44 @@ def probe_node(name: str, transport: Callable = _default_transport) -> NodeStat:
 
 
 def snapshot(transport: Callable = _default_transport) -> dict[str, Any]:
-    """Public: probe all mesh nodes. Never raises; soft-fails per node."""
-    nodes: list[NodeStat] = []
-    for name in NODES:
+    """Public: probe all mesh nodes. Never raises; soft-fails per node.
+
+    Probes run CONCURRENTLY and the result is memoised for a few seconds:
+    this sits on the render path, where a serial fan-out over three dead
+    nodes cost ~28s of frozen UI per redraw. See probecache for why.
+    """
+    def _build() -> dict[str, Any]:
+        def _probe(name: str) -> NodeStat:
+            try:
+                return probe_node(name, transport)
+            except Exception as e:
+                return NodeStat(name=name, role=ROLE.get(name, ""),
+                                reachable=False, note=f"err: {e}")
+
+        results = probecache.fan_out(_probe, list(NODES))
+        nodes: list[NodeStat] = [
+            r if isinstance(r, NodeStat) else
+            NodeStat(name=name, role=ROLE.get(name, ""),
+                     reachable=False, note=f"err: {r}")
+            for name, r in zip(NODES, results)
+        ]
+        # Fold in pansa storage health from the NAS backend if available.
+        storage = {}
         try:
-            nodes.append(probe_node(name, transport))
-        except Exception as e:
-            nodes.append(NodeStat(name=name, role=ROLE.get(name, ""),
-                                  reachable=False, note=f"err: {e}"))
-    reachable = sum(1 for n in nodes if n.reachable)
-    # Fold in pansa storage health from the NAS backend if available.
-    storage = {}
-    try:
-        from .nas import snapshot as nas_snap
-        storage = nas_snap()
-    except Exception:
-        pass
-    return {
-        "nodes": [n.as_dict() for n in nodes],
-        "total": len(nodes),
-        "reachable": reachable,
-        "storage": storage,
-    }
+            from .nas import snapshot as nas_snap
+            storage = nas_snap()
+        except Exception:
+            pass
+        return {
+            "nodes": [n.as_dict() for n in nodes],
+            "total": len(nodes),
+            "reachable": sum(1 for n in nodes if n.reachable),
+            "storage": storage,
+        }
+
+    # The cache wraps the PROBES, not just the dict assembly: the fan-out is
+    # the expensive part, so caching after it would save nothing.
+    return probecache.cached(
+        "meshmon.snapshot", _build,
+        default_transport=_default_transport, given_transport=transport,
+    )

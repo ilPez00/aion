@@ -26,6 +26,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from .probeopts import budget, ssh_opts
+from . import probecache
 from typing import Callable, Optional
 
 Transport = Callable[[str, str, str], tuple[int, str]]  # (method, target, cmd) -> (rc, out)
@@ -393,9 +394,23 @@ def snapshot(transport: Optional[Transport] = None) -> dict:
     _ensure_fleet_services()
     if transport is None:
         transport = _ssh_transport
-    states = [probe_service(n, transport).as_dict() for n in SERVICES]
-    up = sum(1 for s in states if s["running"])
-    return {"total": len(states), "up": up, "services": states}
+
+    def _build() -> dict:
+        def _probe(name: str) -> dict:
+            try:
+                return probe_service(name, transport).as_dict()
+            except Exception as e:  # a raising probe is reported, not fatal
+                return {"name": name, "running": False, "error": str(e)}
+
+        states = probecache.fan_out(_probe, list(SERVICES))
+        up = sum(1 for s in states if isinstance(s, dict) and s.get("running"))
+        return {"total": len(states), "up": up, "services": states}
+
+    # Cache wraps the probes, not the dict: the fan-out is the cost.
+    return probecache.cached(
+        "meshsrv.snapshot", _build,
+        default_transport=_ssh_transport, given_transport=transport,
+    )
 
 
 def control_service(name: str, action: str, transport: Optional[Transport] = None,

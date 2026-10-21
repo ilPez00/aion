@@ -40,6 +40,11 @@ from .agents import AgentStore
 from .board import BoardStore
 from .storeswarm import SwarmCommands
 
+_EXTERNAL_AGENTS_TTL_S = 30.0   # badge staleness; pgrep (~8s worst) must never stall the loop
+_WORKFLOWS_THROTTLE_S = 1.5     # rebuild cadence for the 1 Hz tick + per-keypress _current_items
+_EXTERNAL_BINARIES = {"opencode": "OpenCode", "agy": "Antigravity",
+                      "claude": "Claude Code", "codex": "Codex CLI"}
+
 
 @dataclass
 class ViewState:
@@ -401,39 +406,59 @@ class Store(SwarmCommands):
         return []
 
     def _detect_external_agents(self) -> list[dict]:
-        """Detect running external coding agent processes (opencode, agy, ...)."""
-        import subprocess, os, time
-        BINARIES = {
-            "opencode": "OpenCode",
-            "agy": "Antigravity",
-            "claude": "Claude Code",
-            "codex": "Codex CLI",
-        }
-        agents = []
-        for binary, label in BINARIES.items():
-            if shutil.which(binary) is None:
-                continue
-            try:
-                result = subprocess.run(
-                    ["pgrep", "-x", binary],
-                    capture_output=True, text=True, timeout=2,
-                )
-                pids = [int(p) for p in result.stdout.strip().split() if p]
-                for pid in pids:
-                    try:
-                        create_time = os.path.getctime(f"/proc/{pid}")
-                        agents.append({
-                            "name": label,
-                            "pid": pid,
-                            "age_s": time.time() - create_time,
-                        })
-                    except (OSError, PermissionError):
-                        pass
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
-        return agents
+        """pgrep per external-agent binary on a 30s cache, backgrounded.
+
+        Never stalls the UI loop — `_collect_workflows` runs on every
+        keypress/render, and four 2s-timeout pgrep calls could freeze the HUD.
+        """
+        import os, time
+        now = time.time()
+        ts, data = self._external_agents_cache
+        if now - ts < _EXTERNAL_AGENTS_TTL_S:
+            return data
+        if getattr(self, "_external_agents_probing", False):
+            return data  # a refresh is already in flight; serve stale
+
+        self._external_agents_probing = True
+
+        def worker():
+            import subprocess, shutil
+            agents: list[dict] = []
+            for binary, label in _EXTERNAL_BINARIES.items():
+                if shutil.which(binary) is None:
+                    continue
+                try:
+                    result = subprocess.run(
+                        ["pgrep", "-x", binary],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    pids = [int(p) for p in result.stdout.strip().split() if p]
+                    for pid in pids:
+                        try:
+                            create_time = os.path.getctime(f"/proc/{pid}")
+                            agents.append({
+                                "name": label,
+                                "pid": pid,
+                                "age_s": time.time() - create_time,
+                            })
+                        except (OSError, PermissionError):
+                            pass
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            self._external_agents_cache = (time.time(), agents)
+            self._external_agents_probing = False
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+        return data
 
     def _collect_workflows(self) -> None:
+        # Throttle: this runs on every keypress (`_current_items`) and the 1 Hz
+        # tick. Stale workflows beat a frozen rebuild.
+        now = time.monotonic()
+        if now - getattr(self, "_workflows_last", -1.0) < _WORKFLOWS_THROTTLE_S:
+            return
+        self._workflows_last = now
         from .workflows import collect_workflows
         self.state.tasks = list(self.registry.tasks.values())
         swarm_agents = [a.as_dict() for a in self.swarm.agents.values()] if self.swarm.agents else None
