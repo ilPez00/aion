@@ -94,3 +94,29 @@ Generic Hermes `factory-loop` / `deepsearch` apply only where they don’t contr
 - Coupling product success to TTS personality
 - Treating Cyclops wearable features as aion’s core UX
 - Expanding assistant tools when app-management / splitscreen density is broken
+## Resource discipline & engineering workflow (added 2026-11-10 after OOM hard reset)
+
+Last crash (2026-11-10 09:19): kernel OOM killer terminated physis-pro-web (547 MB RSS), syncthing, gh, python3. Root cause: too many concurrent cargo/physis processes + heavy build caches on the root fs; SSH became unreachable. Prevent recurrence.
+
+**Before ANY resource-intensive task (cargo build, physis observe on large corpus, node build, model load, benchmark):**
+1. Check running tasks & resources first: `ps aux --sort=-rss | head; free -h; uptime; pgrep -c cargo; pgrep -c physis`. If load > 0.8*cores OR free RAM < 4 GiB OR >3 cargo/physis processes running → STOP: wait, kill stale ones, or delegate.
+2. GPU/CPU-intensive work (cargo builds, model inference, large observes, heavy tests) → delegate to **omo** worker (ssh omo-ts, 100.116.39.57, Ryzen 9 6900HX / RX 6650 XT 8G). Use ssh+tmux or nerve_remote_delegate_task. Never stack multiple heavy builds on pansa.
+3. Cache-intensive processes (cargo target/, node_modules, .venv, .physis snapshot-cache.json ~237 MB, target/ dirs): keep on /mnt (bigstore) or external volume, symlink into place; export/clean temp caches before periodic reboots so root fs stays <85% and reboot recovery is fast. Check `/var/lib/docker` (root fs) <95% before restarting services (disk guard).
+
+**Engineering workflow (applies to physis-next, aion+randomesh, praxis-webapp):**
+Every feature, implemented or not, must pass through, with a written artifact per stage:
+1. Planning — feature spec in docs/ or packets/ (what, why, ICP, scope)
+2. Evaluation — feasibility/cost/risk note; query physis world model FIRST (`physis observe`, `physis context`, `physis query`) before inventing
+3. Development — isolated worktree/branch; use physis world model for context packets instead of manual grep
+4. Integration — merge candidate only after gates green
+5. Unit + integration testing — cargo test / pytest / jest / vitest; no skips
+6. GUI & settings exposure — surface in UI/settings if user-facing; document config
+7. Refinement — clippy/lint, perf, docs, commit-message quality
+
+**Periodic hygiene (every session / every few commits):**
+- Commit + push after each completed feature unit (no accumulated dirty trees). Branch hygiene: feature branches → PR.
+- Report open workflows/active loops (cargo processes, physis serve instances, timers, agent loops) + dev notes in the repo tracking doc (DEV_PLAN.md / packets/ / CURRENT.md).
+- Auto-write PRs to expand physis capabilities when a new primitive/pattern is discovered (physis primitive discover + physis act preview/do, then gh pr create --draft). Leverage physis world model as much as possible for code context.
+- Cache-intensive processes exported from temp/cache for periodic reboots (see point 3).
+
+**Auto-write PRs:** when a capability gap is found, prefer opening a draft PR with tests over leaving a TODO.
