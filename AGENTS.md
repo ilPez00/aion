@@ -20,7 +20,10 @@ When in doubt:
 - Deck firmware: separate repo `/home/gio/dev/CyclUno` (shared v2 frame protocol; old path `/home/gio/CyclUno` is a symlink)
 
 ## Development Workflow
-All development happens via randomesh ssh connection on machine pansa (192.168.1.15).
+All development happens via randomesh ssh connection on machine pansa
+(`100.65.59.18` over Tailscale; `10.42.0.201` on the omo<->pansa link).
+`192.168.1.15` was pansa's address before 2026-09-29 and is dead — see
+`randomesh/docs/INCIDENT_2026-09-29_pansa_offline.md`.
 Use `ssh pansa-ts` to connect. All code changes, builds, and tests are performed
 on the pansa machine through the randomesh framework. See `today_pansa.log` for
 details on the omo vs pansa distinction.
