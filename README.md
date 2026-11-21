@@ -733,6 +733,6 @@ Fresh public checkout/release, run on a clean host (pansa, 12-core Linux):
 
 - Fresh `--depth 1` checkout, `uv sync` + `pytest -q tests` (with pytest-asyncio, requests, pyyaml): **2195 passed, 11 skipped, 0 failed**.
 - `tests/test_fleet_e2e.py` excluded from that count: it requires a live two-machine fleet fixture (1 failure + 10 errors on a single host — environment, not product).
-- Dev extras gap found: pytest-asyncio / requests / pyyaml needed for the full suite are not declared in dev extras — candidate follow-up fix.
+- Dev extras: `requests` was missing from the declared `dev` extra (pytest / pytest-asyncio / pyyaml were already declared) — added on this branch. Full suite: `uv sync --extra dev` then `uv run pytest -q tests --ignore=tests/test_fleet_e2e.py`.
 
 Method + full logs: portfolio audit verification log (private hub); reproduction commands in this README.
