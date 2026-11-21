@@ -29,6 +29,15 @@ push live task progress + stats through an async bus.
 └─ BOTTOM: command palette (Ctrl-K) + history ticker ───────────┘
 ```
 
+
+> **TL;DR.** aion is a multi-harness desktop shell + fleet cockpit: one HUD drives every
+> agent harness and every service on every node you own. Keyboard / gamepad / voice /
+> hardware-deck input through one `Intent` type; SSH-tunnel transport; zero-registry
+> discovery; idempotent provisioning (*disable* ≠ *uninstall*). **2,195 tests pass on a
+> fresh checkout (2026-11-21)**; the fleet e2e module needs two live machines. Apache-2.0.
+> Start: `./aion.sh web` → http://127.0.0.1:8742. Architecture docs: [docs/](docs/)
+> (DECK, IDENTITY, FLEET, RESEARCH).
+
 ## Install
 
 Two ways in, and they are not equivalent.
@@ -716,3 +725,14 @@ bus, register it in `HARNESS_TYPES` + `config/layout.json`.
 ## License
 
 Apache-2.0. See `LICENSE` for the terms and `NOTICE` for the copyright.
+
+
+## Verified 2026-11-21
+
+Fresh public checkout/release, run on a clean host (pansa, 12-core Linux):
+
+- Fresh `--depth 1` checkout, `uv sync` + `pytest -q tests` (with pytest-asyncio, requests, pyyaml): **2195 passed, 11 skipped, 0 failed**.
+- `tests/test_fleet_e2e.py` excluded from that count: it requires a live two-machine fleet fixture (1 failure + 10 errors on a single host — environment, not product).
+- Dev extras gap found: pytest-asyncio / requests / pyyaml needed for the full suite are not declared in dev extras — candidate follow-up fix.
+
+Method + full logs: portfolio audit verification log (private hub); reproduction commands in this README.
